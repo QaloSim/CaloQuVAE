@@ -1,7 +1,7 @@
 # CaloQVAE
 
 Calo4pQVAE: A Quantum-assisted Deep Generative Particle-Calorimeter Surrogate
-- ...
+![](https://github.com/QaloSim/CaloQuVAE/blob/main/infographic.png)
 
 ## Overview
 ### Repository Structure
