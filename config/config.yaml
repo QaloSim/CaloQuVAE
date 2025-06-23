@@ -20,7 +20,7 @@ task:
   - test
 
 defaults:
-  - data: CaloChallenge
+  - data: AtlasReg030
   - wandb: ML2
   # - model: model1
   - _self_

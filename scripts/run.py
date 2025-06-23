@@ -37,7 +37,7 @@ import wandb
 from CaloQuVAE import logging
 logger = logging.getLogger(__name__)
 
-# from data.dataManager import DataManager
+from data.dataManager import DataManager
 # from utils.plotting.plotProvider import PlotProvider
 # from utils.stats.partition import get_Zs, save_plot, create_filenames_dict
 # from utils.helpers import get_epochs, get_project_id
@@ -46,11 +46,6 @@ logger = logging.getLogger(__name__)
 
 @hydra.main(config_path="../config", config_name="config")
 def main(cfg=None):
-    # initialise wandb logging. Note that this function has many more options,
-    # reference: https://docs.wandb.ai/ref/python/init
-    # this is the setting for individual, ungrouped runs
-    # Use mode='disabled' to prevent logging
-
     mode = 'online' if cfg.wandb_enabled else 'disabled'
     if cfg.load_state == 0:
         # wandb.init(project="caloqvae", entity="caloqvae", config=cfg, mode=mode)
@@ -62,12 +57,13 @@ def main(cfg=None):
                 resume='allow', id=iden)
     print(cfg)
     
-    # run(config=cfg)
+    run(config=cfg)
 
-# def run(config=None):
-#     """
-#     Run m
-#     """
+def run(config=None):
+    """
+    Run m
+    """
+    dataMgr = DataManager(cfg=config)
 
 #     #create model handling object
 #     modelCreator = ModelCreator(cfg=config)

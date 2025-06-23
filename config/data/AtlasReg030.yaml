@@ -1,8 +1,8 @@
-path: /fast_scratch_1/caloqvae/data/atlas_dataset2and3/dataset_2_1.hdf5
+path: /fast_scratch_1/caloqvae/data/atlas_regular_cat/dataset_eta_030_positive_cat_smeared.hdf5
 
-z: 45
-r: 9
-phi: 16
+z: 7
+r: 24
+phi: 14
 
 frac_val_dataset: 0.1
 frac_train_dataset: 0.8
