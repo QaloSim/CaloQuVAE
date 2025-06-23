@@ -1,0 +1,55 @@
+_wandb:
+    value:
+        cli_version: 0.20.1
+        code_path: code/scripts/run.py
+        m: []
+        python_version: 3.10.12
+        t:
+            "1":
+                - 1
+                - 50
+                - 105
+            "2":
+                - 1
+                - 50
+                - 105
+            "3":
+                - 16
+                - 55
+            "4": 3.10.12
+            "5": 0.20.1
+            "12": 0.20.1
+            "13": linux-x86_64
+data:
+    value:
+        path: /fast_scratch_1/caloqvae/data/atlas_dataset2and3/dataset_2_1.hdf5
+debug:
+    value: 0
+device:
+    value: gpu
+freeze_vae:
+    value: 1
+gpu_list:
+    value:
+        - 2
+load_state:
+    value: 0
+run_path:
+    value: /home/javier/Projects/CaloQVAE/outputs/2025-06-11/20-46-13/wandb/run-20250611_204614-4f745nwj/files/AtlasConditionalQVAE3DHD_atlas_default_190.pth
+save_hists:
+    value: 1
+save_partition:
+    value: 1
+save_state:
+    value: 1
+task:
+    value:
+        - train
+        - validate
+        - test
+wandb:
+    value:
+        entity: caloqvae
+        project: caloqvae
+wandb_enabled:
+    value: 1
