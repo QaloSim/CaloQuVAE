@@ -21,7 +21,7 @@ Calo4pQVAE: A Quantum-assisted Deep Generative Particle-Calorimeter Surrogate
 
 |  Dataset | Location |
 | ------------- | ------------- |
-| CaloChallenge  | ![DOI](https://zenodo.org/records/6366271) |
+| CaloChallenge  | [DOI](https://zenodo.org/records/6366271) |
 
 
 ## Setup
@@ -60,6 +60,6 @@ python scripts/run.py
 When running on the TRIUMF ml machine, `DISPLAY` variable must be unset (it can be set by forwarding X11 when creating the ssh session), as it creates an unwanted dependency with a QT library. 
 
 ### References
-[1] Toledo-Marin JQ, Gonzalez S, Jia H, Lu I, Sogutlu D, Abhishek A, Gay C, Paquet E, Melko R, Fox GC, Swiatlowski M. Conditioned quantum-assisted deep generative surrogate for particle-calorimeter interactions. arXiv preprint arXiv:2410.22870. 2024 Oct 30.
+[1] Toledo-Marin JQ, Gonzalez S, Jia H, Lu I, Sogutlu D, Abhishek A, Gay C, Paquet E, Melko R, Fox GC, Swiatlowski M., Fedorko W Conditioned quantum-assisted deep generative surrogate for particle-calorimeter interactions. arXiv preprint arXiv:2410.22870. 2024 Oct 30.
 
 [2] Fedorko WT, Toledo-Marín JQ, Fox GC, Gay CW, Jia H, Lu I, Melko R, Paquet E, Sogutlu D, Swiatlowski MJ. Quantum-Assisted Generative AI for Simulation of the Calorimeter Response.
