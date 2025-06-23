@@ -1,0 +1,6 @@
+h5py==3.11.0
+hydra-core==1.3.2
+matplotlib==3.8.4
+numpy==1.24.4
+omegaconf==2.3.0
+torch==2.4.0a0+07cecf4168.nv24.5
