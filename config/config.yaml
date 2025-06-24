@@ -22,5 +22,5 @@ task:
 defaults:
   - data: AtlasReg030
   - wandb: ML2
-  # - model: model1
+  - model: model2
   - _self_

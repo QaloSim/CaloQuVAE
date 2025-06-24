@@ -38,6 +38,7 @@ from CaloQuVAE import logging
 logger = logging.getLogger(__name__)
 
 from data.dataManager import DataManager
+from model.modelCreator import ModelCreator
 # from utils.plotting.plotProvider import PlotProvider
 # from utils.stats.partition import get_Zs, save_plot, create_filenames_dict
 # from utils.helpers import get_epochs, get_project_id
@@ -63,57 +64,41 @@ def run(config=None):
     """
     Run m
     """
-    dataMgr = DataManager(cfg=config)
+    dataMgr = DataManager(config)
 
-#     #create model handling object
-#     modelCreator = ModelCreator(cfg=config)
+    #create model handling object
+    modelCreator = ModelCreator(config)
 
-#     #container for our Dataloaders
-#     dataMgr = DataManager(cfg=config)
-#     #initialise data loaders
-#     dataMgr.init_dataLoaders()
-#     #run pre processing: get/set input dimensions and mean of train dataset
-#     dataMgr.pre_processing()
-    
-#     if config.model.activation_fct.lower()=="relu":
-#         modelCreator.default_activation_fct=torch.nn.ReLU()
-#     elif config.model.activation_fct.lower()=="tanh":
-#         modelCreator.default_activation_fct=torch.nn.Tanh()
-#     else:
-#         logger.warning("Setting identity as default activation fct")
-#         modelCreator.default_activation_fct=torch.nn.Identity()
+    #instantiate the chosen model
+    #loads from file 
+    model=modelCreator.init_model()
+    #create the NN infrastructure
+    model.create_networks()
+    model.print_model_info()
 
-#     #instantiate the chosen model
-#     #loads from file 
-#     model=modelCreator.init_model(dataMgr=dataMgr)
-#     #create the NN infrastructure
-#     model.create_networks()
-#     #Not printing much useful info at the moment to avoid clutter. TODO optimise
-#     model.print_model_info()
+    for name, param in model.named_parameters():
+        print(name, param.requires_grad)
 
-#     for name, param in model.named_parameters():
-#         print(name, param.requires_grad)
-
-#     # Load the model on the GPU if applicable
-#     dev = None
-#     if (config.device == 'gpu') and config.gpu_list:
-#         logger.info('Requesting GPUs. GPU list :' + str(config.gpu_list))
-#         devids = ["cuda:{0}".format(x) for x in list(config.gpu_list)]
-#         logger.info("Main GPU : " + devids[0])
+    # Load the model on the GPU if applicable
+    dev = None
+    if (config.device == 'gpu') and config.gpu_list:
+        logger.info('Requesting GPUs. GPU list :' + str(config.gpu_list))
+        devids = ["cuda:{0}".format(x) for x in list(config.gpu_list)]
+        logger.info("Main GPU : " + devids[0])
         
-#         if is_available():
-#             print(devids[0])
-#             dev = device(devids[0])
-#             if len(devids) > 1:
-#                 logger.info(f"Using DataParallel on {devids}")
-#                 model = DataParallel(model, device_ids=list(config.gpu_list))
-#             logger.info("CUDA available")
-#         else:
-#             dev = device('cpu')
-#             logger.info("CUDA unavailable")
-#     else:
-#         logger.info('Requested CPU or unable to use GPU. Setting CPU as device.')
-#         dev = device('cpu')
+        if is_available():
+            print(devids[0])
+            dev = device(devids[0])
+            if len(devids) > 1:
+                logger.info(f"Using DataParallel on {devids}")
+                model = DataParallel(model, device_ids=list(config.gpu_list))
+            logger.info("CUDA available")
+        else:
+            dev = device('cpu')
+            logger.info("CUDA unavailable")
+    else:
+        logger.info('Requested CPU or unable to use GPU. Setting CPU as device.')
+        dev = device('cpu')
         
 #     # Send the model to the selected device
 #     model.to(dev)

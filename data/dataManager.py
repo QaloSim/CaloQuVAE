@@ -1,10 +1,20 @@
 import torch
 import h5py
 import numpy as np
-from torch.utils.data import DataLoader
+from torch.utils.data import DataLoader, Dataset
 
 from CaloQVAE import logging
 logger = logging.getLogger(__name__)
+
+class CaloDataset(Dataset):
+    def __init__(self, dataset):
+        self.showers, self.incident_energies = dataset[0], dataset[1]
+
+    def __len__(self):
+        return len(self.showers)
+
+    def __getitem__(self, index):
+        return self.showers[index, :], self.incident_energies[index, :]
 
 class DataManager():
     def __init__(self, cfg=None):
@@ -29,21 +39,21 @@ class DataManager():
         va = int(np.floor(self.f["showers"].shape[0] * self._config.data.frac_val_dataset))
 
         self.train_loader = DataLoader(
-            self.f["showers"][:tr,:],
+            CaloDataset((self.f["showers"][:tr,:], self.f["incident_energies"][:tr,:])),
             batch_size=self._config.data.batch_size_tr,
             shuffle=True,
             num_workers=self._config.data.num_workers
         )
 
         self.val_loader = DataLoader(
-            self.f["showers"][tr:tr+va,:],
+            CaloDataset((self.f["showers"][tr:tr+va,:], self.f["incident_energies"][tr:tr+va,:])),
             batch_size=self._config.data.batch_size_val,
             shuffle=False,
             num_workers=self._config.data.num_workers
         )
 
         self.test_loader = DataLoader(
-            self.f["showers"][tr+va:,:],
+            CaloDataset((self.f["showers"][tr+va:,:], self.f["incident_energies"][tr+va:,:])),
             batch_size=self._config.data.batch_size_test,
             shuffle=False,
             num_workers=self._config.data.num_workers
