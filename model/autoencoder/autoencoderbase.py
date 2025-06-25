@@ -9,6 +9,7 @@ are registered properly.
 import torch
 import torch.nn as nn
 from model.encoder.encoderhierarchybase import HierarchicalEncoder
+from model.decoder.decoder import Decoder
 
 #logging module with handmade settings.
 from CaloQVAE import logging
@@ -30,11 +31,13 @@ class AutoEncoderBase(nn.Module):
 
     def _create_encoder(self):
         logger.debug("::_create_encoder")
-        
-        return HierarchicalEncoder(self._config)
+        if self._config.model.encoder == "hierachicalencoder":
+            return HierarchicalEncoder(self._config)
 
     def _create_decoder(self):
-        raise NotImplementedError
+        logger.debug("::_create_decoder")
+        if self._config.model.decoder == "decoder":
+            return Decoder(self._config)
 
     def _create_sampler(self):
         """
@@ -48,8 +51,8 @@ class AutoEncoderBase(nn.Module):
     def create_networks(self):
         logger.debug("Creating Network Structures")
         self.encoder=self._create_encoder()
+        self.decoder=self._create_decoder()
         # self.prior=self._create_prior()
-        # self.decoder=self._create_decoder()
         # self.sampler = self._create_sampler()
         # self.stater = self._create_stat()
         

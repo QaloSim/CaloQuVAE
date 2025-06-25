@@ -23,4 +23,5 @@ defaults:
   - data: AtlasReg030
   - wandb: ML2
   - model: model2
+  - engine: engine1
   - _self_

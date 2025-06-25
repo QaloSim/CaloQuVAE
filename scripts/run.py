@@ -2,7 +2,7 @@
 Main executable. The run() method steers data loading, model creation, training
 and evaluation by calling the respective interfaces.
 
-Authors: Teh CaloQVAE
+Authors: The CaloQVAE
 Year: 2025
 """
 
@@ -56,9 +56,34 @@ def main(cfg=None):
         iden = get_project_id(cfg.run_path)
         wandb.init(project=cfg.wandb.project, entity=cfg.wandb.entity, config=OmegaConf.to_container(cfg, resolve=True), mode=mode,
                 resume='allow', id=iden)
-    print(cfg)
+    print(OmegaConf.to_yaml(cfg, resolve=True))
+    #Save and load config file
+    #OmegaConf.save(config, "/home/jtoledo/CaloQuVAE/cfg_test.yaml", resolve=True )
+    #cfg_load = OmegaConf.load("/home/jtoledo/CaloQuVAE/cfg_test.yaml")
     
     run(config=cfg)
+
+def set_device(config=None):
+    if (config.device == 'gpu') and config.gpu_list:
+        logger.info('Requesting GPUs. GPU list :' + str(config.gpu_list))
+        devids = ["cuda:{0}".format(x) for x in list(config.gpu_list)]
+        logger.info("Main GPU : " + devids[0])
+        
+        if is_available():
+            print(devids[0])
+            dev = device(devids[0])
+            if len(devids) > 1:
+                logger.info(f"Using DataParallel on {devids}")
+                model = DataParallel(model, device_ids=list(config.gpu_list))
+            logger.info("CUDA available")
+        else:
+            dev = device('cpu')
+            logger.info("CUDA unavailable")
+    else:
+        logger.info('Requested CPU or unable to use GPU. Setting CPU as device.')
+        dev = device('cpu')
+    return dev
+
 
 def run(config=None):
     """
@@ -80,45 +105,33 @@ def run(config=None):
         print(name, param.requires_grad)
 
     # Load the model on the GPU if applicable
-    dev = None
-    if (config.device == 'gpu') and config.gpu_list:
-        logger.info('Requesting GPUs. GPU list :' + str(config.gpu_list))
-        devids = ["cuda:{0}".format(x) for x in list(config.gpu_list)]
-        logger.info("Main GPU : " + devids[0])
+    dev = set_device(config)
         
-        if is_available():
-            print(devids[0])
-            dev = device(devids[0])
-            if len(devids) > 1:
-                logger.info(f"Using DataParallel on {devids}")
-                model = DataParallel(model, device_ids=list(config.gpu_list))
-            logger.info("CUDA available")
-        else:
-            dev = device('cpu')
-            logger.info("CUDA unavailable")
+    # Send the model to the selected device
+    model.to(dev)
+    # Log metrics with wandb
+    if config.wandb.watch:
+        wandb.watch(model)
+        logger.info("Model being watched by wandb")
     else:
-        logger.info('Requested CPU or unable to use GPU. Setting CPU as device.')
-        dev = device('cpu')
-        
-#     # Send the model to the selected device
-#     model.to(dev)
-#     # Log metrics with wandb
-#     wandb.watch(model)
+        logger.info("Model NOT being watched by wandb")
 
-#     # For some reason, need to use postional parameter cfg instead of named parameter
-#     # with updated Hydra - used to work with named param but now is cfg=None 
-#     engine=instantiate(config.engine, config)
-#     #TODO for some reason hydra double instantiates the engine in a
-#     #newer version if cfg=config is passed as an argument. This is a workaround.
-#     #Find out why that is...
-#     engine._config=config
-#     #add dataMgr instance to engine namespace
-#     engine.data_mgr=dataMgr
-#     #add device instance to engine namespace
-#     engine.device=dev    
-#     #instantiate and register optimisation algorithm
-#     engine.optimiser = torch.optim.Adam(model.parameters(),
-#                                         lr=config.engine.learning_rate)
+    return model, dataMgr
+
+    # # For some reason, need to use postional parameter cfg instead of named parameter
+    # # with updated Hydra - used to work with named param but now is cfg=None 
+    # engine=instantiate(config.engine, config)
+    # #TODO for some reason hydra double instantiates the engine in a
+    # #newer version if cfg=config is passed as an argument. This is a workaround.
+    # #Find out why that is...
+    # engine._config=config
+    # #add dataMgr instance to engine namespace
+    # engine.data_mgr=dataMgr
+    # #add device instance to engine namespace
+    # engine.device=dev    
+    # #instantiate and register optimisation algorithm
+    # engine.optimiser = torch.optim.Adam(model.parameters(),
+    #                                     lr=config.engine.learning_rate)
 #     #add the model instance to the engine namespace
 #     engine.model = model
 #     # add the modelCreator instance to engine namespace
