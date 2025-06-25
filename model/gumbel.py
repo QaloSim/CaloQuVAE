@@ -11,13 +11,13 @@ class GumbelMod(torch.nn.Module):
         super(GumbelMod, self).__init__()
         self.activation_fct = torch.nn.Sigmoid()
         
-    def forward(self, logits, beta, is_training):
+    def forward(self, logits, beta):
         """
         Gumbel reparameterization trick
         """
         rho = torch.rand(logits.size(), device=logits.device)
         logits_gumbel = logits + torch.log(rho) - torch.log(1 - rho)
-        if is_training:
+        if self.training:
             out = self.activation_fct(logits_gumbel * beta)
         else:
             out = torch.heaviside(logits_gumbel, torch.tensor([0.], device=logits.device))

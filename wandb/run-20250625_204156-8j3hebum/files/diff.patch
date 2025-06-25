@@ -1,0 +1,745 @@
+diff --git a/config/model/model2.yaml b/config/model/model2.yaml
+index fa31eb5..0f966c3 100644
+--- a/config/model/model2.yaml
++++ b/config/model/model2.yaml
+@@ -3,4 +3,8 @@ encoder: hierachicalencoder
+ encoderblock: AtlasReg
+ latent_nodes: 302
+ latent_hierarchy_lvls: 4
+-decoder: decoder
+\ No newline at end of file
++decoder: decoder
++
++output_smoothing_fct: 60
++mse_weight: 0.5
++coefficient: 0.01
+\ No newline at end of file
+diff --git a/model/autoencoder/autoencoderbase.py b/model/autoencoder/autoencoderbase.py
+index 97e5837..2cb81d5 100644
+--- a/model/autoencoder/autoencoderbase.py
++++ b/model/autoencoder/autoencoderbase.py
+@@ -8,6 +8,8 @@ are registered properly.
+ """
+ import torch
+ import torch.nn as nn
++from torch.nn.functional import binary_cross_entropy_with_logits
++from model.gumbel import GumbelMod
+ from model.encoder.encoderhierarchybase import HierarchicalEncoder
+ from model.decoder.decoder import Decoder
+ 
+@@ -20,6 +22,11 @@ class AutoEncoderBase(nn.Module):
+     def __init__(self, cfg):
+         super(AutoEncoderBase,self).__init__()
+         self._config=cfg
++        self._hit_smoothing_dist_mod = GumbelMod()
++        self._bce_loss = nn.BCEWithLogitsLoss(reduction="none")
++
++    def _activation_fct(self, slope):
++        return nn.LeakyReLU(slope)
+ 
+     def type(self):
+         """String identifier for current model.
+@@ -67,16 +74,81 @@ class AutoEncoderBase(nn.Module):
+     #     parameter_string="\n".join([str(par.shape) if isinstance(par,torch.Tensor) else str(par)  for par in self.__dict__.items()])
+     #     return parameter_string
+     
+-    # def forward(self, x):
+-    #     """[summary]
++    def forward(self, xx, beta_smoothing_fct=5, act_fct_slope=0.02):
++        """
++        - Overrides forward in GumBoltCaloV5.py
++        
++        Returns:
++            out: output container 
++        """
++        logger.debug("VAE_forward")
++        
++        x, x0 = xx
++        
++        beta, post_logits, post_samples = self.encoder(x, x0, beta_smoothing_fct)
++        
++        output_hits, output_activations = self.decoder(torch.cat(post_samples,1), x0)
+ 
+-    #     Args:
+-    #         input_data (): [aaa]
++        beta = torch.tensor(self._config.model.output_smoothing_fct, dtype=torch.float, device=output_hits.device, requires_grad=False)
++        
++        if self.training:
++            output_activations = self._activation_fct(act_fct_slope)(output_activations) * torch.where(x > 0, 1., 0.)
++        else:
++            output_activations = self._activation_fct(0.0)(output_activations) * self._hit_smoothing_dist_mod(output_hits, beta)
++       
++        return beta, post_logits, post_samples, output_activations, output_hits
++    
++    def loss(self, input_data, args):
++        """
++        - Overrides loss in gumboltCaloV5.py
++        """
++        logger.debug("loss")
++        beta, post_logits, post_samples, output_activations, output_hits = args
+ 
+-    #     Raises:
+-    #         NotImplementedError: [ccc]
++        # kl_loss, entropy, pos_energy, neg_energy = self.kl_divergence(post_logits, post_samples)
++        kl_loss, entropy, pos_energy, neg_energy = 0,0,0,0
++        
++        ae_loss = torch.pow((input_data - output_activations),2) * torch.exp(self._config.model.mse_weight*input_data)
++        ae_loss = torch.mean(torch.sum(ae_loss, dim=1), dim=0) * self._config.model.coefficient
++
++        hit_loss = binary_cross_entropy_with_logits(output_hits, torch.where(input_data > 0, 1., 0.), reduction='none')
++        hit_loss = torch.mean(torch.sum(hit_loss, dim=1), dim=0)
++
++        return {"ae_loss":ae_loss, "kl_loss":kl_loss, "hit_loss":hit_loss,
++                "entropy":entropy, "pos_energy":pos_energy, "neg_energy":neg_energy}
++    
++    # def kl_divergence(self, post_logits, post_samples, is_training=True):
++    #     """Overrides kl_divergence in GumBolt.py
++
++    #     :param post_logits (list) : List of f(logit_i|x, e) for each hierarchy
++    #                                 layer i. Each element is a tensor of size
++    #                                 (batch_size * n_nodes_per_hierarchy_layer)
++    #     :param post_zetas (list) : List of q(zeta_i|x, e) for each hierarchy
++    #                                layer i. Each element is a tensor of size
++    #                                (batch_size * n_nodes_per_hierarchy_layer)
+     #     """
+-    #     raise NotImplementedError
++    #     # Concatenate all hierarchy levels
++    #     # logits_q_z = torch.cat(post_logits, 1)
++    #     # post_zetas = torch.cat(post_samples, 1)
++
++    #     # Compute cross-entropy b/w post_logits and post_samples
++    #     entropy = - self._bce_loss(torch.cat(post_logits, 1), torch.cat(post_samples, 1)[:,self._config.model.n_latent_nodes:])
++    #     entropy = torch.mean(torch.sum(entropy, dim=1), dim=0)
++
++    #     # Compute positive phase (energy expval under posterior variables) 
++    #     n_nodes_p = self.prior.nodes_per_partition
++    #     pos_energy = self.energy_exp_cond(post_zetas[0],post_zetas[1],post_zetas[2],post_zetas[3])
++
++    #     # Compute gradient computation of the logZ term
++    #     p0_state, p1_state, p2_state, p3_state \
++    #         = self.sampler.block_gibbs_sampling_cond(post_zetas[0],post_zetas[1],post_zetas[2],post_zetas[3], method=self._config.model.rbmMethod)
++        
++    #     # neg_energy = - self.energy_exp(p0_state, p1_state, p2_state, p3_state)
++    #     neg_energy = - self.energy_exp_cond(p0_state, p1_state, p2_state, p3_state)
++
++    #     # Estimate of the kl-divergence
++    #     kl_loss = entropy + pos_energy + neg_energy
++    #     return kl_loss, entropy, pos_energy, neg_energy
+ 
+     def print_model_info(self):
+         for key,par in self.__dict__.items():
+diff --git a/model/decoder/decoder.py b/model/decoder/decoder.py
+index 6a34716..7147e04 100644
+--- a/model/decoder/decoder.py
++++ b/model/decoder/decoder.py
+@@ -8,7 +8,6 @@ Year: 2025
+ import torch.nn as nn
+ import torch
+ import torch.nn.functional as F
+-import numpy as np
+ 
+ class Decoder(nn.Module):
+     def __init__(self, cfg):
+@@ -60,7 +59,7 @@ class Decoder(nn.Module):
+         x = self._layers(x)
+         x0 = self.trans_energy(x0)
+         xx0 = torch.cat((x, x0.unsqueeze(2).unsqueeze(3).unsqueeze(4).repeat(1,1,torch.tensor(x.shape[-3:-2]).item(),torch.tensor(x.shape[-2:-1]).item(), torch.tensor(x.shape[-1:]).item())), 1)
+-        x1 = self._layers2(xx0)
++        x1 = self._layers2(xx0) #hits
+         x2 = self._layers3(xx0)
+         return x1.reshape(x1.shape[0],self.z*self.r*self.phi), x2.reshape(x1.shape[0],self.z*self.r*self.phi)
+     
+diff --git a/model/encoder/encoderhierarchybase.py b/model/encoder/encoderhierarchybase.py
+index 2dc0139..bcb86b8 100644
+--- a/model/encoder/encoderhierarchybase.py
++++ b/model/encoder/encoderhierarchybase.py
+@@ -23,7 +23,7 @@ class HierarchicalEncoder(nn.Module):
+ 
+         self._networks=nn.ModuleList([])
+         
+-        for lvl in range(self.n_latent_hierarchy_lvls):
++        for lvl in range(self.n_latent_hierarchy_lvls-1):
+             network=self._create_hierarchy_network(level=lvl)
+             self._networks.append(network)
+ 
+@@ -32,7 +32,7 @@ class HierarchicalEncoder(nn.Module):
+         if self._config.model.encoderblock == "AtlasReg":
+             return EncoderBlockPBH3Dv3Reg(self._config)
+ 
+-    def forward(self, x, x0, is_training=True, beta_smoothing_fct=5):
++    def forward(self, x, x0, beta_smoothing_fct=5):
+         """ This function defines a hierarchical approximate posterior distribution. The length of the output is equal 
+             to n_latent_hierarchy_lvls and each element in the list is a DistUtil object containing posterior distribution 
+             for the group of latent nodes in each hierarchy level. 
+@@ -51,7 +51,7 @@ class HierarchicalEncoder(nn.Module):
+         
+         post_samples.append(self.binary_energy(x0))
+         
+-        for lvl in range(self.n_latent_hierarchy_lvls):
++        for lvl in range(self.n_latent_hierarchy_lvls-1):
+             
+             current_net=self._networks[lvl]
+             current_input = x
+@@ -65,7 +65,7 @@ class HierarchicalEncoder(nn.Module):
+                                 dtype=torch.float, device=logits.device,
+                                 requires_grad=False)
+ 
+-            samples=self.smoothing_dist_mod(logits, beta, is_training)
++            samples=self.smoothing_dist_mod(logits, beta)
+ 
+             post_samples.append(samples)
+               
+diff --git a/model/gumbel.py b/model/gumbel.py
+index 2ce2997..cce919b 100644
+--- a/model/gumbel.py
++++ b/model/gumbel.py
+@@ -11,13 +11,13 @@ class GumbelMod(torch.nn.Module):
+         super(GumbelMod, self).__init__()
+         self.activation_fct = torch.nn.Sigmoid()
+         
+-    def forward(self, logits, beta, is_training):
++    def forward(self, logits, beta):
+         """
+         Gumbel reparameterization trick
+         """
+         rho = torch.rand(logits.size(), device=logits.device)
+         logits_gumbel = logits + torch.log(rho) - torch.log(1 - rho)
+-        if is_training:
++        if self.training:
+             out = self.activation_fct(logits_gumbel * beta)
+         else:
+             out = torch.heaviside(logits_gumbel, torch.tensor([0.], device=logits.device))
+diff --git a/nb.ipynb b/nb.ipynb
+index 80d3e64..55b56aa 100644
+--- a/nb.ipynb
++++ b/nb.ipynb
+@@ -2,10 +2,20 @@
+  "cells": [
+   {
+    "cell_type": "code",
+-   "execution_count": 17,
++   "execution_count": 1,
+    "id": "4d0e1478",
+    "metadata": {},
+-   "outputs": [],
++   "outputs": [
++    {
++     "name": "stderr",
++     "output_type": "stream",
++     "text": [
++      "\u001b[1m[18:58:37.574]\u001b[0m \u001b[1;95mINFO \u001b[1;0m  \u001b[1mCaloQVAE                                          \u001b[0mWillkommen!\n",
++      "\u001b[1m[18:58:37.576]\u001b[0m \u001b[1;95mINFO \u001b[1;0m  \u001b[1mCaloQVAE                                          \u001b[0mLoading configuration.\n",
++      "\u001b[1m[18:58:39.526]\u001b[0m \u001b[1;95mINFO \u001b[1;0m  \u001b[1mCaloQuVAE                                         \u001b[0mLoading configuration.\n"
++     ]
++    }
++   ],
+    "source": [
+     "import torch\n",
+     "from hydra.utils import instantiate\n",
+@@ -20,7 +30,7 @@
+   },
+   {
+    "cell_type": "code",
+-   "execution_count": 18,
++   "execution_count": 2,
+    "id": "0e48f8d8",
+    "metadata": {},
+    "outputs": [
+@@ -30,7 +40,7 @@
+        "hydra.initialize()"
+       ]
+      },
+-     "execution_count": 18,
++     "execution_count": 2,
+      "metadata": {},
+      "output_type": "execute_result"
+     }
+@@ -42,17 +52,19 @@
+   },
+   {
+    "cell_type": "code",
+-   "execution_count": 19,
++   "execution_count": 3,
+    "id": "c07e7268",
+    "metadata": {},
+    "outputs": [],
+    "source": [
+-    "config=compose(config_name=\"config.yaml\")"
++    "config=compose(config_name=\"config.yaml\")\n",
++    "devids = [\"cuda:{0}\".format(x) for x in list(config.gpu_list)]\n",
++    "dev = torch.device(devids[0])"
+    ]
+   },
+   {
+    "cell_type": "code",
+-   "execution_count": 20,
++   "execution_count": 4,
+    "id": "90abb182",
+    "metadata": {},
+    "outputs": [
+@@ -60,15 +72,15 @@
+      "name": "stderr",
+      "output_type": "stream",
+      "text": [
+-      "\u001b[1m[17:37:27.064]\u001b[0m \u001b[1;95mINFO \u001b[1;0m  \u001b[1mdata.dataManager                                  \u001b[0mKeys: ['incident_energies', 'showers']\n",
+-      "\u001b[1m[17:37:30.160]\u001b[0m \u001b[1;95mINFO \u001b[1;0m  \u001b[1mdata.dataManager                                  \u001b[0mdict_keys(['incident_energies', 'showers'])\n",
+-      "\u001b[1m[17:37:30.163]\u001b[0m \u001b[1;95mINFO \u001b[1;0m  \u001b[1mdata.dataManager                                  \u001b[0m<torch.utils.data.dataloader.DataLoader object at 0x7f7543139d90>: 101816 events, 796 batches\n",
+-      "\u001b[1m[17:37:30.164]\u001b[0m \u001b[1;95mINFO \u001b[1;0m  \u001b[1mdata.dataManager                                  \u001b[0m<torch.utils.data.dataloader.DataLoader object at 0x7f75430966f0>: 12728 events, 13 batches\n",
+-      "\u001b[1m[17:37:30.164]\u001b[0m \u001b[1;95mINFO \u001b[1;0m  \u001b[1mdata.dataManager                                  \u001b[0m<torch.utils.data.dataloader.DataLoader object at 0x7f74a1efd970>: 12727 events, 13 batches\n",
+-      "\u001b[1m[17:37:30.165]\u001b[0m \u001b[1;95mINFO \u001b[1;0m  \u001b[1mmodel.modelCreator                                \u001b[0m::Creating Model\n",
+-      "\u001b[1m[17:37:30.239]\u001b[0m \u001b[1;95mINFO \u001b[1;0m  \u001b[1mscripts.run                                       \u001b[0mRequesting GPUs. GPU list :[2]\n",
+-      "\u001b[1m[17:37:30.241]\u001b[0m \u001b[1;95mINFO \u001b[1;0m  \u001b[1mscripts.run                                       \u001b[0mMain GPU : cuda:2\n",
+-      "\u001b[1m[17:37:31.169]\u001b[0m \u001b[1;95mINFO \u001b[1;0m  \u001b[1mscripts.run                                       \u001b[0mCUDA available\n"
++      "\u001b[1m[18:58:39.704]\u001b[0m \u001b[1;95mINFO \u001b[1;0m  \u001b[1mdata.dataManager                                  \u001b[0mKeys: ['incident_energies', 'showers']\n",
++      "\u001b[1m[18:58:42.684]\u001b[0m \u001b[1;95mINFO \u001b[1;0m  \u001b[1mdata.dataManager                                  \u001b[0mdict_keys(['incident_energies', 'showers'])\n",
++      "\u001b[1m[18:58:42.688]\u001b[0m \u001b[1;95mINFO \u001b[1;0m  \u001b[1mdata.dataManager                                  \u001b[0m<torch.utils.data.dataloader.DataLoader object at 0x7fada9c96690>: 101816 events, 796 batches\n",
++      "\u001b[1m[18:58:42.689]\u001b[0m \u001b[1;95mINFO \u001b[1;0m  \u001b[1mdata.dataManager                                  \u001b[0m<torch.utils.data.dataloader.DataLoader object at 0x7fada9e217c0>: 12728 events, 13 batches\n",
++      "\u001b[1m[18:58:42.690]\u001b[0m \u001b[1;95mINFO \u001b[1;0m  \u001b[1mdata.dataManager                                  \u001b[0m<torch.utils.data.dataloader.DataLoader object at 0x7faf8d9ea420>: 12727 events, 13 batches\n",
++      "\u001b[1m[18:58:42.690]\u001b[0m \u001b[1;95mINFO \u001b[1;0m  \u001b[1mmodel.modelCreator                                \u001b[0m::Creating Model\n",
++      "\u001b[1m[18:58:42.921]\u001b[0m \u001b[1;95mINFO \u001b[1;0m  \u001b[1mscripts.run                                       \u001b[0mRequesting GPUs. GPU list :[2]\n",
++      "\u001b[1m[18:58:42.923]\u001b[0m \u001b[1;95mINFO \u001b[1;0m  \u001b[1mscripts.run                                       \u001b[0mMain GPU : cuda:2\n",
++      "\u001b[1m[18:58:43.850]\u001b[0m \u001b[1;95mINFO \u001b[1;0m  \u001b[1mscripts.run                                       \u001b[0mCUDA available\n"
+      ]
+     },
+     {
+@@ -129,24 +141,32 @@
+       "encoder._networks.2.seq2.3.conv.weight True\n",
+       "encoder._networks.2.seq2.3.conv.bias True\n",
+       "encoder._networks.2.seq2.4.weight True\n",
+-      "encoder._networks.3.seq1.0.conv.weight True\n",
+-      "encoder._networks.3.seq1.0.conv.bias True\n",
+-      "encoder._networks.3.seq1.1.weight True\n",
+-      "encoder._networks.3.seq1.1.bias True\n",
+-      "encoder._networks.3.seq1.2.weight True\n",
+-      "encoder._networks.3.seq1.3.conv.weight True\n",
+-      "encoder._networks.3.seq1.3.conv.bias True\n",
+-      "encoder._networks.3.seq1.4.weight True\n",
+-      "encoder._networks.3.seq1.4.bias True\n",
+-      "encoder._networks.3.seq1.5.weight True\n",
+-      "encoder._networks.3.seq2.0.conv.weight True\n",
+-      "encoder._networks.3.seq2.0.conv.bias True\n",
+-      "encoder._networks.3.seq2.1.weight True\n",
+-      "encoder._networks.3.seq2.1.bias True\n",
+-      "encoder._networks.3.seq2.2.weight True\n",
+-      "encoder._networks.3.seq2.3.conv.weight True\n",
+-      "encoder._networks.3.seq2.3.conv.bias True\n",
+-      "encoder._networks.3.seq2.4.weight True\n",
++      "decoder._layers.1.conv.weight True\n",
++      "decoder._layers.1.conv.bias True\n",
++      "decoder._layers.2.weight True\n",
++      "decoder._layers.2.bias True\n",
++      "decoder._layers.3.weight True\n",
++      "decoder._layers.4.conv.weight True\n",
++      "decoder._layers.4.conv.bias True\n",
++      "decoder._layers.5.weight True\n",
++      "decoder._layers.5.bias True\n",
++      "decoder._layers.6.weight True\n",
++      "decoder._layers2.0.conv.weight True\n",
++      "decoder._layers2.0.conv.bias True\n",
++      "decoder._layers2.1.weight True\n",
++      "decoder._layers2.1.bias True\n",
++      "decoder._layers2.2.weight True\n",
++      "decoder._layers2.3.conv.weight True\n",
++      "decoder._layers2.3.conv.bias True\n",
++      "decoder._layers2.4.weight True\n",
++      "decoder._layers3.0.conv.weight True\n",
++      "decoder._layers3.0.conv.bias True\n",
++      "decoder._layers3.1.weight True\n",
++      "decoder._layers3.1.bias True\n",
++      "decoder._layers3.2.weight True\n",
++      "decoder._layers3.3.conv.weight True\n",
++      "decoder._layers3.3.conv.bias True\n",
++      "decoder._layers3.4.weight True\n",
+       "cuda:2\n"
+      ]
+     },
+@@ -154,7 +174,7 @@
+      "name": "stderr",
+      "output_type": "stream",
+      "text": [
+-      "\u001b[1m[17:37:31.468]\u001b[0m \u001b[1;95mINFO \u001b[1;0m  \u001b[1mscripts.run                                       \u001b[0mModel NOT being watched by wandb\n"
++      "\u001b[1m[18:58:44.120]\u001b[0m \u001b[1;95mINFO \u001b[1;0m  \u001b[1mscripts.run                                       \u001b[0mModel NOT being watched by wandb\n"
+      ]
+     }
+    ],
+@@ -164,313 +184,116 @@
+   },
+   {
+    "cell_type": "code",
+-   "execution_count": null,
+-   "id": "2e611968",
+-   "metadata": {},
+-   "outputs": [
+-    {
+-     "ename": "AttributeError",
+-     "evalue": "'AutoEncoderBase' object has no attribute 'decoder'",
+-     "output_type": "error",
+-     "traceback": [
+-      "\u001b[31m---------------------------------------------------------------------------\u001b[39m",
+-      "\u001b[31mAttributeError\u001b[39m                            Traceback (most recent call last)",
+-      "\u001b[36mCell\u001b[39m\u001b[36m \u001b[39m\u001b[32mIn[23]\u001b[39m\u001b[32m, line 1\u001b[39m\n\u001b[32m----> \u001b[39m\u001b[32m1\u001b[39m \u001b[43mmodel\u001b[49m\u001b[43m.\u001b[49m\u001b[43mdecoder\u001b[49m\n",
+-      "\u001b[36mFile \u001b[39m\u001b[32m/usr/local/lib/python3.12/dist-packages/torch/nn/modules/module.py:1940\u001b[39m, in \u001b[36mModule.__getattr__\u001b[39m\u001b[34m(self, name)\u001b[39m\n\u001b[32m   1938\u001b[39m     \u001b[38;5;28;01mif\u001b[39;00m name \u001b[38;5;129;01min\u001b[39;00m modules:\n\u001b[32m   1939\u001b[39m         \u001b[38;5;28;01mreturn\u001b[39;00m modules[name]\n\u001b[32m-> \u001b[39m\u001b[32m1940\u001b[39m \u001b[38;5;28;01mraise\u001b[39;00m \u001b[38;5;167;01mAttributeError\u001b[39;00m(\n\u001b[32m   1941\u001b[39m     \u001b[33mf\u001b[39m\u001b[33m\"\u001b[39m\u001b[33m'\u001b[39m\u001b[38;5;132;01m{\u001b[39;00m\u001b[38;5;28mtype\u001b[39m(\u001b[38;5;28mself\u001b[39m).\u001b[34m__name__\u001b[39m\u001b[38;5;132;01m}\u001b[39;00m\u001b[33m'\u001b[39m\u001b[33m object has no attribute \u001b[39m\u001b[33m'\u001b[39m\u001b[38;5;132;01m{\u001b[39;00mname\u001b[38;5;132;01m}\u001b[39;00m\u001b[33m'\u001b[39m\u001b[33m\"\u001b[39m\n\u001b[32m   1942\u001b[39m )\n",
+-      "\u001b[31mAttributeError\u001b[39m: 'AutoEncoderBase' object has no attribute 'decoder'"
+-     ]
+-    }
+-   ],
+-   "source": [
+-    "# model.decoder"
+-   ]
+-  },
+-  {
+-   "cell_type": "code",
+-   "execution_count": null,
++   "execution_count": 6,
+    "id": "4e887892",
+    "metadata": {},
+    "outputs": [],
+-   "source": []
++   "source": [
++    "x = next(iter(dataMgr.train_loader))\n",
++    "# next(iter(dataMgr.train_loader))"
++   ]
+   },
+   {
+    "cell_type": "code",
+-   "execution_count": null,
++   "execution_count": 7,
+    "id": "f69ae4e1",
+    "metadata": {},
+    "outputs": [],
+-   "source": []
++   "source": [
++    "with torch.no_grad():\n",
++    "    enc_data = model.encoder(x[0].to(dev, dtype=torch.float32), x[1].to(dev, dtype=torch.float32))"
++   ]
+   },
+   {
+    "cell_type": "code",
+-   "execution_count": null,
++   "execution_count": 8,
+    "id": "4d7f3055",
+    "metadata": {},
+-   "outputs": [],
+-   "source": []
+-  },
+-  {
+-   "cell_type": "code",
+-   "execution_count": null,
+-   "id": "6b84ff0f",
+-   "metadata": {},
+-   "outputs": [],
+-   "source": []
+-  },
+-  {
+-   "cell_type": "code",
+-   "execution_count": 4,
+-   "id": "ba9af30f",
+-   "metadata": {},
+    "outputs": [
+     {
+-     "name": "stderr",
+-     "output_type": "stream",
+-     "text": [
+-      "\u001b[1m[21:29:23.165]\u001b[0m \u001b[1;95mINFO \u001b[1;0m  \u001b[1mdata.dataManager                                  \u001b[0mKeys: ['incident_energies', 'showers']\n",
+-      "\u001b[1m[21:29:26.236]\u001b[0m \u001b[1;95mINFO \u001b[1;0m  \u001b[1mdata.dataManager                                  \u001b[0mdict_keys(['incident_energies', 'showers'])\n",
+-      "\u001b[1m[21:29:26.239]\u001b[0m \u001b[1;95mINFO \u001b[1;0m  \u001b[1mdata.dataManager                                  \u001b[0m<torch.utils.data.dataloader.DataLoader object at 0x7f125d56ce60>: 101816 events, 796 batches\n",
+-      "\u001b[1m[21:29:26.240]\u001b[0m \u001b[1;95mINFO \u001b[1;0m  \u001b[1mdata.dataManager                                  \u001b[0m<torch.utils.data.dataloader.DataLoader object at 0x7f1448425dc0>: 12728 events, 13 batches\n",
+-      "\u001b[1m[21:29:26.241]\u001b[0m \u001b[1;95mINFO \u001b[1;0m  \u001b[1mdata.dataManager                                  \u001b[0m<torch.utils.data.dataloader.DataLoader object at 0x7f125fc6d730>: 12727 events, 13 batches\n"
+-     ]
++     "data": {
++      "text/plain": [
++       "3"
++      ]
++     },
++     "execution_count": 8,
++     "metadata": {},
++     "output_type": "execute_result"
+     }
+    ],
+    "source": [
+-    "dataMgr = DataManager(config)\n",
+-    "\n",
+-    "#create model handling object\n",
+-    "modelCreator = ModelCreator(config)\n",
+-    "\n",
+-    "#instantiate the chosen model\n",
+-    "#loads from file \n",
+-    "model=modelCreator.init_model()\n",
+-    "model.create_networks()"
+-   ]
+-  },
+-  {
+-   "cell_type": "code",
+-   "execution_count": 6,
+-   "id": "23106ff5",
+-   "metadata": {},
+-   "outputs": [],
+-   "source": [
+-    "model.print_model_info()"
++    "len(enc_data[1])"
+    ]
+   },
+   {
+    "cell_type": "code",
+-   "execution_count": 10,
+-   "id": "fd7b4fc8",
++   "execution_count": null,
++   "id": "6b84ff0f",
+    "metadata": {},
+    "outputs": [
+     {
+-     "name": "stdout",
+-     "output_type": "stream",
+-     "text": [
+-      "training: True\n",
+-      "_parameters: {}\n",
+-      "_buffers: {}\n",
+-      "_non_persistent_buffers_set: set()\n",
+-      "_backward_pre_hooks: OrderedDict()\n",
+-      "_backward_hooks: OrderedDict()\n",
+-      "_is_full_backward_hook: None\n",
+-      "_forward_hooks: OrderedDict()\n",
+-      "_forward_hooks_with_kwargs: OrderedDict()\n",
+-      "_forward_hooks_always_called: OrderedDict()\n",
+-      "_forward_pre_hooks: OrderedDict()\n",
+-      "_forward_pre_hooks_with_kwargs: OrderedDict()\n",
+-      "_state_dict_hooks: OrderedDict()\n",
+-      "_state_dict_pre_hooks: OrderedDict()\n",
+-      "_load_state_dict_pre_hooks: OrderedDict()\n",
+-      "_load_state_dict_post_hooks: OrderedDict()\n",
+-      "_modules: {'encoder': HierarchicalEncoder(\n",
+-      "  (smoothing_dist_mod): GumbelMod(\n",
+-      "    (activation_fct): Sigmoid()\n",
+-      "  )\n",
+-      "  (_networks): ModuleList(\n",
+-      "    (0-3): 4 x EncoderBlockPBH3Dv3Reg(\n",
+-      "      (seq1): Sequential(\n",
+-      "        (0): PeriodicConv3d(\n",
+-      "          (conv): Conv3d(1, 32, kernel_size=(1, 3, 3), stride=(1, 1, 2))\n",
+-      "        )\n",
+-      "        (1): BatchNorm3d(32, eps=1e-05, momentum=0.1, affine=True, track_running_stats=True)\n",
+-      "        (2): PReLU(num_parameters=32)\n",
+-      "        (3): PeriodicConv3d(\n",
+-      "          (conv): Conv3d(32, 128, kernel_size=(2, 2, 3), stride=(1, 2, 2))\n",
+-      "        )\n",
+-      "        (4): BatchNorm3d(128, eps=1e-05, momentum=0.1, affine=True, track_running_stats=True)\n",
+-      "        (5): PReLU(num_parameters=128)\n",
+-      "      )\n",
+-      "      (seq2): Sequential(\n",
+-      "        (0): PeriodicConv3d(\n",
+-      "          (conv): Conv3d(129, 256, kernel_size=(3, 3, 3), stride=(1, 2, 1))\n",
+-      "        )\n",
+-      "        (1): BatchNorm3d(256, eps=1e-05, momentum=0.1, affine=True, track_running_stats=True)\n",
+-      "        (2): PReLU(num_parameters=256)\n",
+-      "        (3): PeriodicConv3d(\n",
+-      "          (conv): Conv3d(256, 302, kernel_size=(3, 3, 3), stride=(2, 2, 2))\n",
+-      "        )\n",
+-      "        (4): PReLU(num_parameters=302)\n",
+-      "        (5): Flatten(start_dim=1, end_dim=-1)\n",
+-      "      )\n",
+-      "    )\n",
+-      "  )\n",
+-      ")}\n",
+-      "_config: {'data': {'path': '/fast_scratch_1/caloqvae/data/atlas_regular_cat/dataset_eta_030_positive_cat_smeared.hdf5', 'z': 7, 'r': 24, 'phi': 14, 'frac_val_dataset': 0.1, 'frac_train_dataset': 0.8, 'batch_size_tr': 128, 'batch_size_val': 1024, 'batch_size_test': 1024, 'num_workers': 8}, 'wandb': {'project': 'caloqvae', 'entity': 'caloqvae'}, 'model': {'model_name': 'autoencoderbase', 'latent_nodes': 302, 'latent_hierarchy_lvls': 4, 'encoderblock': 'AtlasReg'}, 'debug': 0, 'save_state': 1, 'load_state': 0, 'save_hists': 1, 'save_partition': 1, 'freeze_vae': 1, 'run_path': '/home/javier/Projects/CaloQVAE/outputs/2025-06-11/20-46-13/wandb/run-20250611_204614-4f745nwj/files/AtlasConditionalQVAE3DHD_atlas_default_190.pth', 'wandb_enabled': 1, 'device': 'gpu', 'gpu_list': [2], 'task': ['train', 'validate', 'test']}\n"
+-     ]
++     "data": {
++      "text/plain": [
++       "True"
++      ]
++     },
++     "execution_count": 30,
++     "metadata": {},
++     "output_type": "execute_result"
+     }
+    ],
+    "source": [
+-    "model.__dict__.items()\n",
+-    "for key,par in model.__dict__.items():\n",
+-    "    if isinstance(par,torch.Tensor):\n",
+-    "        print(\"{0}: {1}\".format(key, par.shape))\n",
+-    "    else:\n",
+-    "        print(\"{0}: {1}\".format(key, par))"
++    "with torch.no_grad():\n",
++    "    enc_data = model(x.to(dev, dtype=torch.float32))"
+    ]
+   },
+   {
+    "cell_type": "code",
+-   "execution_count": 7,
+-   "id": "388ade36",
+-   "metadata": {},
+-   "outputs": [],
+-   "source": [
+-    "from model.encoder.encoderhierarchybase import HierarchicalEncoder"
+-   ]
+-  },
+-  {
+-   "cell_type": "code",
+-   "execution_count": 8,
+-   "id": "965b389b",
++   "execution_count": 32,
++   "id": "ad105471",
+    "metadata": {},
+-   "outputs": [],
++   "outputs": [
++    {
++     "data": {
++      "text/plain": [
++       "False"
++      ]
++     },
++     "execution_count": 32,
++     "metadata": {},
++     "output_type": "execute_result"
++    }
++   ],
+    "source": [
+-    "enc = HierarchicalEncoder(config)"
++    "model.encoder.smoothing_dist_mod.eval()\n",
++    "model.encoder.smoothing_dist_mod.training"
+    ]
+   },
+   {
+    "cell_type": "code",
+-   "execution_count": 13,
+-   "id": "4d59e776",
++   "execution_count": 33,
++   "id": "7ede5fec",
+    "metadata": {},
+    "outputs": [
+     {
+      "data": {
+       "text/plain": [
+-       "(tensor(5.),\n",
+-       " [tensor([[ 5.3311e-02, -1.1581e-01,  7.8747e-02,  ...,  1.5792e-04,\n",
+-       "           -4.9996e-02,  3.5318e-02],\n",
+-       "          [ 6.2303e-02, -9.8599e-02,  7.3160e-02,  ..., -2.6149e-02,\n",
+-       "           -4.2177e-02,  3.7049e-02],\n",
+-       "          [ 5.2927e-02, -1.1597e-01,  8.6535e-02,  ..., -1.1240e-02,\n",
+-       "           -4.6329e-02,  3.9148e-02],\n",
+-       "          ...,\n",
+-       "          [ 5.7003e-02, -1.0246e-01,  7.5525e-02,  ..., -1.6580e-02,\n",
+-       "           -3.7898e-02,  4.6485e-02],\n",
+-       "          [ 5.2346e-02, -1.1706e-01,  7.9303e-02,  ..., -4.8886e-03,\n",
+-       "           -3.7729e-02,  4.3794e-02],\n",
+-       "          [-2.3839e-02, -1.2354e-01,  2.1129e-01,  ...,  1.2532e-01,\n",
+-       "            2.4063e-02,  1.0864e-02]], grad_fn=<ClampBackward1>),\n",
+-       "  tensor([[ 0.0192, -0.1110,  0.0105,  ...,  0.0808,  0.0155,  0.1094],\n",
+-       "          [ 0.0214, -0.0860,  0.0300,  ...,  0.0967,  0.0448,  0.0861],\n",
+-       "          [ 0.0203, -0.0941,  0.0091,  ...,  0.0892,  0.0418,  0.0920],\n",
+-       "          ...,\n",
+-       "          [ 0.0299, -0.1018,  0.0114,  ...,  0.0936,  0.0355,  0.0776],\n",
+-       "          [ 0.0221, -0.0990,  0.0046,  ...,  0.0844,  0.0328,  0.0681],\n",
+-       "          [ 0.0588, -0.1027,  0.0131,  ...,  0.0536, -0.0225,  0.2389]],\n",
+-       "         grad_fn=<ClampBackward1>),\n",
+-       "  tensor([[ 0.0246,  0.0073,  0.0870,  ...,  0.0319, -0.0540,  0.0623],\n",
+-       "          [ 0.0291,  0.0314,  0.0637,  ...,  0.0388, -0.0581,  0.0141],\n",
+-       "          [ 0.0452,  0.0274,  0.0839,  ...,  0.0148, -0.0539,  0.0468],\n",
+-       "          ...,\n",
+-       "          [ 0.0344,  0.0171,  0.0719,  ...,  0.0136, -0.0409,  0.0375],\n",
+-       "          [ 0.0529,  0.0218,  0.0828,  ...,  0.0202, -0.0482,  0.0457],\n",
+-       "          [ 0.1597,  0.0012,  0.1747,  ...,  0.0641, -0.1243,  0.1598]],\n",
+-       "         grad_fn=<ClampBackward1>),\n",
+-       "  tensor([[-0.0060,  0.0687, -0.0010,  ...,  0.0034,  0.0356, -0.0079],\n",
+-       "          [-0.0027,  0.0650, -0.0214,  ..., -0.0064,  0.0293, -0.0127],\n",
+-       "          [-0.0062,  0.0702,  0.0081,  ..., -0.0024,  0.0233, -0.0247],\n",
+-       "          ...,\n",
+-       "          [-0.0064,  0.0725, -0.0135,  ..., -0.0222,  0.0206, -0.0432],\n",
+-       "          [-0.0104,  0.0700,  0.0099,  ..., -0.0157,  0.0041, -0.0391],\n",
+-       "          [-0.0422, -0.0704, -0.0136,  ...,  0.1150, -0.0162,  0.0216]],\n",
+-       "         grad_fn=<ClampBackward1>)],\n",
+-       " [tensor([[0, 1, 0,  ..., 0, 0, 0],\n",
+-       "          [1, 0, 0,  ..., 0, 0, 0],\n",
+-       "          [1, 1, 1,  ..., 0, 0, 0],\n",
+-       "          ...,\n",
+-       "          [1, 0, 0,  ..., 0, 0, 0],\n",
+-       "          [1, 0, 0,  ..., 0, 0, 0],\n",
+-       "          [0, 0, 1,  ..., 0, 0, 0]], dtype=torch.uint8),\n",
+-       "  tensor([[9.9988e-01, 2.8331e-03, 9.9995e-01,  ..., 1.0000e+00, 1.2455e-02,\n",
+-       "           9.9929e-01],\n",
+-       "          [1.1536e-05, 7.7164e-01, 9.9999e-01,  ..., 5.2470e-05, 7.4475e-05,\n",
+-       "           4.7856e-04],\n",
+-       "          [5.6113e-03, 9.9249e-01, 1.2455e-02,  ..., 1.0000e+00, 8.6390e-02,\n",
+-       "           6.2095e-03],\n",
+-       "          ...,\n",
+-       "          [9.9887e-01, 9.9999e-01, 9.7695e-01,  ..., 4.2161e-03, 1.1122e-08,\n",
+-       "           9.6019e-06],\n",
+-       "          [9.9496e-01, 1.2568e-05, 9.9983e-01,  ..., 9.0860e-02, 3.2750e-09,\n",
+-       "           9.9999e-01],\n",
+-       "          [3.5844e-01, 3.3211e-04, 6.4506e-03,  ..., 1.0000e+00, 9.9860e-01,\n",
+-       "           9.9942e-01]], grad_fn=<SigmoidBackward0>),\n",
+-       "  tensor([[6.1984e-01, 1.4593e-01, 5.1643e-03,  ..., 9.9999e-01, 9.8152e-01,\n",
+-       "           9.4553e-01],\n",
+-       "          [9.9999e-01, 1.0110e-05, 1.0000e+00,  ..., 1.4611e-03, 7.5376e-02,\n",
+-       "           7.3992e-02],\n",
+-       "          [7.7868e-04, 1.0000e+00, 5.3173e-01,  ..., 9.6461e-01, 1.0000e+00,\n",
+-       "           1.2134e-01],\n",
+-       "          ...,\n",
+-       "          [8.8590e-01, 9.9999e-01, 2.7213e-08,  ..., 8.2033e-01, 6.1671e-04,\n",
+-       "           2.4071e-07],\n",
+-       "          [9.9997e-01, 7.6147e-01, 7.6947e-01,  ..., 9.4896e-01, 5.6304e-02,\n",
+-       "           9.9996e-01],\n",
+-       "          [1.2585e-03, 1.0000e+00, 5.1781e-05,  ..., 9.9944e-01, 7.8215e-01,\n",
+-       "           2.9560e-07]], grad_fn=<SigmoidBackward0>),\n",
+-       "  tensor([[7.6138e-02, 1.4847e-04, 9.9963e-01,  ..., 7.8229e-01, 7.1299e-01,\n",
+-       "           1.6308e-03],\n",
+-       "          [2.4649e-03, 5.9304e-02, 9.9988e-01,  ..., 9.9771e-01, 9.9980e-01,\n",
+-       "           2.9490e-03],\n",
+-       "          [7.6455e-01, 8.7759e-01, 4.8429e-02,  ..., 4.4250e-09, 9.9658e-01,\n",
+-       "           9.8814e-01],\n",
+-       "          ...,\n",
+-       "          [5.1900e-02, 9.9999e-01, 2.3379e-04,  ..., 1.0698e-01, 1.0000e+00,\n",
+-       "           3.4787e-01],\n",
+-       "          [2.5754e-03, 1.2086e-04, 9.2151e-01,  ..., 9.0243e-02, 2.0906e-11,\n",
+-       "           1.5559e-02],\n",
+-       "          [2.8052e-10, 9.9988e-01, 9.8185e-01,  ..., 6.9656e-01, 7.8207e-06,\n",
+-       "           1.2356e-12]], grad_fn=<SigmoidBackward0>),\n",
+-       "  tensor([[1.2667e-06, 1.0000e+00, 5.3233e-01,  ..., 2.9546e-02, 9.9960e-01,\n",
+-       "           1.1966e-03],\n",
+-       "          [1.0373e-02, 4.4727e-06, 8.8317e-01,  ..., 9.2014e-02, 3.6522e-02,\n",
+-       "           9.9811e-01],\n",
+-       "          [8.9633e-03, 3.2547e-02, 9.9197e-01,  ..., 1.0000e+00, 8.0552e-01,\n",
+-       "           3.7270e-01],\n",
+-       "          ...,\n",
+-       "          [3.0770e-05, 2.8392e-04, 1.8826e-05,  ..., 1.6740e-03, 3.2890e-01,\n",
+-       "           9.9843e-01],\n",
+-       "          [9.9877e-01, 8.6799e-01, 4.4030e-01,  ..., 9.8442e-04, 1.0801e-03,\n",
+-       "           8.3928e-01],\n",
+-       "          [9.9997e-01, 9.9997e-01, 9.8417e-01,  ..., 4.1351e-06, 9.9996e-01,\n",
+-       "           1.1719e-02]], grad_fn=<SigmoidBackward0>)])"
++       "True"
+       ]
+      },
+-     "execution_count": 13,
++     "execution_count": 33,
+      "metadata": {},
+      "output_type": "execute_result"
+     }
+    ],
+    "source": [
+-    "x = next(iter(dataMgr.train_loader))\n",
+-    "enc(x[0].to(dtype=torch.float32), x[1].to(dtype=torch.float32))"
++    "model.encoder.training"
+    ]
+   },
+   {
+    "cell_type": "code",
+    "execution_count": null,
+-   "id": "ad105471",
++   "id": "96dd860c",
+    "metadata": {},
+    "outputs": [],
+    "source": []
+diff --git a/scripts/run.py b/scripts/run.py
+index edf5d16..f74c4c6 100644
+--- a/scripts/run.py
++++ b/scripts/run.py
+@@ -45,7 +45,7 @@ from model.modelCreator import ModelCreator
+ # from engine.engine import Engine
+ # from models.modelCreator import ModelCreator
+ 
+-@hydra.main(config_path="../config", config_name="config")
++@hydra.main(config_path="../config", config_name="config", version_base=None)
+ def main(cfg=None):
+     mode = 'online' if cfg.wandb_enabled else 'disabled'
+     if cfg.load_state == 0:
