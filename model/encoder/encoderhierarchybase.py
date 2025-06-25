@@ -1,3 +1,10 @@
+"""
+This model is specifically tailored for Atlas Reg.
+
+Authors: The CaloQVAE
+Year: 2025
+"""
+
 import torch.nn as nn
 import torch
 from model.gumbel import GumbelMod

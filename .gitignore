@@ -1,5 +1,6 @@
 runJT.sh
 outputs/
+cfg_test.yaml
 
 # Byte-compiled / optimized / DLL files
 __pycache__/

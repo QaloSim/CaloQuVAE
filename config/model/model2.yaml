@@ -1,4 +1,6 @@
 model_name: autoencoderbase
+encoder: hierachicalencoder
+encoderblock: AtlasReg
 latent_nodes: 302
 latent_hierarchy_lvls: 4
-encoderblock: AtlasReg
+decoder: decoder
