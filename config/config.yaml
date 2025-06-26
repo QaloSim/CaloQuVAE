@@ -24,4 +24,5 @@ defaults:
   - wandb: ML2
   - model: model2
   - engine: engine1
+  - rbm: zephyr
   - _self_
