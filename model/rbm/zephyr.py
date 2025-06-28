@@ -12,14 +12,17 @@ import math
 
 import torch
 from torch import nn
+import os
+import pickle
 
 from CaloQVAE import logging
 logger = logging.getLogger(__name__)
 
 class ZephyrRBM(nn.Module):
-    def __init__(self, cfg=None):
+    def __init__(self, cfg=None, dummy=0):
         super(ZephyrRBM, self).__init__()
         self._config=cfg
+        self.dummy = dummy
 
         # RBM constants
         self._n_partitions = self._config.rbm.partitions
@@ -102,8 +105,7 @@ class ZephyrRBM(nn.Module):
             idx_dict[str(_idx)].append(self.coordinates_to_idx(q, self.m,self.t))
             
         for partition, idxs in idx_dict.items():
-            idx_dict[partition] = idx_dict[partition][:
-                self._nodes_per_partition]
+            idx_dict[partition] = idx_dict[partition][:self._nodes_per_partition]
             
         self.idx_dict = idx_dict
         # return idx_dict, self._qpu_sampler
@@ -122,7 +124,7 @@ class ZephyrRBM(nn.Module):
 
         for i, partition_a in enumerate(self.idx_dict.keys()):
             for qubit_a in self.idx_dict[partition_a]:
-                for qubit_b in self._qpu_sampler.adjacency[qubit_a]:
+                for qubit_b in self.adjacency[qubit_a]:
                     for partition_b in list(self.idx_dict.keys())[i:]:
                         if qubit_b in self.idx_dict[partition_b]:
                             weight_idx = partition_a + partition_b
@@ -134,16 +136,33 @@ class ZephyrRBM(nn.Module):
     def load_coordinates(self):
         try:
             self._qpu_sampler = DWaveSampler(solver={'topology__type': 'zephyr', 'chip_id':'Advantage2_system1.3'})
+            self.m, self.t = self._qpu_sampler.properties['topology']['shape']
+            graph = dnx.zephyr_graph(m=self.m, t=self.t,
+                                node_list=self._qpu_sampler.nodelist, edge_list=self._qpu_sampler.edgelist)
+            self.coordinated_graph = nx.relabel_nodes(
+                    graph,
+                    {q: dnx.zephyr_coordinates(self.m,self.t).linear_to_zephyr(q)
+                    for q in graph.nodes})
+            self.adjacency = self._qpu_sampler.adjacency
         except:
-            self._qpu_sampler = DWaveSampler(solver={'topology__type': 'pegasus', 'chip_id':'Advantage_system6.4'})
-            logger.warn("Switching to Pegasus.")
-        self.m, self.t = self._qpu_sampler.properties['topology']['shape']
-        graph = dnx.zephyr_graph(m=self.m, t=self.t,
-                             node_list=self._qpu_sampler.nodelist, edge_list=self._qpu_sampler.edgelist)
-        self.coordinated_graph = nx.relabel_nodes(
-                graph,
-                {q: dnx.zephyr_coordinates(self.m,self.t).linear_to_zephyr(q)
-                 for q in graph.nodes})
+            logger.warn("QPU is offline. Setting a hard-coded zephyr. " \
+                    "Check to see you're pinging the correct chip_id"
+                    )
+            self.m, self.t = 12,4
+            print(os.getcwd())
+            with open(os.getcwd() + '/model/rbm/nodelist.pickle', 'rb') as handle:
+                self.nodelist = pickle.load(handle)
+            with open(os.getcwd() + '/model/rbm/edgelist.pickle', 'rb') as handle:
+                self.edgelist = pickle.load(handle)
+            with open(os.getcwd() + '/model/rbm/adjacency.pickle', 'rb') as handle:
+                self.adjacency = pickle.load(handle)
+            graph = dnx.zephyr_graph(m=self.m, t=self.t,
+                                node_list=self.nodelist, edge_list=self.edgelist)
+            self.coordinated_graph = nx.relabel_nodes(
+                    graph,
+                    {q: dnx.zephyr_coordinates(self.m,self.t).linear_to_zephyr(q)
+                    for q in graph.nodes})
+            
         
     def coordinates_to_idx(self, q, m, t):
         return q[4] + m*(q[3] + 2*(q[2] + t*(q[1]+(2*m+1)*q[0])))
