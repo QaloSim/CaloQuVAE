@@ -3,7 +3,7 @@ import h5py
 import numpy as np
 from torch.utils.data import DataLoader, Dataset
 
-from CaloQVAE import logging
+from CaloQuVAE import logging
 logger = logging.getLogger(__name__)
 
 class CaloDataset(Dataset):
