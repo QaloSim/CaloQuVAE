@@ -12,7 +12,8 @@ from torch.nn.functional import binary_cross_entropy_with_logits
 from model.gumbel import GumbelMod
 from model.encoder.encoderhierarchybase import HierarchicalEncoder
 from model.decoder.decoder import Decoder
-from model.rbm.zephyr import ZephyrRBM
+# from model.rbm.zephyr import ZephyrRBM
+from model.rbm.rbm import RBM
 
 #logging module with handmade settings.
 from CaloQVAE import logging
@@ -49,23 +50,13 @@ class AutoEncoderBase(nn.Module):
         
     def _create_prior(self):
         logger.debug("::_create_prior")
-        return ZephyrRBM(self._config)
-
-    def _create_sampler(self):
-        """
-            Define the sampler to be used for sampling from the RBM.
-
-        Returns:
-            Instance of baseSampler.
-        """
-        raise NotImplementedError
+        return RBM(self._config)
     
     def create_networks(self):
         logger.debug("Creating Network Structures")
         self.encoder=self._create_encoder()
         self.decoder=self._create_decoder()
         self.prior=self._create_prior()
-        # self.sampler = self._create_sampler()
         # self.stater = self._create_stat()
         
         # self._qpu_sampler = self.prior._qpu_sampler
