@@ -19,10 +19,9 @@ from CaloQVAE import logging
 logger = logging.getLogger(__name__)
 
 class ZephyrRBM(nn.Module):
-    def __init__(self, cfg=None, dummy=0):
+    def __init__(self, cfg=None):
         super(ZephyrRBM, self).__init__()
         self._config=cfg
-        self.dummy = dummy
 
         # RBM constants
         self._n_partitions = self._config.rbm.partitions

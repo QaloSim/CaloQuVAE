@@ -12,6 +12,7 @@ from torch.nn.functional import binary_cross_entropy_with_logits
 from model.gumbel import GumbelMod
 from model.encoder.encoderhierarchybase import HierarchicalEncoder
 from model.decoder.decoder import Decoder
+from model.rbm.zephyr import ZephyrRBM
 
 #logging module with handmade settings.
 from CaloQVAE import logging
@@ -45,6 +46,10 @@ class AutoEncoderBase(nn.Module):
         logger.debug("::_create_decoder")
         if self._config.model.decoder == "decoder":
             return Decoder(self._config)
+        
+    def _create_prior(self):
+        logger.debug("::_create_prior")
+        return ZephyrRBM(self._config)
 
     def _create_sampler(self):
         """
@@ -59,7 +64,7 @@ class AutoEncoderBase(nn.Module):
         logger.debug("Creating Network Structures")
         self.encoder=self._create_encoder()
         self.decoder=self._create_decoder()
-        # self.prior=self._create_prior()
+        self.prior=self._create_prior()
         # self.sampler = self._create_sampler()
         # self.stater = self._create_stat()
         
