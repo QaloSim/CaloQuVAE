@@ -5,6 +5,7 @@ Zephyr/Advantage2 QPU topology
 import dwave_networkx as dnx
 import networkx as nx
 from dwave.system import DWaveSampler
+import random
 # from hybrid.decomposers import _chimeralike_to_zephyr
 
 import itertools
@@ -89,25 +90,42 @@ class ZephyrRBM(nn.Module):
     def gen_qubit_idx_dict(self):
         """Partition the qubits on the device into 4-partite BM
 
+        Uses a Greedy Edge Addition strategy to optimize connectivity
+
         :return: dict with partition no.s as str keys ('0', '1', ...)
                  and list of qubit idxs for each partition as values
         """
         self.load_coordinates()
 
-        # Initialize the dict to be returned
-        idx_dict = {}
-        for partition in range(self._n_partitions):
-            idx_dict[str(partition)] = []
-
+        # Maps qubit coordinates to partition idxs
+        qubit_to_partition_map = {}
         for q in self.coordinated_graph.nodes:
-            _idx = (2*q[0]+q[1] + 2*q[4]+q[3])%4
-            idx_dict[str(_idx)].append(self.coordinates_to_idx(q, self.m,self.t))
-            
-        for partition, idxs in idx_dict.items():
-            idx_dict[partition] = idx_dict[partition][:self._nodes_per_partition]
-            
-        self.idx_dict = idx_dict
-        # return idx_dict, self._qpu_sampler
+            partition_idx = str((2*q[0] + q[1] + 2*q[4] + q[3]) % 4)
+            qubit_idx = self.coordinates_to_idx(q, self.m, self.t)
+            qubit_to_partition_map[qubit_idx] = partition_idx
+        
+        # Create list of cross-partition edges
+        cross_partition_edges = []
+        for u, v in self._qpu_sampler.edgelist:
+            if u in qubit_to_partition_map and v in qubit_to_partition_map:
+                if qubit_to_partition_map[u] != qubit_to_partition_map[v]:
+                    cross_partition_edges.append((u, v))
+        random.shuffle(cross_partition_edges)
+
+        # Greedy Edge Addition
+        selected_qubits_sets = {str(i): set() for i in range(self._n_partitions)}
+
+        for u, v in cross_partition_edges:
+            p_u = qubit_to_partition_map[u]
+            p_v = qubit_to_partition_map[v]
+
+            if len(selected_qubits_sets[p_u]) < self._nodes_per_partition and len(selected_qubits_sets[p_v]) < self._nodes_per_partition:
+                selected_qubits_sets[p_u].add(u)
+                selected_qubits_sets[p_v].add(v)
+        
+        # Convert sets to lists and create idx_dict
+        self.idx_dict = {p_idx: sorted(list(qubits)) for p_idx, qubits in selected_qubits_sets.items()}
+
 
     def gen_weight_mask_dict(self):
         """Generate the weight mask for each partition-pair
