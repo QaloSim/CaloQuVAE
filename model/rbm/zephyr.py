@@ -1,6 +1,18 @@
 """
 PyTorch implementation of a quadripartite Boltzmann machine with a 
-Zephyr/Advantage2 QPU topology
+Zephyr/Advantage2 QPU topology.
+
+This module defines the ZephyrRBM class, which implements a Restricted Boltzmann Machine (RBM)
+with a topology inspired by the D-Wave Zephyr architecture. The RBM is partitioned into multiple
+groups, and the connectivity between partitions is determined by the Zephyr topology or set to fully
+connected, depending on configuration.
+
+Classes:
+    ZephyrRBM: Main class implementing the Zephyr topology RBM.
+
+Typical usage example:
+    config = ...  # Load or define your configuration object
+    rbm = ZephyrRBM(config)
 """
 import dwave_networkx as dnx
 import networkx as nx
