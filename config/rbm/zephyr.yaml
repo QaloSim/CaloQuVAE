@@ -17,3 +17,4 @@ b_std:
   - 0.01
   - 0.01
   - 0.01
+optimize_partition: 0

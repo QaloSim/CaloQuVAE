@@ -61,6 +61,7 @@ def main(cfg=None):
     #cfg_load = OmegaConf.load("/home/jtoledo/CaloQuVAE/cfg_test.yaml")
     
     engine = setup_model(config=cfg)
+    run(engine)
 
 def set_device(config=None):
     if (config.device == 'gpu') and config.gpu_list:
@@ -159,7 +160,17 @@ def setup_model(config=None):
     return engine
 
 def run(engine):
-    return 0
+    for epoch in range(1):
+        engine.model.train()
+        engine.fit(epoch=epoch)
+
+        # if "validate" in engine._config.task:
+        #     engine.model.eval()
+        #     with torch.no_grad():
+        #         engine.fit(epoch=epoch, is_training=False, mode="validate")
+        
+        # if epoch % 10 == 0:
+        #     engine._save_model(name=str(epoch))
 
 #     for epoch in range(1+_epoch, _epoch+config.engine.n_epochs+1):
 #         if config.freeze_vae and dummy_variable == 0:
