@@ -110,7 +110,7 @@ class Engine():
             loss_dict["loss"].backward()
             self.optimiser.step()
 
-            if (i % log_batch_idx) == 0:
+            if (i % log_batch_idx) == 0 and self._config.wandb.watch:
                     logger.info('Epoch: {} [{}/{} ({:.0f}%)]\t Batch Loss: {:.4f}'.format(epoch,
                         i, len(self.data_mgr.train_loader),100.*i/len(self.data_mgr.train_loader),
                         loss_dict["loss"]))
@@ -127,14 +127,14 @@ class Engine():
             ar_input_size = self._config.data.z * self._config.data.r * self._config.data.phi
             ar_latent_size = self._config.rbm.latent_nodes_per_p
             
-            incident_energy = torch.zeros((ar_size, 1), dtype=torch.float32)
-            showers = torch.zeros((ar_size, ar_input_size), dtype=torch.float32)
-            showers_reduce = torch.zeros((ar_size, ar_input_size), dtype=torch.float32)
-            showers_recon = torch.zeros((ar_size, ar_input_size), dtype=torch.float32)
-            showers_reduce_recon = torch.zeros((ar_size, ar_input_size), dtype=torch.float32)
-            post_samples = torch.zeros((ar_size, ar_latent_size * 4), dtype=torch.float32)
-            post_logits = torch.zeros((ar_size, ar_latent_size * 3), dtype=torch.float32)
-            prior_samples = torch.zeros((ar_size, ar_latent_size * 4), dtype=torch.float32)
+            self.incident_energy = torch.zeros((ar_size, 1), dtype=torch.float32)
+            self.showers = torch.zeros((ar_size, ar_input_size), dtype=torch.float32)
+            self.showers_reduce = torch.zeros((ar_size, ar_input_size), dtype=torch.float32)
+            self.showers_recon = torch.zeros((ar_size, ar_input_size), dtype=torch.float32)
+            self.showers_reduce_recon = torch.zeros((ar_size, ar_input_size), dtype=torch.float32)
+            self.post_samples = torch.zeros((ar_size, ar_latent_size * 4), dtype=torch.float32)
+            self.post_logits = torch.zeros((ar_size, ar_latent_size * 3), dtype=torch.float32)
+            self.prior_samples = torch.zeros((ar_size, ar_latent_size * 4), dtype=torch.float32)
 
             for i, (x, x0) in enumerate(data_loader):
                 x = x.to(self.device).to(dtype=torch.float32)
@@ -148,16 +148,16 @@ class Engine():
                     loss_dict["kl_loss"] + loss_dict["hit_loss"]
                 
                 idx1, idx2 = int(np.sum(bs[:i])), int(np.sum(bs[:i+1]))
-                incident_energy[idx1:idx2,:] = x0.cpu()
-                showers[idx1:idx2,:] = x.cpu()
-                showers_reduce[idx1:idx2,:] = x_reduce.cpu()
-                showers_recon[idx1:idx2,:] = self._reduceinv(output[3], x0).cpu()
-                showers_reduce_recon[idx1:idx2,:] = output[3].cpu()
-                post_samples[idx1:idx2,:] = torch.cat(output[2],dim=1).cpu()
-                post_logits[idx1:idx2,:] = torch.cat(output[1],dim=1).cpu()
-                prior_samples[idx1:idx2,:] = torch.cat(self.model.prior.block_gibbs_sampling_cond(p0 = output[2][0]),dim=1).cpu()
+                self.incident_energy[idx1:idx2,:] = x0.cpu()
+                self.showers[idx1:idx2,:] = x.cpu()
+                self.showers_reduce[idx1:idx2,:] = x_reduce.cpu()
+                self.showers_recon[idx1:idx2,:] = self._reduceinv(output[3], x0).cpu()
+                self.showers_reduce_recon[idx1:idx2,:] = output[3].cpu()
+                self.post_samples[idx1:idx2,:] = torch.cat(output[2],dim=1).cpu()
+                self.post_logits[idx1:idx2,:] = torch.cat(output[1],dim=1).cpu()
+                self.prior_samples[idx1:idx2,:] = torch.cat(self.model.prior.block_gibbs_sampling_cond(p0 = output[2][0]),dim=1).cpu()
 
-                if (i % log_batch_idx) == 0:
+                if (i % log_batch_idx) == 0 and self._config.wandb.watch:
                         logger.info('Epoch: {} [{}/{} ({:.0f}%)]\t Batch Loss: {:.4f}'.format(epoch,
                             i, len(data_loader),100.*i/len(data_loader),
                             loss_dict["loss"]))
