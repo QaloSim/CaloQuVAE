@@ -3,6 +3,7 @@ Base Class of Engines. Defines properties and methods.
 """
 
 import torch
+import numpy as np
 
 # Weights and Biases
 import wandb
@@ -99,9 +100,10 @@ class Engine():
 
     def fit(self, epoch):
         log_batch_idx = max(len(self.data_mgr.train_loader)//self._config.engine.n_batches_log_train, 1)
+        self.model.train()
         for i, (x, x0) in enumerate(self.data_mgr.train_loader):
-            x = x.to(self.device, dtype=torch.float)
-            x0 = x0.to(self.device, dtype=torch.float)
+            x = x.to(self.device).to(dtype=torch.float32)
+            x0 = x0.to(self.device).to(dtype=torch.float32)
             x = self._reduce(x, x0)
             # Forward pass
             output = self.model((x, x0))
@@ -114,7 +116,7 @@ class Engine():
             loss_dict["loss"].backward()
             self.optimiser.step()
 
-            if (i % log_batch_idx) == 0:
+            if (i % log_batch_idx) == 0 and self._config.wandb.watch:
                     logger.info('Epoch: {} [{}/{} ({:.0f}%)]\t Batch Loss: {:.4f}'.format(epoch,
                         i, len(self.data_mgr.train_loader),100.*i/len(self.data_mgr.train_loader),
                         loss_dict["loss"]))
@@ -303,6 +305,10 @@ class Engine():
     def model_creator(self, model_creator):
         assert model_creator is not None
         self._model_creator = model_creator
+
+    def _save_model(self, name="blank"):
+        config_string = "_".join(str(i) for i in [self._config.model.model_name,f'{name}'])
+        self._model_creator.save_state(config_string)
 
     def _reduce(self, in_data, true_energy, R=1e-7):
         """

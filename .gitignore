@@ -2,6 +2,8 @@ runJT.sh
 outputs/
 cfg_test.yaml
 wandb/
+outputs_sym/
+outputs_sym
 
 # Byte-compiled / optimized / DLL files
 __pycache__/

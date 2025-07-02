@@ -11,6 +11,8 @@ import os
 import torch
 import wandb
 
+from omegaconf import OmegaConf
+
 from CaloQVAE import logging
 logger = logging.getLogger(__name__)
 
@@ -55,6 +57,12 @@ class ModelCreator():
         
         # Save the model parameter dict
         torch.save(state_dict, path)
+
+        #save config
+        config_path = os.path.join(wandb.run.dir, "{0}_config.yaml".format(cfg_string))
+        self._config.run_path = path
+        self._config.config_path = config_path
+        OmegaConf.save(self._config, config_path, resolve=True )
         
     def save_RBM_state(self, cfg_string='test', encoded_data_energy=None):
         logger.info("Saving RBM state")
