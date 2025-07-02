@@ -12,7 +12,7 @@ wandb_enabled: 1
 
 device: gpu
 gpu_list:
-  - 2
+  - 1
 
 task:
   - train

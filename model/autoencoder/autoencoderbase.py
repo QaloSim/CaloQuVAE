@@ -101,8 +101,8 @@ class AutoEncoderBase(nn.Module):
         logger.debug("loss")
         beta, post_logits, post_samples, output_activations, output_hits = args
 
-        # kl_loss, entropy, pos_energy, neg_energy = self.kl_divergence(post_logits, post_samples)
-        kl_loss, entropy, pos_energy, neg_energy = 0,0,0,0
+        kl_loss, entropy, pos_energy, neg_energy = self.kl_divergence(post_logits, post_samples)
+        # kl_loss, entropy, pos_energy, neg_energy = 0,0,0,0
         
         ae_loss = torch.pow((input_data - output_activations),2) * torch.exp(self._config.model.mse_weight*input_data)
         ae_loss = torch.mean(torch.sum(ae_loss, dim=1), dim=0) * self._config.model.coefficient
@@ -113,38 +113,37 @@ class AutoEncoderBase(nn.Module):
         return {"ae_loss":ae_loss, "kl_loss":kl_loss, "hit_loss":hit_loss,
                 "entropy":entropy, "pos_energy":pos_energy, "neg_energy":neg_energy}
     
-    # def kl_divergence(self, post_logits, post_samples, is_training=True):
-    #     """Overrides kl_divergence in GumBolt.py
+    def kl_divergence(self, post_logits, post_samples, is_training=True):
+        """Overrides kl_divergence in GumBolt.py
 
-    #     :param post_logits (list) : List of f(logit_i|x, e) for each hierarchy
-    #                                 layer i. Each element is a tensor of size
-    #                                 (batch_size * n_nodes_per_hierarchy_layer)
-    #     :param post_zetas (list) : List of q(zeta_i|x, e) for each hierarchy
-    #                                layer i. Each element is a tensor of size
-    #                                (batch_size * n_nodes_per_hierarchy_layer)
-    #     """
-    #     # Concatenate all hierarchy levels
-    #     # logits_q_z = torch.cat(post_logits, 1)
-    #     # post_zetas = torch.cat(post_samples, 1)
+        :param post_logits (list) : List of f(logit_i|x, e) for each hierarchy
+                                    layer i. Each element is a tensor of size
+                                    (batch_size * n_nodes_per_hierarchy_layer)
+        :param post_zetas (list) : List of q(zeta_i|x, e) for each hierarchy
+                                   layer i. Each element is a tensor of size
+                                   (batch_size * n_nodes_per_hierarchy_layer)
+        """
+        # Concatenate all hierarchy levels
+        # logits_q_z = torch.cat(post_logits, 1)
+        # post_zetas = torch.cat(post_samples, 1)
 
-    #     # Compute cross-entropy b/w post_logits and post_samples
-    #     entropy = - self._bce_loss(torch.cat(post_logits, 1), torch.cat(post_samples, 1)[:,self._config.model.n_latent_nodes:])
-    #     entropy = torch.mean(torch.sum(entropy, dim=1), dim=0)
+        # Compute cross-entropy b/w post_logits and post_samples
+        entropy = - self._bce_loss(torch.cat(post_logits, 1), torch.cat(post_samples, 1)[:,self._config.rbm.latent_nodes_per_p:])
+        entropy = torch.mean(torch.sum(entropy, dim=1), dim=0)
 
-    #     # Compute positive phase (energy expval under posterior variables) 
-    #     n_nodes_p = self.prior.nodes_per_partition
-    #     pos_energy = self.energy_exp_cond(post_zetas[0],post_zetas[1],post_zetas[2],post_zetas[3])
+        # Compute positive phase (energy expval under posterior variables) 
+        pos_energy = self.prior.energy_exp_cond(post_samples[0],post_samples[1],post_samples[2],post_samples[3])
 
-    #     # Compute gradient computation of the logZ term
-    #     p0_state, p1_state, p2_state, p3_state \
-    #         = self.sampler.block_gibbs_sampling_cond(post_zetas[0],post_zetas[1],post_zetas[2],post_zetas[3], method=self._config.model.rbmMethod)
+        # Compute gradient computation of the logZ term
+        p0_state, p1_state, p2_state, p3_state \
+            = self.prior.block_gibbs_sampling_cond(post_samples[0],post_samples[1],post_samples[2],post_samples[3])
         
-    #     # neg_energy = - self.energy_exp(p0_state, p1_state, p2_state, p3_state)
-    #     neg_energy = - self.energy_exp_cond(p0_state, p1_state, p2_state, p3_state)
+        # neg_energy = - self.energy_exp(p0_state, p1_state, p2_state, p3_state)
+        neg_energy = - self.prior.energy_exp_cond(p0_state, p1_state, p2_state, p3_state)
 
-    #     # Estimate of the kl-divergence
-    #     kl_loss = entropy + pos_energy + neg_energy
-    #     return kl_loss, entropy, pos_energy, neg_energy
+        # Estimate of the kl-divergence
+        kl_loss = entropy + pos_energy + neg_energy
+        return kl_loss, entropy, pos_energy, neg_energy
 
     def print_model_info(self):
         for key,par in self.__dict__.items():

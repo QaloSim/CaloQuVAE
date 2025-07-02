@@ -183,3 +183,40 @@ class RBM(ZephyrRBM):
             for j in [0,1,2,3]:
                 if j > i:
                     self.weight_dict[str(i)+str(j)] = self.weight_dict[str(i)+str(j)] + self._config.rbm.lr * self.grad["weight"][str(i)+str(j)]
+
+    def energy_exp_cond(self, p0, p1, p2, p3):
+        """Energy expectation value under the 4-partite BM
+        :return energy expectation value over the current batch
+        """
+
+        # Compute the energies for batch samples
+        batch_energy = (- (p0 @ self.weight_dict["01"] @ p1.T).diagonal() - \
+                (p0 @ self.weight_dict["02"] @ p2.T).diagonal() - \
+                (p0 @ self.weight_dict["03"] @ p3.T).diagonal() - \
+                (p1 @ self.weight_dict["12"] @ p2.T).diagonal() - \
+                (p1 @ self.weight_dict["13"] @ p3.T).diagonal() - \
+                (p2 @ self.weight_dict["23"] @ p3.T).diagonal() - \
+                p1 @ self.bias_dict["1"] - \
+                p2 @ self.bias_dict["2"] - \
+                p3 @ self.bias_dict["3"]).mean()
+
+        return batch_energy
+    
+    def energy_exp(self, p0, p1, p2, p3):
+        """Energy expectation value under the 4-partite BM
+        :return energy expectation value over the current batch
+        """
+
+        # Compute the energies for batch samples
+        batch_energy = (- (p0 @ self.weight_dict["01"] @ p1.T).diagonal() - \
+                (p0 @ self.weight_dict["02"] @ p2.T).diagonal() - \
+                (p0 @ self.weight_dict["03"] @ p3.T).diagonal() - \
+                (p1 @ self.weight_dict["12"] @ p2.T).diagonal() - \
+                (p1 @ self.weight_dict["13"] @ p3.T).diagonal() - \
+                (p2 @ self.weight_dict["23"] @ p3.T).diagonal() - \
+                p0 @ self.bias_dict["0"] - \
+                p1 @ self.bias_dict["1"] - \
+                p2 @ self.bias_dict["2"] - \
+                p3 @ self.bias_dict["3"]).mean()
+
+        return batch_energy
