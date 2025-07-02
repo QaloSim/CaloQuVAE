@@ -12,7 +12,7 @@ wandb_enabled: 1
 
 device: gpu
 gpu_list:
-  - 2
+  - 1
 
 task:
   - train
@@ -23,4 +23,6 @@ defaults:
   - data: AtlasReg030
   - wandb: ML2
   - model: model2
+  - engine: engine1
+  - rbm: zephyr
   - _self_

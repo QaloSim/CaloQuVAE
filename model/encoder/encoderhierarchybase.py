@@ -1,3 +1,10 @@
+"""
+This model is specifically tailored for Atlas Reg.
+
+Authors: The CaloQVAE
+Year: 2025
+"""
+
 import torch.nn as nn
 import torch
 from model.gumbel import GumbelMod
@@ -16,7 +23,7 @@ class HierarchicalEncoder(nn.Module):
 
         self._networks=nn.ModuleList([])
         
-        for lvl in range(self.n_latent_hierarchy_lvls):
+        for lvl in range(self.n_latent_hierarchy_lvls-1):
             network=self._create_hierarchy_network(level=lvl)
             self._networks.append(network)
 
@@ -25,7 +32,7 @@ class HierarchicalEncoder(nn.Module):
         if self._config.model.encoderblock == "AtlasReg":
             return EncoderBlockPBH3Dv3Reg(self._config)
 
-    def forward(self, x, x0, is_training=True, beta_smoothing_fct=5):
+    def forward(self, x, x0, beta_smoothing_fct=5):
         """ This function defines a hierarchical approximate posterior distribution. The length of the output is equal 
             to n_latent_hierarchy_lvls and each element in the list is a DistUtil object containing posterior distribution 
             for the group of latent nodes in each hierarchy level. 
@@ -44,7 +51,7 @@ class HierarchicalEncoder(nn.Module):
         
         post_samples.append(self.binary_energy(x0))
         
-        for lvl in range(self.n_latent_hierarchy_lvls):
+        for lvl in range(self.n_latent_hierarchy_lvls-1):
             
             current_net=self._networks[lvl]
             current_input = x
@@ -58,7 +65,7 @@ class HierarchicalEncoder(nn.Module):
                                 dtype=torch.float, device=logits.device,
                                 requires_grad=False)
 
-            samples=self.smoothing_dist_mod(logits, beta, is_training)
+            samples=self.smoothing_dist_mod(logits, beta)
 
             post_samples.append(samples)
               
@@ -66,7 +73,7 @@ class HierarchicalEncoder(nn.Module):
     
     def binary(self, x, bits):
         mask = 2**torch.arange(bits).to(x.device, x.dtype)
-        return x.bitwise_and(mask).ne(0).byte()
+        return x.bitwise_and(mask).ne(0).byte().to(dtype=torch.float)
     
     def binary_energy(self, x, lin_bits=20, sqrt_bits=20, log_bits=20):
         reps = int(np.floor(self.n_latent_nodes/(lin_bits+sqrt_bits+log_bits)))

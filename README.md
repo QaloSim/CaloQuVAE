@@ -1,5 +1,12 @@
 # Calo4pQVAE
 
+## ToDo
+- For datasets, the plan is to have 1 config file per dataset.
+- For architectures, the plan is to make it more horizontal, allowing us to combine different architectures easier. One .py file per model (encoder/decoder).
+- Also we want to add the feature where when one loads a model, it loads the corresponding config of the model. So no need to match the config with the loaded model.
+- Also fix the RBM issue when increasing size.
+- Also figure out what we wanna plot, and make it easier to turn off/on certain plots
+
 ## A Quantum-assisted Deep Generative Particle-Calorimeter Surrogate
 ![](https://github.com/QaloSim/CaloQuVAE/blob/main/infographic.png)
 
