@@ -1,5 +1,7 @@
 path: /fast_scratch_1/caloqvae/data/atlas_regular_cat/dataset_eta_085_positive_cat_clean.hdf5
 
+binning_path: /fast_scratch_1/caloqvae/data/atlas_regular/dataset_eta_085_positive.hdf5
+
 z: 13
 r: 24
 phi: 14
