@@ -14,9 +14,9 @@ class Decoder(nn.Module):
         super(Decoder, self).__init__()
         self._config = cfg
 
-        self.n_latent_hierarchy_lvls=self._config.model.latent_hierarchy_lvls
+        self.n_latent_hierarchy_lvls=self._config.rbm.partitions
 
-        self.n_latent_nodes=self._config.model.latent_nodes * self._config.model.latent_hierarchy_lvls
+        self.n_latent_nodes=self._config.rbm.latent_nodes_per_p * self._config.rbm.partitions
 
         self.z = self._config.data.z
         self.r = self._config.data.r

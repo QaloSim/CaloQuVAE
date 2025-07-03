@@ -12,7 +12,7 @@ from torch.nn.functional import binary_cross_entropy_with_logits
 from model.gumbel import GumbelMod
 from model.encoder.encoderhierarchybase import HierarchicalEncoder
 from model.decoder.decoder import Decoder
-# from model.rbm.zephyr import ZephyrRBM
+from model.decoder.decoderhierarchybase import DecoderHierarchyBase
 from model.rbm.rbm import RBM
 
 #logging module with handmade settings.
@@ -47,6 +47,8 @@ class AutoEncoderBase(nn.Module):
         logger.debug("::_create_decoder")
         if self._config.model.decoder == "decoder":
             return Decoder(self._config)
+        elif self._config.model.decoder == "hierachicaldecoder":
+            return DecoderHierarchyBase(self._config)
         
     def _create_prior(self):
         logger.debug("::_create_prior")
@@ -82,6 +84,12 @@ class AutoEncoderBase(nn.Module):
         x, x0 = xx
         
         beta, post_logits, post_samples = self.encoder(x, x0, beta_smoothing_fct)
+
+        output_hits, output_activations = self.decode(post_samples, x, x0, beta, act_fct_slope)
+
+        return beta, post_logits, post_samples, output_activations, output_hits
+
+    def decode(self, post_samples, x, x0, beta=5, act_fct_slope=0.02):
         
         output_hits, output_activations = self.decoder(torch.cat(post_samples,1), x0)
 
@@ -92,7 +100,7 @@ class AutoEncoderBase(nn.Module):
         else:
             output_activations = self._activation_fct(0.0)(output_activations) * self._hit_smoothing_dist_mod(output_hits, beta)
        
-        return beta, post_logits, post_samples, output_activations, output_hits
+        return output_hits, output_activations
     
     def loss(self, input_data, args):
         """

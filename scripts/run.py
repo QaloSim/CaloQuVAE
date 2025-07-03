@@ -52,10 +52,10 @@ def main(cfg=None):
         cfg = OmegaConf.load(cfg.config_path)
         os.environ["WANDB_DIR"] = cfg.run_path.split("wandb")[0]
         iden = get_project_id(cfg.run_path)
-        wandb.init(project=cfg.wandb.project, entity=cfg.wandb.entity, config=OmegaConf.to_container(cfg, resolve=True), mode=mode,
+        wandb.init(tags = [cfg.data.dataset_name], project=cfg.wandb.project, entity=cfg.wandb.entity, config=OmegaConf.to_container(cfg, resolve=True), mode=mode,
                 resume='allow', id=iden)
     else:
-        wandb.init(project=cfg.wandb.project, entity=cfg.wandb.entity, config=OmegaConf.to_container(cfg, resolve=True), mode=mode)
+        wandb.init(tags = [cfg.data.dataset_name], project=cfg.wandb.project, entity=cfg.wandb.entity, config=OmegaConf.to_container(cfg, resolve=True), mode=mode)
     print(OmegaConf.to_yaml(cfg, resolve=True))
     #Save and load config file
     #OmegaConf.save(config, "/home/jtoledo/CaloQuVAE/cfg_test.yaml", resolve=True )
