@@ -20,8 +20,8 @@ def plot_calorimeter_shower(cfg, showers, showers_recon, incident_energy, epoch=
     input_path = f"{save_dir}/val_input_epoch{epoch}.png" if save_dir else None
     recon_path = f"{save_dir}/val_recon_epoch{epoch}.png" if save_dir else None
 
-    # auto save if filename is given
-    HLF.DrawSingleShower(real, title=f"Val Input (Epoch {epoch})", filename=input_path)
-    HLF.DrawSingleShower(recon, title=f"Val Recon (Epoch {epoch})", filename=recon_path)
+    # images
+    image_input = HLF.DrawSingleShower(real, title=f"Val Input (Epoch {epoch})", filename=input_path)
+    image_recon = HLF.DrawSingleShower(recon, title=f"Val Recon (Epoch {epoch})", filename=recon_path)
 
-    return input_path, recon_path
+    return image_input, image_recon
