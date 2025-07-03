@@ -8,9 +8,8 @@ import numpy as np
 # Weights and Biases
 import wandb
 
-# Plotting libraries
-import matplotlib.pyplot as plt
-import numpy as np
+# Plotting
+from utils.plots import vae_plots
 
 from collections import defaultdict
 
@@ -125,175 +124,62 @@ class Engine():
             
 
     
-    def evaluate(self):
+    def evaluate(self, data_loader, epoch):
+        log_batch_idx = max(len(data_loader)//self._config.engine.n_batches_log_val, 1)
         self.model.eval()
-
-        incident_energies = []
-        target_showers = []
-        recon_showers = []
-
-        # Initialize loss accumulators
-        total_loss = defaultdict(float)
-        total_samples = 0
-
-
         with torch.no_grad():
-            for x, x0 in self.data_mgr.val_loader:
-                x = x.to(self.device, dtype=torch.float)
-                x0 = x0.to(self.device, dtype=torch.float)
-                x_reduced = self._reduce(x, x0)
+            bs = [batch[0].shape[0] for batch in data_loader]
+            ar_size = np.sum(bs)
+            ar_input_size = self._config.data.z * self._config.data.r * self._config.data.phi
+            ar_latent_size = self._config.rbm.latent_nodes_per_p
+            
+            self.incident_energy = torch.zeros((ar_size, 1), dtype=torch.float32)
+            self.showers = torch.zeros((ar_size, ar_input_size), dtype=torch.float32)
+            self.showers_reduce = torch.zeros((ar_size, ar_input_size), dtype=torch.float32)
+            self.showers_recon = torch.zeros((ar_size, ar_input_size), dtype=torch.float32)
+            self.showers_reduce_recon = torch.zeros((ar_size, ar_input_size), dtype=torch.float32)
+            self.post_samples = torch.zeros((ar_size, ar_latent_size * 4), dtype=torch.float32)
+            self.post_logits = torch.zeros((ar_size, ar_latent_size * 3), dtype=torch.float32)
+            self.prior_samples = torch.zeros((ar_size, ar_latent_size * 4), dtype=torch.float32)
 
-                output = self.model((x_reduced, x0))
-                beta, post_logits, post_samples, output_activations, output_hits = output
-
+            for i, (x, x0) in enumerate(data_loader):
+                x = x.to(self.device).to(dtype=torch.float32)
+                x0 = x0.to(self.device).to(dtype=torch.float32)
+                x_reduce = self._reduce(x, x0)
+                # Forward pass
+                output = self.model((x_reduce, x0))
                 # Compute loss
-                loss_dict = self.model.loss(x_reduced, output)
-                batch_size = x.size(0)
-                for key in loss_dict:
-                    total_loss[key] += loss_dict[key].item() * batch_size
-                total_samples += batch_size
+                loss_dict = self.model.loss(x_reduce, output)
+                loss_dict["loss"] = loss_dict["ae_loss"] + \
+                    loss_dict["kl_loss"] + loss_dict["hit_loss"]
+                
+                idx1, idx2 = int(np.sum(bs[:i])), int(np.sum(bs[:i+1]))
+                self.incident_energy[idx1:idx2,:] = x0.cpu()
+                self.showers[idx1:idx2,:] = x.cpu()
+                self.showers_reduce[idx1:idx2,:] = x_reduce.cpu()
+                self.showers_recon[idx1:idx2,:] = self._reduceinv(output[3], x0).cpu()
+                self.showers_reduce_recon[idx1:idx2,:] = output[3].cpu()
+                self.post_samples[idx1:idx2,:] = torch.cat(output[2],dim=1).cpu()
+                self.post_logits[idx1:idx2,:] = torch.cat(output[1],dim=1).cpu()
+                self.prior_samples[idx1:idx2,:] = torch.cat(self.model.prior.block_gibbs_sampling_cond(p0 = output[2][0]),dim=1).cpu()
 
-                x_recon = self._reduceinv(output_activations, x0)
-                incident_energies.append(x0)
-                target_showers.append(x)
-                recon_showers.append(x_recon)
-        # Average the losses
-        total_loss["loss"] = sum([total_loss[key] for key in total_loss.keys() if key != "loss"])
-        for key in total_loss:
-            total_loss[key] /= total_samples
-        val_loss_dict = {f"val_{key}": value for key, value in total_loss.items()}
-        wandb.log(val_loss_dict)
-        logger.info(f"Validation Loss: {val_loss_dict["val_loss"]:.4f}")
-
-
-        incident_energies = torch.cat(incident_energies, dim=0)
-        target_showers = torch.cat(target_showers, dim=0)
-        recon_showers = torch.cat(recon_showers, dim=0)
-        self._log_vae_plots(incident_energies, target_showers, recon_showers)
-    
-    def _plot_histograms(self, ax, target, recon, xlabel, ylabel, title, bins=30, log_scale=True):
-        max_value = max(target.max(), recon.max())
-        min_value = min(target.min(), recon.min())
-        binning = np.arange(min_value, max_value, (max_value - min_value) / bins)
-        ax.hist(target, histtype="stepfilled", bins=binning, density=True, alpha=0.7, label='Target', color='b', linewidth=2.5)
-        ax.hist(recon, histtype="step", bins=binning, density=True, label='Reconstructed', color='c', linewidth=2.5)
-        ax.set_xlabel(xlabel)
-        ax.set_ylabel(ylabel)
-        ax.set_title(title)
-        ax.set_yscale('log' if log_scale else 'linear')
-        ax.grid(True)
-        ax.legend()
-
-
-        
-    def _log_vae_plots(self, incident_energies, target_showers, recon_showers):
-        """
-        Plot the energy sums and ratios target showers and reconstructed showers (overall and conditioned on incident energy bins)
-        """
-
-        target_energy_sums = torch.sum(target_showers, dim=1)
-        recon_energy_sums = torch.sum(recon_showers, dim=1)
-        target_incidence_ratio = target_energy_sums / incident_energies
-        recon_incidence_ratio = recon_energy_sums / incident_energies
-        target_recon_ratio = target_energy_sums / recon_energy_sums
-        target_sparsity = (target_showers == 0).sum(dim=1) / target_showers.shape[1]
-        recon_sparsity = (recon_showers == 0).sum(dim=1) / recon_showers.shape[1]
-
-        #move to cpu and numpy for plotting
-        target_energy_sums_np = target_energy_sums.detach().cpu().numpy()
-        recon_energy_sums_np = recon_energy_sums.detach().cpu().numpy()
-        target_incidence_ratio_np = target_incidence_ratio.detach().cpu().numpy()
-        recon_incidence_ratio_np = recon_incidence_ratio.detach().cpu().numpy()
-        target_recon_ratio_np = target_recon_ratio.detach().cpu().numpy()
-        incident_energies_np = incident_energies.detach().cpu().numpy().squeeze()
-        target_sparsity_np = target_sparsity.detach().cpu().numpy()
-        recon_sparsity_np = recon_sparsity.detach().cpu().numpy()
-
-
-
-        overall_fig, overall_ax = plt.subplots(2, 2, figsize=(15, 15))
-        self._plot_histograms(overall_ax[0, 0], target_energy_sums_np, recon_energy_sums_np, 
-                                xlabel='Deposited Energy (GeV)', ylabel='Density', title="Overall Deposited Energy")
-        self._plot_histograms(overall_ax[0, 1], target_incidence_ratio_np, recon_incidence_ratio_np, 
-                                xlabel='Deposited Energy / Incident Energy', ylabel='Density', title="Overall Energy Ratio")
-
-        max_ratio = target_recon_ratio.max()
-        min_ratio = target_recon_ratio.min()
-        binning_ratio = np.arange(min_ratio, max_ratio, (max_ratio - min_ratio) / 30)
-        overall_ax[1, 0].hist(target_recon_ratio_np, histtype="stepfilled", bins=binning_ratio, density=True, alpha=0.7, label='Target / Reconstructed', color='c', linewidth=2.5)
-        overall_ax[1, 0].set_xlabel('Target / Reconstructed Energy Ratio')
-        overall_ax[1, 0].set_ylabel('Density')
-        overall_ax[1, 0].set_yscale('log')
-        overall_ax[1, 0].grid(True)
-        overall_ax[1, 0].axvline(1, color='r', linestyle='--', label='Ideal Ratio (1.0)')
-        overall_ax[1, 0].legend()
-
-        self._plot_histograms(overall_ax[1, 1], target_sparsity_np, recon_sparsity_np,
-                                xlabel='Sparsity', ylabel='Density', title="Overall Sparsity")
-
-        overall_fig.tight_layout()
-
-
-        energy_bin_centers = [2**i for i in range(8, 23)] #currently hardcoded, can be parameterized
-        fig_energy_sum, ax_energy_sum = plt.subplots(3, 5, figsize=(16, 10))
-        fig_incidence_ratio, ax_incidence_ratio = plt.subplots(3, 5, figsize=(16, 10))
-        fig_target_recon_ratio, ax_target_recon_ratio = plt.subplots(3, 5, figsize=(16, 10))
-        fig_sparsity, ax_sparsity = plt.subplots(3, 5, figsize=(16, 10))
-
-        for i, energy_center in enumerate(energy_bin_centers):
-            row = i // 5
-            col = i % 5
-
-            e_low = 2**(np.log2(energy_center) - 0.5)
-            e_high = 2**(np.log2(energy_center) + 0.5)
-            
-            mask = (incident_energies_np >= e_low) & (incident_energies_np < e_high)
-            target_energy_sums_e = target_energy_sums_np[mask]
-            recon_energy_sums_e = recon_energy_sums_np[mask]
-            target_incidence_ratio_e = target_incidence_ratio_np[mask]
-            recon_incidence_ratio_e = recon_incidence_ratio_np[mask]
-            target_recon_ratio_e = target_recon_ratio_np[mask]
-
-            self._plot_histograms(ax_energy_sum[row, col], target_energy_sums_e, recon_energy_sums_e, 
-                                  xlabel='Deposited Energy (GeV)', ylabel='Density',
-                                  title=f'Energy ~ {e_low / 1000:.1f} - {e_high / 1000:.1f} GeV')
-            self._plot_histograms(ax_incidence_ratio[row, col], target_incidence_ratio_e, recon_incidence_ratio_e,
-                                    xlabel='Deposited Energy / Incident Energy', ylabel='Density',
-                                    title=f'Energy Ratio ~ {e_low / 1000:.1f} - {e_high / 1000:.1f} GeV')
-            max_ratio = target_recon_ratio_e.max()
-            min_ratio = target_recon_ratio_e.min()
-            binning_ratio = np.arange(min_ratio, max_ratio, (max_ratio - min_ratio) / 30)
-            ax_target_recon_ratio[row, col].hist(target_recon_ratio_e, histtype="stepfilled", bins=binning_ratio, density=True, alpha=0.7, label='Target / Reconstructed', color='c', linewidth=2.5)
-            ax_target_recon_ratio[row, col].set_xlabel('Target / Reconstructed Energy Ratio')
-            ax_target_recon_ratio[row, col].set_ylabel('Density')
-            ax_target_recon_ratio[row, col].set_yscale('log')
-            ax_target_recon_ratio[row, col].grid(True)
-            ax_target_recon_ratio[row, col].axvline(1, color='r', linestyle='--', label='Ideal Ratio (1.0)')
-            ax_target_recon_ratio[row, col].legend()
-            
-            self._plot_histograms(ax_sparsity[row, col], target_sparsity_np[mask], recon_sparsity_np[mask],
-                                  xlabel='Sparsity', ylabel='Density',
-                                  title=f'Sparsity ~ {e_low / 1000:.1f} - {e_high / 1000:.1f} GeV')
-
-
-        fig_energy_sum.tight_layout()
-        fig_incidence_ratio.tight_layout()
-        fig_target_recon_ratio.tight_layout()
-        fig_sparsity.tight_layout()
-        wandb.log({
-            "overall_plots": wandb.Image(overall_fig),
-            "conditioned_energy_sum": wandb.Image(fig_energy_sum),
-            "conditioned_incidence_ratio": wandb.Image(fig_incidence_ratio),
-            "conditioned_target_recon_ratio": wandb.Image(fig_target_recon_ratio),
-            "conditioned_sparsity": wandb.Image(fig_sparsity)
-        })
-        plt.close("all")  # Close all figures to free memory
-
-            
-        
-
-
-
+                if (i % log_batch_idx) == 0 and self._config.wandb.watch:
+                        logger.info('Epoch: {} [{}/{} ({:.0f}%)]\t Batch Loss: {:.4f}'.format(epoch,
+                            i, len(data_loader),100.*i/len(data_loader),
+                            loss_dict["loss"]))
+                        wandb.log(loss_dict)
+                if i == 0:
+                    break
+            # Log plots
+            overall_fig, fig_energy_sum, fig_incidence_ratio, fig_target_recon_ratio, fig_sparsity = vae_plots(
+                self.incident_energy, self.showers, self.showers_recon)
+            wandb.log({
+                "overall_plots": wandb.Image(overall_fig),
+                "conditioned_energy_sum": wandb.Image(fig_energy_sum),
+                "conditioned_incidence_ratio": wandb.Image(fig_incidence_ratio),
+                "conditioned_target_recon_ratio": wandb.Image(fig_target_recon_ratio),
+                "conditioned_sparsity": wandb.Image(fig_sparsity)
+            })
  
 
     
