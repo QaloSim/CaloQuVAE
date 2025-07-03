@@ -216,8 +216,11 @@ class Engine():
         """
         CaloDiff Transformation Scheme
         """
+        # Add zero mask to avoid numerical instability when multiplying by large incidence energies
+        zero_mask = (in_data == 0.0)
         
         x = (torch.sigmoid(in_data + torch.log(torch.tensor([R/(1-R)]).to(in_data.device)) ) - R)/(1-2*R) * true_energy 
+        x[zero_mask] = 0.0
         x[torch.isclose(x, torch.tensor([0]).to(dtype=x.dtype, device=x.device)) ] = 0.0
         
         return x
