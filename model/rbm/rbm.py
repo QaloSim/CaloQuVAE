@@ -210,7 +210,7 @@ class RBM(ZephyrRBM):
                 (p2 @ self.weight_dict["23"] @ p3.T).diagonal() - \
                 p1 @ self.bias_dict["1"] - \
                 p2 @ self.bias_dict["2"] - \
-                p3 @ self.bias_dict["3"]).mean()
+                p3 @ self.bias_dict["3"])
 
         return batch_energy
     
@@ -229,6 +229,6 @@ class RBM(ZephyrRBM):
                 p0 @ self.bias_dict["0"] - \
                 p1 @ self.bias_dict["1"] - \
                 p2 @ self.bias_dict["2"] - \
-                p3 @ self.bias_dict["3"]).mean()
+                p3 @ self.bias_dict["3"])
 
         return batch_energy

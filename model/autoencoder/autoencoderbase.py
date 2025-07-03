@@ -140,14 +140,14 @@ class AutoEncoderBase(nn.Module):
         entropy = torch.mean(torch.sum(entropy, dim=1), dim=0)
 
         # Compute positive phase (energy expval under posterior variables) 
-        pos_energy = self.prior.energy_exp_cond(post_samples[0],post_samples[1],post_samples[2],post_samples[3])
+        pos_energy = self.prior.energy_exp_cond(post_samples[0],post_samples[1],post_samples[2],post_samples[3]).mean()
 
         # Compute gradient computation of the logZ term
         p0_state, p1_state, p2_state, p3_state \
             = self.prior.block_gibbs_sampling_cond(post_samples[0],post_samples[1],post_samples[2],post_samples[3])
         
         # neg_energy = - self.energy_exp(p0_state, p1_state, p2_state, p3_state)
-        neg_energy = - self.prior.energy_exp_cond(p0_state, p1_state, p2_state, p3_state)
+        neg_energy = - self.prior.energy_exp_cond(p0_state, p1_state, p2_state, p3_state).mean()
 
         # Estimate of the kl-divergence
         kl_loss = entropy + pos_energy + neg_energy
