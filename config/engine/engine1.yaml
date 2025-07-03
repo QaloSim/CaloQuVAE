@@ -1,4 +1,21 @@
 _target_: engine.engine.Engine
 learning_rate: 0.0001
-n_epochs: 250
+
 n_batches_log_train: 10
+n_batches_log_val: 1
+
+beta_gumbel_start: 1.0
+beta_gumbel_epoch_start: 1
+beta_gumbel_end: 100.0
+beta_gumbel_epoch_end: 150
+
+slope_act_fct_start: 0.05
+slope_act_fct_end: 0.
+
+loss_coeff:
+  ae_loss: 1.0
+  kl_loss: 0.0
+  hit_loss: 1.0
+  entropy: 1.0
+  pos_energy: 1.0
+  neg_energy: 1.0

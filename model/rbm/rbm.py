@@ -34,7 +34,7 @@ class RBM(ZephyrRBM):
                          torch.matmul(pc_state, weights_cx) + bias_x)
         return torch.bernoulli(torch.sigmoid(p_activations))
     
-    def block_gibbs_sampling(self, p0,p1,p2,p3):
+    def block_gibbs_sampling(self, p0,p1=None,p2=None,p3=None):
         """block_gibbs_sampling()
 
         :return p0_state (torch.Tensor) : (batch_size, n_nodes_p1)
@@ -42,6 +42,12 @@ class RBM(ZephyrRBM):
         :return p2_state (torch.Tensor) : (batch_size, n_nodes_p3)
         :return p3_state (torch.Tensor) : (batch_size, n_nodes_p4)
         """
+        if p1 is None:
+            p1 = torch.bernoulli(torch.rand(p0.shape[0], self._config.rbm.latent_nodes_per_p, device=p0.device))
+        if p2 is None:
+            p2 = torch.bernoulli(torch.rand(p0.shape[0], self._config.rbm.latent_nodes_per_p, device=p0.device))
+        if p3 is None:
+            p3 = torch.bernoulli(torch.rand(p0.shape[0], self._config.rbm.latent_nodes_per_p, device=p0.device))
             
         for _ in range(self._config.rbm.bgs_steps):
             p0 = self._p_state(self.weight_dict['01'].T,
@@ -67,7 +73,7 @@ class RBM(ZephyrRBM):
 
         return p0.detach(), p1.detach(), p2.detach(), p3.detach()
     
-    def block_gibbs_sampling_cond(self, p0,p1,p2,p3):
+    def block_gibbs_sampling_cond(self, p0,p1=None,p2=None,p3=None):
         """block_gibbs_sampling()
 
         :return p0_state (torch.Tensor) : (batch_size, n_nodes_p1)
@@ -75,6 +81,12 @@ class RBM(ZephyrRBM):
         :return p2_state (torch.Tensor) : (batch_size, n_nodes_p3)
         :return p3_state (torch.Tensor) : (batch_size, n_nodes_p4)
         """
+        if p1 is None:
+            p1 = torch.bernoulli(torch.rand(p0.shape[0], self._config.rbm.latent_nodes_per_p, device=p0.device))
+        if p2 is None:
+            p2 = torch.bernoulli(torch.rand(p0.shape[0], self._config.rbm.latent_nodes_per_p, device=p0.device))
+        if p3 is None:
+            p3 = torch.bernoulli(torch.rand(p0.shape[0], self._config.rbm.latent_nodes_per_p, device=p0.device))
             
         for _ in range(self._config.rbm.bgs_steps):
             p1 = self._p_state(self.weight_dict['01'],

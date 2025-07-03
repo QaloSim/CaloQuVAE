@@ -19,7 +19,7 @@ class HierarchicalEncoder(nn.Module):
 
         self.n_latent_hierarchy_lvls=self._config.model.latent_hierarchy_lvls
 
-        self.n_latent_nodes=self._config.model.latent_nodes
+        self.n_latent_nodes=self._config.rbm.latent_nodes_per_p
 
         self._networks=nn.ModuleList([])
         
@@ -88,7 +88,7 @@ class EncoderBlockPBH3Dv3Reg(nn.Module):
     def __init__(self, cfg=None):
         super(EncoderBlockPBH3Dv3Reg, self).__init__()
         self._config = cfg
-        self.n_latent_nodes = self._config.model.latent_nodes
+        self.n_latent_nodes = self._config.rbm.latent_nodes_per_p
         self.z = self._config.data.z #45
         self.r = self._config.data.r #9
         self.phi = self._config.data.phi #16

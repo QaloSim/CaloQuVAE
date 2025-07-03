@@ -2,7 +2,7 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 from torch.nn import LeakyReLU, ReLU
-from model.gumbel.gumbelmod import GumbelMod
+from model.gumbel import GumbelMod
 from einops import rearrange
 
 
@@ -25,8 +25,8 @@ class DecoderHierarchyBase(nn.Module):
         """
         Create the hierarchy network. Each subdecoder has identical architecture, but different input and outputs.
         """
-        self.latent_nodes = self._config.model.n_latent_nodes_per_p * 4 # Number of latent nodes in total
-        self.hierarchical_levels = 4
+        self.latent_nodes = self._config.rbm.latent_nodes_per_p * self._config.rbm.partitions # Number of latent nodes in total
+        self.hierarchical_levels = self._config.rbm.partitions
 
         self.shower_size = 7 * 24 * 14  # size of the shower output by each subdecoder
 
@@ -49,7 +49,7 @@ class DecoderHierarchyBase(nn.Module):
         as well as the conditioned incident energy stored in partition 0 of the RBM.
         """
         self.skip_connections = []
-        input_size = 2*self._config.model.n_latent_nodes_per_p  # Each skip connection takes the latent nodes and the incident energy as input
+        input_size = 2*self._config.rbm.latent_nodes_per_p  # Each skip connection takes the latent nodes and the incident energy as input
         output_size = self.shower_size + self.latent_nodes # Each skip connection outputs the shower size
         for i in range(self.hierarchical_levels-1):
             skip_connection = nn.Conv3d(
@@ -70,10 +70,10 @@ class DecoderHierarchyBase(nn.Module):
             z = outputs
             if lvl < self.hierarchical_levels - 1: # If not the last level, prepare input for the next level
                 # Concatenate the output of the current decoder with the latent nodes of the next RBM partition
-                partition_idx_start = (self.hierarchical_levels - lvl - 1) * self._config.model.n_latent_nodes_per_p #start index for the current RBM partition
-                partition_idx_end = partition_idx_start + self._config.model.n_latent_nodes_per_p  # end index for the current RBM partition
+                partition_idx_start = (self.hierarchical_levels - lvl - 1) * self._config.rbm.latent_nodes_per_p #start index for the current RBM partition
+                partition_idx_end = partition_idx_start + self._config.rbm.latent_nodes_per_p  # end index for the current RBM partition
                 enc_z = torch.cat((x[:, 0:partition_idx_start], x[:, partition_idx_start:partition_idx_end]), dim=1)  # concatenate the incident energy and the latent nodes of the current RBM partition
-                enc_z = torch.unflatten(enc_z, 1, (self._config.model.n_latent_nodes_per_p*2, 1, 1, 1))
+                enc_z = torch.unflatten(enc_z, 1, (self._config.rbm.latent_nodes_per_p*2, 1, 1, 1))
                 # Apply skip connection
                 enc_z = self.skip_connections[lvl](enc_z).view(enc_z.size(0), -1)  # Flatten the output of the skip connection
                 xz = torch.cat((x_lat, z), dim=1) # Concatenate the latent nodes and the output of the current decoder
@@ -107,10 +107,10 @@ class DecoderHierarchyBaseV2(DecoderHierarchyBase):
                 outputs = output_hits * output_activations
                 z = outputs
                 # Concatenate the output of the current decoder with the latent nodes of the next RBM partition
-                partition_idx_start = (self.hierarchical_levels - lvl - 1) * self._config.model.n_latent_nodes_per_p #start index for the current RBM partition
-                partition_idx_end = partition_idx_start + self._config.model.n_latent_nodes_per_p  # end index for the current RBM partition
+                partition_idx_start = (self.hierarchical_levels - lvl - 1) * self._config.rbm.latent_nodes_per_p #start index for the current RBM partition
+                partition_idx_end = partition_idx_start + self._config.rbm.latent_nodes_per_p  # end index for the current RBM partition
                 enc_z = torch.cat((x_lat[:, 0:partition_idx_start], x_lat[:, partition_idx_start:partition_idx_end]), dim=1)  # concatenate the incident energy and the latent nodes of the current RBM partition
-                enc_z = torch.unflatten(enc_z, 1, (self._config.model.n_latent_nodes_per_p*2, 1, 1, 1))
+                enc_z = torch.unflatten(enc_z, 1, (self._config.rbm.latent_nodes_per_p*2, 1, 1, 1))
                 # Apply skip connection
                 enc_z = self.skip_connections[lvl](enc_z).view(enc_z.size(0), -1)  # Flatten the output of the skip connection
 
@@ -200,7 +200,7 @@ class DecoderCNNPB3Dv4_HEMOD(nn.Module):
         self.output_activation_fct = output_activation_fct
 
         self._layers1 = nn.Sequential(
-            nn.unflatten(1, (num_input_nodes, 1, 1, 1)),  # Assuming input is flattened, reshape to (batch_size, num_input_nodes, 1, 1, 1)
+            nn.Unflatten(1, (num_input_nodes, 1, 1, 1)),  # Assuming input is flattened, reshape to (batch_size, num_input_nodes, 1, 1, 1)
             PeriodicConvTranspose3d(num_input_nodes, 512, (3, 3, 3), stride=(1, 1, 1), padding=0),
             nn.BatchNorm3d(512),
             nn.PReLU(512, 0.02),

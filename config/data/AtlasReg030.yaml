@@ -1,3 +1,4 @@
+dataset_name: AtlasReg030
 path: /fast_scratch_1/caloqvae/data/atlas_regular_cat/dataset_eta_030_positive_cat_smeared.hdf5
 
 binning_path: /fast_scratch_1/caloqvae/data/atlas_regular/dataset_eta_030_positive.hdf5

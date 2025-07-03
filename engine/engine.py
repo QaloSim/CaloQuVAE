@@ -120,8 +120,9 @@ class Engine():
             output = self.model((x, x0), self.beta, self.slope)
             # Compute loss
             loss_dict = self.model.loss(x, output)
-            loss_dict["loss"] = loss_dict["ae_loss"] + \
-                loss_dict["kl_loss"] + loss_dict["hit_loss"]
+            loss_dict["loss"] = torch.stack([loss_dict[key] * self._config.engine.loss_coeff[key]  for key in loss_dict.keys() if "loss" != key]).sum()
+            # loss_dict["loss"] = loss_dict["ae_loss"] + \
+                # loss_dict["kl_loss"] + loss_dict["hit_loss"]
             # Backward pass and optimization
             self.optimiser.zero_grad()
             loss_dict["loss"].backward()
@@ -147,6 +148,8 @@ class Engine():
             self.showers_reduce = torch.zeros((ar_size, ar_input_size), dtype=torch.float32)
             self.showers_recon = torch.zeros((ar_size, ar_input_size), dtype=torch.float32)
             self.showers_reduce_recon = torch.zeros((ar_size, ar_input_size), dtype=torch.float32)
+            self.showers_prior = torch.zeros((ar_size, ar_input_size), dtype=torch.float32)
+            self.showers_reduce_prior = torch.zeros((ar_size, ar_input_size), dtype=torch.float32)
             self.post_samples = torch.zeros((ar_size, ar_latent_size * 4), dtype=torch.float32)
             self.post_logits = torch.zeros((ar_size, ar_latent_size * 3), dtype=torch.float32)
             self.prior_samples = torch.zeros((ar_size, ar_latent_size * 4), dtype=torch.float32)
@@ -157,10 +160,14 @@ class Engine():
                 x_reduce = self._reduce(x, x0)
                 # Forward pass
                 output = self.model((x_reduce, x0))
+                # Get prior samples
+                prior_samples = self.model.prior.block_gibbs_sampling_cond(p0 = output[2][0])
+                _, shower_prior = self.model.decode(prior_samples, x_reduce, x0)
                 # Compute loss
                 loss_dict = self.model.loss(x_reduce, output)
-                loss_dict["loss"] = loss_dict["ae_loss"] + \
-                    loss_dict["kl_loss"] + loss_dict["hit_loss"]
+                loss_dict["loss"] = torch.stack([loss_dict[key] * self._config.engine.loss_coeff[key]  for key in loss_dict.keys() if "loss" != key]).sum()
+                # loss_dict["loss"] = loss_dict["ae_loss"] + \
+                    # loss_dict["kl_loss"] + loss_dict["hit_loss"]
                 
                 idx1, idx2 = int(np.sum(bs[:i])), int(np.sum(bs[:i+1]))
                 self.incident_energy[idx1:idx2,:] = x0.cpu()
@@ -170,7 +177,9 @@ class Engine():
                 self.showers_reduce_recon[idx1:idx2,:] = output[3].cpu()
                 self.post_samples[idx1:idx2,:] = torch.cat(output[2],dim=1).cpu()
                 self.post_logits[idx1:idx2,:] = torch.cat(output[1],dim=1).cpu()
-                self.prior_samples[idx1:idx2,:] = torch.cat(self.model.prior.block_gibbs_sampling_cond(p0 = output[2][0]),dim=1).cpu()
+                self.prior_samples[idx1:idx2,:] = torch.cat(prior_samples,dim=1).cpu()
+                self.showers_prior[idx1:idx2,:] = self._reduceinv(shower_prior, x0).cpu()
+                self.showers_reduce_recon[idx1:idx2,:] = shower_prior.cpu()
 
                 if (i % log_batch_idx) == 0 and self._config.wandb.watch:
                         logger.info('Epoch: {} [{}/{} ({:.0f}%)]\t Batch Loss: {:.4f}'.format(epoch,
@@ -202,8 +211,6 @@ class Engine():
                 f"calo_layer_input_epoch_{epoch}": image_input,
                 f"calo_layer_recon_epoch_{epoch}": image_recon        
             })
-
- 
 
     
     @property
