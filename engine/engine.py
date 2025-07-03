@@ -6,9 +6,13 @@ import torch
 
 # Weights and Biases
 import wandb
+import numpy as np
 
 from CaloQuVAE import logging
 logger = logging.getLogger(__name__)
+
+# plotting
+from utils.plots.HighLevelFeatsAtlasReg import HighLevelFeatures_ATLAS_regular
 
 class Engine():
 
@@ -16,6 +20,13 @@ class Engine():
         super(Engine,self).__init__()
 
         self._config = cfg
+        
+        self.HLF = HighLevelFeatures_ATLAS_regular(
+        particle=self._config.data.particle,
+        filename=self._config.data.binning_path,
+        relevantLayers=self._config.data.relevantLayers, # maybe add the relevant layers to the config files?
+        wandb=False  # set to True later
+        )
         
         self._model = None
         self._optimiser = None
@@ -90,12 +101,13 @@ class Engine():
     
     def generate_samples(self):
         raise NotImplementedError
-
+        
     def fit(self, epoch):
         log_batch_idx = max(len(self.data_mgr.train_loader)//self._config.engine.n_batches_log_train, 1)
+        self.model.train()
         for i, (x, x0) in enumerate(self.data_mgr.train_loader):
-            x = x.to(self.device, dtype=torch.float)
-            x0 = x0.to(self.device, dtype=torch.float)
+            x = x.to(self.device).to(dtype=torch.float32)
+            x0 = x0.to(self.device).to(dtype=torch.float32)
             x = self._reduce(x, x0)
             # Forward pass
             output = self.model((x, x0))
@@ -108,17 +120,90 @@ class Engine():
             loss_dict["loss"].backward()
             self.optimiser.step()
 
-            if (i % log_batch_idx) == 0:
+            if (i % log_batch_idx) == 0 and self._config.wandb.watch:
                     logger.info('Epoch: {} [{}/{} ({:.0f}%)]\t Batch Loss: {:.4f}'.format(epoch,
                         i, len(self.data_mgr.train_loader),100.*i/len(self.data_mgr.train_loader),
                         loss_dict["loss"]))
                     wandb.log(loss_dict)
-                    
-            
+            if i == 0:
+                break
+                
+    def evaluate(self, data_loader, epoch):
 
-    
-    def evaluate(self):
-        raise NotImplementedError
+        log_batch_idx = max(len(data_loader) // self._config.engine.n_batches_log_val, 1)
+        self.model.eval()
+
+        with torch.no_grad():
+            bs = [batch[0].shape[0] for batch in data_loader]
+            ar_size = np.sum(bs)
+            ar_input_size = self._config.data.z * self._config.data.r * self._config.data.phi
+            ar_latent_size = self._config.rbm.latent_nodes_per_p
+
+            self.incident_energy = torch.zeros((ar_size, 1), dtype=torch.float32)
+            self.showers = torch.zeros((ar_size, ar_input_size), dtype=torch.float32)
+            self.showers_reduce = torch.zeros((ar_size, ar_input_size), dtype=torch.float32)
+            self.showers_recon = torch.zeros((ar_size, ar_input_size), dtype=torch.float32)
+            self.showers_reduce_recon = torch.zeros((ar_size, ar_input_size), dtype=torch.float32)
+            self.post_samples = torch.zeros((ar_size, ar_latent_size * 4), dtype=torch.float32)
+            self.post_logits = torch.zeros((ar_size, ar_latent_size * 3), dtype=torch.float32)
+            self.prior_samples = torch.zeros((ar_size, ar_latent_size * 4), dtype=torch.float32)
+
+            for i, (x, x0) in enumerate(data_loader):
+                x = x.to(self.device).to(dtype=torch.float32)
+                x0 = x0.to(self.device).to(dtype=torch.float32)
+                x_reduce = self._reduce(x, x0)
+
+                # Forward pass
+                output = self.model((x_reduce, x0))
+
+                # Compute loss
+                loss_dict = self.model.loss(x_reduce, output)
+                loss_dict["loss"] = loss_dict["ae_loss"] + loss_dict["kl_loss"] + loss_dict["hit_loss"]
+
+                idx1, idx2 = int(np.sum(bs[:i])), int(np.sum(bs[:i+1]))
+                self.incident_energy[idx1:idx2, :] = x0.cpu()
+                self.showers[idx1:idx2, :] = x.cpu()
+                self.showers_reduce[idx1:idx2, :] = x_reduce.cpu()
+                self.showers_recon[idx1:idx2, :] = self._reduceinv(output[3], x0).cpu()
+                self.showers_reduce_recon[idx1:idx2, :] = output[3].cpu()
+                self.post_samples[idx1:idx2, :] = torch.cat(output[2], dim=1).cpu()
+                self.post_logits[idx1:idx2, :] = torch.cat(output[1], dim=1).cpu()
+                self.prior_samples[idx1:idx2, :] = torch.cat(self.model.prior.block_gibbs_sampling_cond(p0=output[2][0]), dim=1).cpu()
+
+
+                if (i % log_batch_idx) == 0 and self._config.wandb.watch:
+                    logger.info('Epoch: {} [{}/{} ({:.0f}%)]\t Batch Loss: {:.4f}'.format(
+                        epoch, i, len(data_loader), 100. * i / len(data_loader), loss_dict["loss"]))
+                    wandb.log(loss_dict)
+
+                # plot on first batch only (for testing)
+                #if i == 0 and (epoch == 0 or self._config.engine.plot_every_epoch):
+                # plotting 4 times throughout every epoch (to test)
+                plot_points = 4
+                plot_every_n_batches = max(len(data_loader) // plot_points, 1)
+                if (i % plot_every_n_batches == 0) and epoch == 0:
+
+                    x_inv = self._reduceinv(x, x0).cpu()
+                    recon_inv = self._reduceinv(output[3], x0).cpu()
+                
+                    self.plot_event(x_inv, event_idx=0,
+                                    title=f"Val Input (Epoch {epoch})", save_path=f"plots/val_input_e{epoch}.png")
+                    self.plot_event(recon_inv, event_idx=0,
+                                    title=f"Val Recon (Epoch {epoch})", save_path=f"plots/val_recon_e{epoch}.png")
+
+                    # Prior sample
+                    self.model.prior._batch_size = x0.shape[0]
+                    sample = torch.cat(self.model.prior.block_gibbs_sampling_cond(p0=output[2][0]), dim=1)
+                    #self.model.prior._batch_size = self._config.engine.rbm_batch_size
+
+                    sample_inv = self._reduceinv(sample, x0).cpu()
+
+                    self.plot_event(sample_inv, event_idx=0,
+                                    title=f"Val Sample (Epoch {epoch})", save_path=f"plots/val_sample_e{epoch}.png")
+        # break after the first batch for debugging:
+                #if i == 0:
+                #    break                   
+            
     
     @property
     def model_creator(self):
@@ -148,3 +233,23 @@ class Engine():
         x[torch.isclose(x, torch.tensor([0]).to(dtype=x.dtype, device=x.device)) ] = 0.0
         
         return x
+    
+    def plot_event(self, input_tensor, event_idx=0, title="Calorimeter Event", save_path=None):
+        """
+        Plot a single event from a input_tensor.
+
+        Parameters:
+            input_tensor: torch.Tensor
+            event_idx: index of the event in the batch (can pick this)
+            title: optional title for the plot
+            save_path: if provided, saves the image to this path
+        """
+        # debugging checks:
+        print('ndim: ',input_tensor.ndim)
+        print('shape: ',input_tensor.shape[1])
+
+        event = input_tensor[event_idx].cpu()
+        if save_path:
+            self.HLF.DrawSingleShower(event, filename=save_path, title=title)
+        else:
+            self.HLF.DrawSingleShower(event, title=title)
