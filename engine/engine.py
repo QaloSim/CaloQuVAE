@@ -8,6 +8,11 @@ import numpy as np
 # Weights and Biases
 import wandb
 
+# Plotting
+from utils.plots import vae_plots
+
+from collections import defaultdict
+
 from CaloQuVAE import logging
 logger = logging.getLogger(__name__)
 
@@ -115,8 +120,9 @@ class Engine():
                         i, len(self.data_mgr.train_loader),100.*i/len(self.data_mgr.train_loader),
                         loss_dict["loss"]))
                     wandb.log(loss_dict)
-            if i == 0:
-                break
+                    
+            
+
     
     def evaluate(self, data_loader, epoch):
         log_batch_idx = max(len(data_loader)//self._config.engine.n_batches_log_val, 1)
@@ -164,6 +170,18 @@ class Engine():
                         wandb.log(loss_dict)
                 if i == 0:
                     break
+            # Log plots
+            overall_fig, fig_energy_sum, fig_incidence_ratio, fig_target_recon_ratio, fig_sparsity = vae_plots(
+                self.incident_energy, self.showers, self.showers_recon)
+            wandb.log({
+                "overall_plots": wandb.Image(overall_fig),
+                "conditioned_energy_sum": wandb.Image(fig_energy_sum),
+                "conditioned_incidence_ratio": wandb.Image(fig_incidence_ratio),
+                "conditioned_target_recon_ratio": wandb.Image(fig_target_recon_ratio),
+                "conditioned_sparsity": wandb.Image(fig_sparsity)
+            })
+ 
+
     
     @property
     def model_creator(self):
