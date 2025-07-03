@@ -22,6 +22,8 @@ class Engine():
         super(Engine,self).__init__()
 
         self._config = cfg
+        self.beta = self._config.engine.beta_gumbel_start
+        self.slope = self._config.engine.slope_act_fct_start 
         
         self._model = None
         self._optimiser = None
@@ -94,18 +96,27 @@ class Engine():
     def device(self, device):
         self._device=device
     
-    def generate_samples(self):
-        raise NotImplementedError
+    def _anneal_params(self, num_batches, batch_idx, epoch):
+        if epoch > self._config.engine.beta_gumbel_epoch_start:
+            delta_beta = self._config.engine.beta_gumbel_end - self._config.engine.beta_gumbel_start
+            delta_slope = 0.0 - self._config.engine.slope_act_fct_start
+
+            delta = (self._config.engine.beta_gumbel_epoch_end - self._config.engine.beta_gumbel_epoch_start)*num_batches
+
+            self.beta = min(self._config.engine.beta_gumbel_start + delta_beta/delta * ((epoch-1)*num_batches + batch_idx), self._config.engine.beta_gumbel_end)
+            self.slope = max(self._config.engine.slope_act_fct_start + delta_slope/delta * ((epoch-1)*num_batches + batch_idx), 0.0)
 
     def fit(self, epoch):
         log_batch_idx = max(len(self.data_mgr.train_loader)//self._config.engine.n_batches_log_train, 1)
         self.model.train()
         for i, (x, x0) in enumerate(self.data_mgr.train_loader):
+            # Anneal parameters
+            self._anneal_params(len(self.data_mgr.train_loader), i, epoch)
             x = x.to(self.device).to(dtype=torch.float32)
             x0 = x0.to(self.device).to(dtype=torch.float32)
             x = self._reduce(x, x0)
             # Forward pass
-            output = self.model((x, x0))
+            output = self.model((x, x0), self.beta, self.slope)
             # Compute loss
             loss_dict = self.model.loss(x, output)
             loss_dict["loss"] = loss_dict["ae_loss"] + \
@@ -116,13 +127,10 @@ class Engine():
             self.optimiser.step()
 
             if (i % log_batch_idx) == 0 and self._config.wandb.watch:
-                    logger.info('Epoch: {} [{}/{} ({:.0f}%)]\t Batch Loss: {:.4f}'.format(epoch,
+                    logger.info('Epoch: {} [{}/{} ({:.0f}%)]\t beta: {:.3f}, slope: {:.3f} \t Batch Loss: {:.4f}'.format(epoch,
                         i, len(self.data_mgr.train_loader),100.*i/len(self.data_mgr.train_loader),
-                        loss_dict["loss"]))
+                        self.beta, self.slope, loss_dict["loss"]))
                     wandb.log(loss_dict)
-                    
-            
-
     
     def evaluate(self, data_loader, epoch):
         log_batch_idx = max(len(data_loader)//self._config.engine.n_batches_log_val, 1)
@@ -168,8 +176,6 @@ class Engine():
                             i, len(data_loader),100.*i/len(data_loader),
                             loss_dict["loss"]))
                         wandb.log(loss_dict)
-                if i == 0:
-                    break
             # Log plots
             overall_fig, fig_energy_sum, fig_incidence_ratio, fig_target_recon_ratio, fig_sparsity = vae_plots(
                 self.incident_energy, self.showers, self.showers_recon)
