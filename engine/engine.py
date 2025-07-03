@@ -10,6 +10,7 @@ import wandb
 
 # Plotting
 from utils.plots import vae_plots
+from utils.atlas_plots import plot_calorimeter_shower
 
 from collections import defaultdict
 
@@ -185,17 +186,31 @@ class Engine():
                             i, len(data_loader),100.*i/len(data_loader),
                             loss_dict["loss"]))
                         wandb.log(loss_dict)
+                        
+            # Calorimeter layer plots
+            plot_calorimeter_shower(
+                cfg=self._config,
+                showers=self.showers,
+                showers_recon=self.showers_recon,
+                incident_energy=self.incident_energy,
+                epoch=epoch,
+                save_dir="None"
+            )
+            
             # Log plots
             overall_fig, fig_energy_sum, fig_incidence_ratio, fig_target_recon_ratio, fig_sparsity = vae_plots(
                 self.incident_energy, self.showers, self.showers_recon)
+            
+            
             wandb.log({
                 "overall_plots": wandb.Image(overall_fig),
                 "conditioned_energy_sum": wandb.Image(fig_energy_sum),
                 "conditioned_incidence_ratio": wandb.Image(fig_incidence_ratio),
                 "conditioned_target_recon_ratio": wandb.Image(fig_target_recon_ratio),
-                "conditioned_sparsity": wandb.Image(fig_sparsity)
+                "conditioned_sparsity": wandb.Image(fig_sparsity),
+                f"calo_layer_input_epoch_{epoch}": image_input,
+                f"calo_layer_recon_epoch_{epoch}": image_recon        
             })
- 
 
     
     @property
