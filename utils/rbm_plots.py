@@ -15,7 +15,7 @@ def plot_rbm_histogram(rbm_post, rbm_prior, rbm_prior_qpu=None):
 
     binwidth = (maxVal - minVal) / 30
 
-    plt.figure(figsize=(8, 6))
+    fig = plt.figure(figsize=(8, 6))
     plt.hist(energy_post, bins=np.arange(minVal, maxVal + binwidth, binwidth), linewidth=2.5, color="b", density=True, log=True, label="RBM Post", alpha=0.7)
     plt.hist(energy_prior, bins=np.arange(minVal - 10, maxVal + binwidth, binwidth), color="orange", density=True, fc=(1, 0, 1, 0.5), log=True, histtype='step', linewidth=2.5, label="RBM Prior")
     
@@ -28,4 +28,4 @@ def plot_rbm_histogram(rbm_post, rbm_prior, rbm_prior_qpu=None):
     plt.yticks(fontsize=15)
     plt.legend(fontsize=18)
     plt.grid("True")
-    plt.show()
+    return fig

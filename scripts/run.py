@@ -46,7 +46,7 @@ from engine.engine import Engine
 
 @hydra.main(config_path="../config", config_name="config", version_base=None)
 def main(cfg=None):
-    mode = 'online' if cfg.wandb_enabled else 'disabled'
+    mode = cfg.wandb.mode
     if cfg.load_state:
         logger.info(f"Loading config from {cfg.config_path}")
         cfg = OmegaConf.load(cfg.config_path)
@@ -57,9 +57,6 @@ def main(cfg=None):
     else:
         wandb.init(tags = [cfg.data.dataset_name], project=cfg.wandb.project, entity=cfg.wandb.entity, config=OmegaConf.to_container(cfg, resolve=True), mode=mode)
     print(OmegaConf.to_yaml(cfg, resolve=True))
-    #Save and load config file
-    #OmegaConf.save(config, "/home/jtoledo/CaloQuVAE/cfg_test.yaml", resolve=True )
-    #cfg_load = OmegaConf.load("/home/jtoledo/CaloQuVAE/cfg_test.yaml")
     
     engine = setup_model(config=cfg)
     run(engine)
@@ -109,11 +106,7 @@ def setup_model(config=None):
     # Send the model to the selected device
     model.to(dev)
     # Log metrics with wandb
-    if config.wandb.watch:
-        wandb.watch(model)
-        logger.info("Model being watched by wandb")
-    else:
-        logger.info("Model NOT being watched by wandb")
+    wandb.watch(model)
 
     # For some reason, need to use postional parameter cfg instead of named parameter
     # with updated Hydra - used to work with named param but now is cfg=None 

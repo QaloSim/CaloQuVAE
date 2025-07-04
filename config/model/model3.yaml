@@ -1,8 +1,6 @@
 model_name: autoencoderbase
 encoder: hierachicalencoder
 encoderblock: AtlasReg
-latent_nodes: 302
-latent_hierarchy_lvls: 4
 decoder: hierachicaldecoder
 
 output_smoothing_fct: 60

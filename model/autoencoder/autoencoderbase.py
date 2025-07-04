@@ -144,7 +144,7 @@ class AutoEncoderBase(nn.Module):
 
         # Compute gradient computation of the logZ term
         p0_state, p1_state, p2_state, p3_state \
-            = self.prior.block_gibbs_sampling_cond(post_samples[0],post_samples[1],post_samples[2],post_samples[3])
+            = self.prior.block_gibbs_sampling_cond(post_samples[0].detach(),post_samples[1].detach(),post_samples[2].detach(),post_samples[3].detach())
         
         # neg_energy = - self.energy_exp(p0_state, p1_state, p2_state, p3_state)
         neg_energy = - self.prior.energy_exp_cond(p0_state, p1_state, p2_state, p3_state).mean()

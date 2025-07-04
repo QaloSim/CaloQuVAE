@@ -11,6 +11,7 @@ import wandb
 # Plotting
 from utils.plots import vae_plots
 from utils.atlas_plots import plot_calorimeter_shower
+from utils.rbm_plots import plot_rbm_histogram
 
 from collections import defaultdict
 
@@ -120,7 +121,7 @@ class Engine():
             output = self.model((x, x0), self.beta, self.slope)
             # Compute loss
             loss_dict = self.model.loss(x, output)
-            loss_dict["loss"] = torch.stack([loss_dict[key] * self._config.engine.loss_coeff[key]  for key in loss_dict.keys() if "loss" != key]).sum()
+            loss_dict["loss"] = torch.stack([loss_dict[key] * self._config.model.loss_coeff[key]  for key in loss_dict.keys() if "loss" != key]).sum()
             self.model.prior.gradient_rbm_centered(output[2])
             self.model.prior.update_params()
             
@@ -129,7 +130,7 @@ class Engine():
             loss_dict["loss"].backward()
             self.optimiser.step()
 
-            if (i % log_batch_idx) == 0 and self._config.wandb.watch:
+            if (i % log_batch_idx) == 0:
                     logger.info('Epoch: {} [{}/{} ({:.0f}%)]\t beta: {:.3f}, slope: {:.3f} \t Batch Loss: {:.4f}'.format(epoch,
                         i, len(self.data_mgr.train_loader),100.*i/len(self.data_mgr.train_loader),
                         self.beta, self.slope, loss_dict["loss"]))
@@ -168,9 +169,10 @@ class Engine():
                 _, shower_prior = self.model.decode(prior_samples, x_reduce, x0)
                 # Compute loss
                 loss_dict = self.model.loss(x_reduce, output)
-                loss_dict["loss"] = torch.stack([loss_dict[key] * self._config.engine.loss_coeff[key]  for key in loss_dict.keys() if "loss" != key]).sum()
-                # loss_dict["loss"] = loss_dict["ae_loss"] + \
-                    # loss_dict["kl_loss"] + loss_dict["hit_loss"]
+                loss_dict["loss"] = torch.stack([loss_dict[key] * self._config.model.loss_coeff[key]  for key in loss_dict.keys() if "loss" != key]).sum()
+                for key in list(loss_dict.keys()):
+                    loss_dict['val_'+key] = loss_dict[key]
+                    loss_dict.pop(key)
                 
                 idx1, idx2 = int(np.sum(bs[:i])), int(np.sum(bs[:i+1]))
                 self.incident_energy[idx1:idx2,:] = x0.cpu()
@@ -182,14 +184,14 @@ class Engine():
                 self.post_logits[idx1:idx2,:] = torch.cat(output[1],dim=1).cpu()
                 self.prior_samples[idx1:idx2,:] = torch.cat(prior_samples,dim=1).cpu()
                 self.showers_prior[idx1:idx2,:] = self._reduceinv(shower_prior, x0).cpu()
-                self.showers_reduce_recon[idx1:idx2,:] = shower_prior.cpu()
+                self.showers_reduce_prior[idx1:idx2,:] = shower_prior.cpu()
                 self.RBM_energy_prior[idx1:idx2,:] = self.model.prior.energy_exp_cond(prior_samples[0], prior_samples[1], prior_samples[2], prior_samples[3]).cpu().unsqueeze(1)
                 self.RBM_energy_post[idx1:idx2,:] = self.model.prior.energy_exp_cond(output[2][0], output[2][1], output[2][2], output[2][3]).cpu().unsqueeze(1)
 
-                if (i % log_batch_idx) == 0 and self._config.wandb.watch:
+                if (i % log_batch_idx) == 0:
                         logger.info('Epoch: {} [{}/{} ({:.0f}%)]\t Batch Loss: {:.4f}'.format(epoch,
                             i, len(data_loader),100.*i/len(data_loader),
-                            loss_dict["loss"]))
+                            loss_dict["val_loss"]))
                         wandb.log(loss_dict)
                         
             # Calorimeter layer plots
