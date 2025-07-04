@@ -8,16 +8,15 @@ Year: 2025
 import torch.nn as nn
 import torch
 import torch.nn.functional as F
-import numpy as np
 
 class Decoder(nn.Module):
     def __init__(self, cfg):
         super(Decoder, self).__init__()
         self._config = cfg
 
-        self.n_latent_hierarchy_lvls=self._config.model.latent_hierarchy_lvls
+        self.n_latent_hierarchy_lvls=self._config.rbm.partitions
 
-        self.n_latent_nodes=self._config.model.latent_nodes * self._config.model.latent_hierarchy_lvls
+        self.n_latent_nodes=self._config.rbm.latent_nodes_per_p * self._config.rbm.partitions
 
         self.z = self._config.data.z
         self.r = self._config.data.r
@@ -60,7 +59,7 @@ class Decoder(nn.Module):
         x = self._layers(x)
         x0 = self.trans_energy(x0)
         xx0 = torch.cat((x, x0.unsqueeze(2).unsqueeze(3).unsqueeze(4).repeat(1,1,torch.tensor(x.shape[-3:-2]).item(),torch.tensor(x.shape[-2:-1]).item(), torch.tensor(x.shape[-1:]).item())), 1)
-        x1 = self._layers2(xx0)
+        x1 = self._layers2(xx0) #hits
         x2 = self._layers3(xx0)
         return x1.reshape(x1.shape[0],self.z*self.r*self.phi), x2.reshape(x1.shape[0],self.z*self.r*self.phi)
     

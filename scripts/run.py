@@ -39,29 +39,30 @@ logger = logging.getLogger(__name__)
 
 from data.dataManager import DataManager
 from model.modelCreator import ModelCreator
+from engine.engine import Engine
 # from utils.plotting.plotProvider import PlotProvider
 # from utils.stats.partition import get_Zs, save_plot, create_filenames_dict
 # from utils.helpers import get_epochs, get_project_id
-# from engine.engine import Engine
-# from models.modelCreator import ModelCreator
 
-@hydra.main(config_path="../config", config_name="config")
+@hydra.main(config_path="../config", config_name="config", version_base=None)
 def main(cfg=None):
     mode = 'online' if cfg.wandb_enabled else 'disabled'
-    if cfg.load_state == 0:
-        # wandb.init(project="caloqvae", entity="caloqvae", config=cfg, mode=mode)
-        wandb.init(project=cfg.wandb.project, entity=cfg.wandb.entity, config=OmegaConf.to_container(cfg, resolve=True), mode=mode)
-    else:
+    if cfg.load_state:
+        logger.info(f"Loading config from {cfg.config_path}")
+        cfg = OmegaConf.load(cfg.config_path)
         os.environ["WANDB_DIR"] = cfg.run_path.split("wandb")[0]
         iden = get_project_id(cfg.run_path)
-        wandb.init(project=cfg.wandb.project, entity=cfg.wandb.entity, config=OmegaConf.to_container(cfg, resolve=True), mode=mode,
+        wandb.init(tags = [cfg.data.dataset_name], project=cfg.wandb.project, entity=cfg.wandb.entity, config=OmegaConf.to_container(cfg, resolve=True), mode=mode,
                 resume='allow', id=iden)
+    else:
+        wandb.init(tags = [cfg.data.dataset_name], project=cfg.wandb.project, entity=cfg.wandb.entity, config=OmegaConf.to_container(cfg, resolve=True), mode=mode)
     print(OmegaConf.to_yaml(cfg, resolve=True))
     #Save and load config file
     #OmegaConf.save(config, "/home/jtoledo/CaloQuVAE/cfg_test.yaml", resolve=True )
     #cfg_load = OmegaConf.load("/home/jtoledo/CaloQuVAE/cfg_test.yaml")
     
-    run(config=cfg)
+    engine = setup_model(config=cfg)
+    run(engine)
 
 def set_device(config=None):
     if (config.device == 'gpu') and config.gpu_list:
@@ -85,7 +86,7 @@ def set_device(config=None):
     return dev
 
 
-def run(config=None):
+def setup_model(config=None):
     """
     Run m
     """
@@ -100,9 +101,7 @@ def run(config=None):
     #create the NN infrastructure
     model.create_networks()
     model.print_model_info()
-
-    for name, param in model.named_parameters():
-        print(name, param.requires_grad)
+    model.prior._n_batches = len(dataMgr.train_loader) - 1
 
     # Load the model on the GPU if applicable
     dev = set_device(config)
@@ -116,87 +115,52 @@ def run(config=None):
     else:
         logger.info("Model NOT being watched by wandb")
 
-    return model, dataMgr
-
-    # # For some reason, need to use postional parameter cfg instead of named parameter
-    # # with updated Hydra - used to work with named param but now is cfg=None 
-    # engine=instantiate(config.engine, config)
-    # #TODO for some reason hydra double instantiates the engine in a
-    # #newer version if cfg=config is passed as an argument. This is a workaround.
-    # #Find out why that is...
-    # engine._config=config
-    # #add dataMgr instance to engine namespace
-    # engine.data_mgr=dataMgr
-    # #add device instance to engine namespace
-    # engine.device=dev    
-    # #instantiate and register optimisation algorithm
-    # engine.optimiser = torch.optim.Adam(model.parameters(),
-    #                                     lr=config.engine.learning_rate)
-#     #add the model instance to the engine namespace
-#     engine.model = model
-#     # add the modelCreator instance to engine namespace
-#     engine.model_creator = modelCreator
-#     if 'discriminator' in engine._config.engine.keys() and engine._config.engine.discriminator:
-#         engine.critic.to(dev)
-#         engine.critic_2.to(dev)
+    # For some reason, need to use postional parameter cfg instead of named parameter
+    # with updated Hydra - used to work with named param but now is cfg=None 
+    engine=instantiate(config.engine, config)
+    #add dataMgr instance to engine namespace
+    engine.data_mgr=dataMgr
+    #add device instance to engine namespace
+    engine.device=dev    
+    #instantiate and register optimisation algorithm
+    engine.optimiser = torch.optim.Adam(model.parameters(),
+                                        lr=config.engine.learning_rate)
+    #add the model instance to the engine namespace
+    engine.model = model
+    # add the modelCreator instance to engine namespace
+    engine.model_creator = modelCreator
+    # if 'discriminator' in engine._config.engine.keys() and engine._config.engine.discriminator:
+    #     engine.critic.to(dev)
+    #     engine.critic_2.to(dev)
     
-#     if 'exact_rbm_grad' in config.keys() and config.exact_rbm_grad:
-#         for name, param in engine.model.named_parameters():
-#             if 'prior' in name:
-#                 param.requires_grad = False
-#             print(name, param.requires_grad)
+    for name, param in engine.model.named_parameters():
+        if 'prior' in name:
+            param.requires_grad = False
+        print(name, param.requires_grad)
+    
+    return engine
 
-#     _epoch = 0
-#     dummy_variable = 0
-#     if config.load_state:
-#         assert config.run_path != 0
-#         config_string = "_".join(str(i) for i in [config.model.model_type, config.data.data_type, config.tag])
-#         modelCreator.load_state(config.run_path, dev)
-#         # _epoch = get_epochs(config.run_path)
-#         # temp solution to get total number of epochs this model has been trained on
-#         fn = create_filenames_dict(config.run_path, config.data.entity)
-#         _epoch = fn["size"]
-#         print(_epoch)
-#         # if config.freeze_vae:
-#         #     for name, param in engine.model.named_parameters():
-#         #         # if 'decoder' in name or 'encoder' in name:
-#         #         if 'encoder' in name:
-#         #             param.requires_grad = False
-#         #         print(name, param.requires_grad)
-#         #     engine.optimiser = torch.optim.Adam(filter(lambda p: p.requires_grad, engine.model.parameters()), lr=config.engine.learning_rate)
-#         #     dummy_variable = 1
+def run(engine):
+    config = engine._config
+    for epoch in range(config.epoch_start, config.n_epochs):
+        engine.fit(epoch)
 
-#     for epoch in range(1+_epoch, _epoch+config.engine.n_epochs+1):
-#         if config.freeze_vae and dummy_variable == 0:
-#             # if epoch > config.engine.annealing_percentage*2.0*(config.engine.n_epochs + _epoch) + 1:
-#             if epoch > config.engine.epoch_freeze:
-#                 for name, param in engine.model.named_parameters():
-#                     if 'decoder' in name or 'encoder' in name:
-#                     # if 'encoder' in name:
-#                         param.requires_grad = False
-#                     print(name, param.requires_grad)
-#                 # engine.optimiser = torch.optim.Adam(filter(lambda p: p.requires_grad, engine.model.parameters()), lr=config.engine.learning_rate)
-#                 engine._save_model(name="at_freezing_point")
-#                 engine._config.model.rbmMethod = "PCD"
-#                 logger.info(f'RBM will use {engine._config.model.rbmMethod}')
-#                 dummy_variable = 1
-                
-#         if "train" in config.task:
-#             engine.model.train()
-#             engine.fit(epoch=epoch, is_training=True, mode="train")
+        engine.evaluate(engine.data_mgr.val_loader, epoch)
 
-#         if "validate" in config.task:
-#             engine.model.eval()
-#             with torch.no_grad():
-#                 engine.fit(epoch=epoch, is_training=False, mode="validate")
-            
-#         if epoch % 10 == 0:
-#             engine._save_model(name=str(epoch))
+        if config.freeze_vae and epoch > config.epoch_freeze:
+            for name, param in engine.model.named_parameters():
+                if 'decoder' in name or 'encoder' in name:
+                    param.requires_grad = False
+                print(name, param.requires_grad)
+            # engine.optimiser = torch.optim.Adam(filter(lambda p: p.requires_grad, engine.model.parameters()), lr=config.engine.learning_rate)
+            engine._save_model(name="at_freezing_point")
+            engine._config.rbm.method = "PCD"
+            logger.info(f'RBM will use {engine._config.model.rbmMethod}')
+        
+        if epoch % 10 == 0:
+            engine._save_model(name=str(epoch))
 
-#     if "test" in config.task:
-#         engine.model.eval()
-#         with torch.no_grad():
-#             engine.fit(epoch=epoch, is_training=False, mode="test")
+    engine.evaluate(engine.data_mgr.test_loader, 0)
 
 #     if config.save_state:
 #         config_string = "_".join(str(i) for i in [config.model.model_type, 
@@ -214,6 +178,18 @@ def run(config=None):
 
 #     logger.info("run() finished successfully.")
 
+def get_project_id(path):
+    files = os.listdir(path.split('files')[0])
+    b = [ ".wandb" in file for file in files]
+    idx = (np.array(range(len(files))) * np.array(b)).sum()
+    iden = files[idx].split("-")[1].split(".")[0]
+    return iden
+
+def load_model_instance(path):
+    config = OmegaConf.load(path)
+    self = setup_model(config)
+    self._model_creator.load_state(config.run_path, self.device)
+    return self
 
 if __name__=="__main__":
     logger.info("Starting main executable.")
