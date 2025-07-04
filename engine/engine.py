@@ -216,7 +216,7 @@ class Engine():
                 "conditioned_incidence_ratio": wandb.Image(fig_incidence_ratio),
                 "conditioned_target_recon_ratio": wandb.Image(fig_target_recon_ratio),
                 "conditioned_sparsity": wandb.Image(fig_sparsity),
-                "RBM histogram": rbm_hist,
+                "RBM histogram": wandb.Image(rbm_hist),
                 # f"calo_layer_input_epoch_{epoch}": image_input,
                 # f"calo_layer_recon_epoch_{epoch}": image_recon        
             })
