@@ -137,27 +137,7 @@ def setup_model(config=None):
         if 'prior' in name:
             param.requires_grad = False
         print(name, param.requires_grad)
-
-    _epoch = 0
-    dummy_variable = 0
-    if config.load_state:
-        assert config.run_path != 0
-        config_string = "_".join(str(i) for i in [config.model.model_type, config.data.data_type, config.tag])
-        modelCreator.load_state(config.run_path, dev)
-        # _epoch = get_epochs(config.run_path)
-        # temp solution to get total number of epochs this model has been trained on
-        fn = create_filenames_dict(config.run_path, config.data.entity)
-        _epoch = fn["size"]
-        print(_epoch)
-    if config.freeze_vae:
-        for name, param in engine.model.named_parameters():
-            # if 'decoder' in name or 'encoder' in name:
-            if 'encoder' in name:
-                param.requires_grad = False
-            print(name, param.requires_grad)
-        engine.optimiser = torch.optim.Adam(filter(lambda p: p.requires_grad, engine.model.parameters()), lr=config.engine.learning_rate)
-        dummy_variable = 1
-
+    
     return engine
 
 def run(engine):

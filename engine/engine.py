@@ -121,8 +121,9 @@ class Engine():
             # Compute loss
             loss_dict = self.model.loss(x, output)
             loss_dict["loss"] = torch.stack([loss_dict[key] * self._config.engine.loss_coeff[key]  for key in loss_dict.keys() if "loss" != key]).sum()
-            # loss_dict["loss"] = loss_dict["ae_loss"] + \
-                # loss_dict["kl_loss"] + loss_dict["hit_loss"]
+            self.model.prior.gradient_rbm_centered(output[2])
+            self.model.prior.update_params()
+            
             # Backward pass and optimization
             self.optimiser.zero_grad()
             loss_dict["loss"].backward()
@@ -192,14 +193,14 @@ class Engine():
                         wandb.log(loss_dict)
                         
             # Calorimeter layer plots
-            plot_calorimeter_shower(
-                cfg=self._config,
-                showers=self.showers,
-                showers_recon=self.showers_recon,
-                incident_energy=self.incident_energy,
-                epoch=epoch,
-                save_dir="None"
-            )
+            # plot_calorimeter_shower(
+            #     cfg=self._config,
+            #     showers=self.showers,
+            #     showers_recon=self.showers_recon,
+            #     incident_energy=self.incident_energy,
+            #     epoch=epoch,
+            #     save_dir="None"
+            # )
             
             # Log plots
             overall_fig, fig_energy_sum, fig_incidence_ratio, fig_target_recon_ratio, fig_sparsity = vae_plots(
@@ -214,8 +215,8 @@ class Engine():
                 "conditioned_target_recon_ratio": wandb.Image(fig_target_recon_ratio),
                 "conditioned_sparsity": wandb.Image(fig_sparsity),
                 "RBM histogram": rbm_hist,
-                f"calo_layer_input_epoch_{epoch}": image_input,
-                f"calo_layer_recon_epoch_{epoch}": image_recon        
+                # f"calo_layer_input_epoch_{epoch}": image_input,
+                # f"calo_layer_recon_epoch_{epoch}": image_recon        
             })
 
     

@@ -155,7 +155,7 @@ class RBM(ZephyrRBM):
         p0_state, p1_state, p2_state, p3_state = self.block_gibbs_sampling_cond(post_zetas[:, :n_nodes_p],
                                              post_zetas[:, n_nodes_p:2*n_nodes_p],
                                              post_zetas[:, 2*n_nodes_p:3*n_nodes_p],
-                                             post_zetas[:, 3*n_nodes_p:], method='CD')
+                                             post_zetas[:, 3*n_nodes_p:])
         
         if self._config.rbm.method == "PCD":
             if self._chain==False:

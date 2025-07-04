@@ -11,7 +11,7 @@ wandb_enabled: 1
 
 device: gpu
 gpu_list:
-  - 0
+  - 1
 
 defaults:
   - data: AtlasReg030
