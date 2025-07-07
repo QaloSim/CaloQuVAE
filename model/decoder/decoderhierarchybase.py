@@ -50,7 +50,7 @@ class DecoderHierarchyBase(nn.Module):
         """
         self.skip_connections = nn.ModuleList()
         input_size = 2*self._config.rbm.latent_nodes_per_p  # Each skip connection takes the latent nodes and the incident energy as input
-        output_size = self.shower_size + self.latent_nodes # Each skip connection outputs the shower size
+        output_size = self.shower_size + self.latent_nodes # Each skip connection outputs the input size of the subdecoders
         for i in range(self.hierarchical_levels-1):
             skip_connection = nn.Conv3d(
                 in_channels=input_size,
@@ -95,6 +95,20 @@ class DecoderHierarchyBaseV2(DecoderHierarchyBase):
         Outputs a shower of shape (7, 24, 14)
         """
         super(DecoderHierarchyBaseV2, self).__init__(cfg)
+    
+    def _create_skip_connections(self):
+        self.skip_connections = nn.ModuleList()
+        input_size = 2*self._config.rbm.latent_nodes_per_p  # Each skip connection takes the latent nodes and the incident energy as input
+        output_size = self.latent_nodes # Each skip connection outputs the input size of the subdecoders minus the shower size
+        for i in range(self.hierarchical_levels-1):
+            skip_connection = nn.Conv3d(
+                in_channels=input_size,
+                out_channels=output_size,
+                kernel_size=(1, 1, 1),
+                stride=(1, 1, 1))
+            self.skip_connections.append(skip_connection)
+
+
     
     def forward(self, x, x0):
         x_lat = x

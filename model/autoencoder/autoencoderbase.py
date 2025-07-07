@@ -12,7 +12,7 @@ from torch.nn.functional import binary_cross_entropy_with_logits
 from model.gumbel import GumbelMod
 from model.encoder.encoderhierarchybase import HierarchicalEncoder
 from model.decoder.decoder import Decoder
-from model.decoder.decoderhierarchybase import DecoderHierarchyBase
+from model.decoder.decoderhierarchybase import DecoderHierarchyBase, DecoderHierarchyBaseV2
 from model.rbm.rbm import RBM
 
 #logging module with handmade settings.
@@ -49,6 +49,8 @@ class AutoEncoderBase(nn.Module):
             return Decoder(self._config)
         elif self._config.model.decoder == "hierachicaldecoder":
             return DecoderHierarchyBase(self._config)
+        elif self._config.model.decoder == "hierarchicaldecoderv2":
+            return DecoderHierarchyBaseV2(self._config)
         
     def _create_prior(self):
         logger.debug("::_create_prior")
