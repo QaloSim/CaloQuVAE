@@ -48,9 +48,9 @@ class DecoderHierarchyBase(nn.Module):
         The ith skip connection feeds the latent nodes of the ith RBM partition to the ith subdecoder,
         as well as the conditioned incident energy stored in partition 0 of the RBM.
         """
-        self.skip_connections = []
+        self.skip_connections = nn.ModuleList()
         input_size = 2*self._config.rbm.latent_nodes_per_p  # Each skip connection takes the latent nodes and the incident energy as input
-        output_size = self.shower_size + self.latent_nodes # Each skip connection outputs the shower size
+        output_size = self.shower_size + self.latent_nodes # Each skip connection outputs the input size of the subdecoders
         for i in range(self.hierarchical_levels-1):
             skip_connection = nn.Conv3d(
                 in_channels=input_size,
@@ -72,7 +72,7 @@ class DecoderHierarchyBase(nn.Module):
                 # Concatenate the output of the current decoder with the latent nodes of the next RBM partition
                 partition_idx_start = (self.hierarchical_levels - lvl - 1) * self._config.rbm.latent_nodes_per_p #start index for the current RBM partition
                 partition_idx_end = partition_idx_start + self._config.rbm.latent_nodes_per_p  # end index for the current RBM partition
-                enc_z = torch.cat((x[:, 0:partition_idx_start], x[:, partition_idx_start:partition_idx_end]), dim=1)  # concatenate the incident energy and the latent nodes of the current RBM partition
+                enc_z = torch.cat((x[:, 0:self._config.rbm.latent_nodes_per_p], x[:, partition_idx_start:partition_idx_end]), dim=1)  # concatenate the incident energy and the latent nodes of the current RBM partition
                 enc_z = torch.unflatten(enc_z, 1, (self._config.rbm.latent_nodes_per_p*2, 1, 1, 1))
                 # Apply skip connection
                 enc_z = self.skip_connections[lvl](enc_z).view(enc_z.size(0), -1)  # Flatten the output of the skip connection
@@ -96,6 +96,20 @@ class DecoderHierarchyBaseV2(DecoderHierarchyBase):
         """
         super(DecoderHierarchyBaseV2, self).__init__(cfg)
     
+    def _create_skip_connections(self):
+        self.skip_connections = nn.ModuleList()
+        input_size = 2*self._config.rbm.latent_nodes_per_p  # Each skip connection takes the latent nodes and the incident energy as input
+        output_size = self.latent_nodes # Each skip connection outputs the input size of the subdecoders minus the shower size
+        for i in range(self.hierarchical_levels-1):
+            skip_connection = nn.Conv3d(
+                in_channels=input_size,
+                out_channels=output_size,
+                kernel_size=(1, 1, 1),
+                stride=(1, 1, 1))
+            self.skip_connections.append(skip_connection)
+
+
+    
     def forward(self, x, x0):
         x_lat = x
         output_hits, output_activations = None, None
@@ -109,7 +123,7 @@ class DecoderHierarchyBaseV2(DecoderHierarchyBase):
                 # Concatenate the output of the current decoder with the latent nodes of the next RBM partition
                 partition_idx_start = (self.hierarchical_levels - lvl - 1) * self._config.rbm.latent_nodes_per_p #start index for the current RBM partition
                 partition_idx_end = partition_idx_start + self._config.rbm.latent_nodes_per_p  # end index for the current RBM partition
-                enc_z = torch.cat((x_lat[:, 0:partition_idx_start], x_lat[:, partition_idx_start:partition_idx_end]), dim=1)  # concatenate the incident energy and the latent nodes of the current RBM partition
+                enc_z = torch.cat((x_lat[:, 0:self._config.rbm.latent_nodes_per_p], x_lat[:, partition_idx_start:partition_idx_end]), dim=1)  # concatenate the incident energy and the latent nodes of the current RBM partition
                 enc_z = torch.unflatten(enc_z, 1, (self._config.rbm.latent_nodes_per_p*2, 1, 1, 1))
                 # Apply skip connection
                 enc_z = self.skip_connections[lvl](enc_z).view(enc_z.size(0), -1)  # Flatten the output of the skip connection

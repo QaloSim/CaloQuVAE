@@ -155,7 +155,7 @@ class RBM(ZephyrRBM):
         p0_state, p1_state, p2_state, p3_state = self.block_gibbs_sampling_cond(post_zetas[:, :n_nodes_p],
                                              post_zetas[:, n_nodes_p:2*n_nodes_p],
                                              post_zetas[:, 2*n_nodes_p:3*n_nodes_p],
-                                             post_zetas[:, 3*n_nodes_p:], method='CD')
+                                             post_zetas[:, 3*n_nodes_p:])
         
         if self._config.rbm.method == "PCD":
             if self._chain==False:
@@ -210,7 +210,7 @@ class RBM(ZephyrRBM):
                 (p2 @ self.weight_dict["23"] @ p3.T).diagonal() - \
                 p1 @ self.bias_dict["1"] - \
                 p2 @ self.bias_dict["2"] - \
-                p3 @ self.bias_dict["3"]).mean()
+                p3 @ self.bias_dict["3"])
 
         return batch_energy
     
@@ -229,6 +229,6 @@ class RBM(ZephyrRBM):
                 p0 @ self.bias_dict["0"] - \
                 p1 @ self.bias_dict["1"] - \
                 p2 @ self.bias_dict["2"] - \
-                p3 @ self.bias_dict["3"]).mean()
+                p3 @ self.bias_dict["3"])
 
         return batch_energy

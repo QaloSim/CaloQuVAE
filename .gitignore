@@ -1,4 +1,6 @@
 runJT.sh
+runLZ.sh
+nbLZ.ipynb
 outputs/
 cfg_test.yaml
 wandb/

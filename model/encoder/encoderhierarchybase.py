@@ -17,7 +17,7 @@ class HierarchicalEncoder(nn.Module):
         self.smoothing_dist_mod = GumbelMod()
         self._config = cfg
 
-        self.n_latent_hierarchy_lvls=self._config.model.latent_hierarchy_lvls
+        self.n_latent_hierarchy_lvls=self._config.rbm.partitions
 
         self.n_latent_nodes=self._config.rbm.latent_nodes_per_p
 
