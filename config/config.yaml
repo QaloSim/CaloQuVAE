@@ -7,14 +7,12 @@ freeze_vae: 1
 run_path: ""
 config_path: "/fast_scratch_1/caloqvae/jtoledo/wandb/run-20250702_212524-kqu1hwdb/files/autoencoderbase_0_config.yaml"
 
-wandb_enabled: 1
-
 device: gpu
 gpu_list:
   - 1
 
 defaults:
-  - data: AtlasReg030
+  - data: AtlasReg025
   - wandb: ML2
   - model: model2
   - engine: engine1

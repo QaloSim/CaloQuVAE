@@ -1,6 +1,11 @@
+dataset_name: AtlasReg055
 path: /fast_scratch_1/caloqvae/data/atlas_regular_cat/dataset_eta_055_positive_cat_smeared.hdf5
 
 binning_path: /fast_scratch_1/caloqvae/data/atlas_regular/dataset_eta_050_positive.hdf5
+
+particle: electron2
+
+relevantLayers : [0, 1, 2, 3, 12, 13, 14, 15, 16, 20]
 
 z: 10
 r: 24
