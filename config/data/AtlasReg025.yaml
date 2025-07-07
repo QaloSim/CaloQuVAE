@@ -1,3 +1,4 @@
+dataset_name: AtlasReg025
 path: /fast_scratch_1/caloqvae/data/atlas_regular_cat/dataset_eta_025_positive_cat_smeared.hdf5
 
 binning_path: /fast_scratch_1/caloqvae/data/atlas_regular/dataset_eta_025_positive.hdf5
@@ -9,7 +10,7 @@ phi: 14
 frac_val_dataset: 0.1
 frac_train_dataset: 0.8
 
-batch_size_tr: 128
+batch_size_tr: 512
 batch_size_val: 1024
 batch_size_test: 1024
 num_workers: 8
