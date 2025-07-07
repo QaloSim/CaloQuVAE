@@ -1,7 +1,7 @@
 import wandb
 from utils.HighLevelFeatsAtlasReg import HighLevelFeatures_ATLAS_regular
 
-def plot_calorimeter_shower(cfg, showers, showers_recon, incident_energy, epoch=0, save_dir=None):
+def plot_calorimeter_shower(cfg, showers, showers_recon, showers_sampled, incident_energy, epoch, save_dir=None):
     """
     creates calorimeter layer plots for the energy
     """
@@ -16,12 +16,15 @@ def plot_calorimeter_shower(cfg, showers, showers_recon, incident_energy, epoch=
     idx = 0  # event index (pick event)
     real = showers[idx]
     recon = showers_recon[idx]
+    sampled = showers_sampled[idx]
         
     input_path = f"{save_dir}/val_input_epoch{epoch}.png" if save_dir else None
     recon_path = f"{save_dir}/val_recon_epoch{epoch}.png" if save_dir else None
+    sample_path = f"{save_dir}/val_sampled_epoch{epoch}.png" if save_dir else None
 
-    # auto save if filename is given
-    HLF.DrawSingleShower(real, title=f"Val Input (Epoch {epoch})", filename=input_path)
-    HLF.DrawSingleShower(recon, title=f"Val Recon (Epoch {epoch})", filename=recon_path)
+    # images
+    image_input = HLF.DrawSingleShower(real, title=f"Val Input (Epoch {epoch})", filename=input_path)
+    image_recon = HLF.DrawSingleShower(recon, title=f"Val Recon (Epoch {epoch})", filename=recon_path)
+    image_sample = HLF.DrawSingleShower(sampled, title=f"Val Sampled (Epoch {epoch})", filename=sample_path)
 
-    return input_path, recon_path
+    return image_input, image_recon, image_sample
