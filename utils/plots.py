@@ -109,15 +109,19 @@ def vae_plots(incident_energies, target_showers, recon_showers, sampled_showers)
 
         target_energy_sums_e = target_energy_sums_np[mask]
         recon_energy_sums_e = recon_energy_sums_np[mask]
+        sampled_energy_sums_e = sampled_energy_sums_np[mask]
+        
         target_incidence_ratio_e = target_incidence_ratio_np[mask]
         recon_incidence_ratio_e = recon_incidence_ratio_np[mask]
+        sampled_incidence_ratio_e = sampled_incidence_ratio_np[mask]
+        
         target_recon_ratio_e = target_recon_ratio_np[mask]
 
-        plot_histograms(ax_energy_sum[row, col], target_energy_sums_e, recon_energy_sums_e, recon_energy_sums_e,
+        plot_histograms(ax_energy_sum[row, col], target_energy_sums_e, recon_energy_sums_e, sampled_energy_sums_e,
                         xlabel='Deposited Energy (GeV)', ylabel='Density',
                         title=f'Energy ~ {e_low / 1000:.1f} - {e_high / 1000:.1f} GeV')
 
-        plot_histograms(ax_incidence_ratio[row, col], target_incidence_ratio_e, recon_incidence_ratio_e, recon_incidence_ratio_e,
+        plot_histograms(ax_incidence_ratio[row, col], target_incidence_ratio_e, recon_incidence_ratio_e, sampled_incidence_ratio_e,
                         xlabel='Deposited Energy / Incident Energy', ylabel='Density',
                         title=f'Energy Ratio ~ {e_low / 1000:.1f} - {e_high / 1000:.1f} GeV')
 
@@ -134,7 +138,7 @@ def vae_plots(incident_energies, target_showers, recon_showers, sampled_showers)
         ax_target_recon_ratio[row, col].axvline(1, color='r', linestyle='--', label='Ideal Ratio (1.0)')
         ax_target_recon_ratio[row, col].legend()
 
-        plot_histograms(ax_sparsity[row, col], target_sparsity_np[mask], recon_sparsity_np[mask], recon_sparsity_np[mask],
+        plot_histograms(ax_sparsity[row, col], target_sparsity_np[mask], recon_sparsity_np[mask], sampled_sparsity_np[mask],
                         xlabel='Sparsity', ylabel='Density',
                         title=f'Sparsity ~ {e_low / 1000:.1f} - {e_high / 1000:.1f} GeV')
 

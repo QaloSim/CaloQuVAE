@@ -26,7 +26,7 @@ class HighLevelFeatures_ATLAS_regular:
         self.ATLAS_raw_dir = filename
         # self.data = h5py.File(self.ATLAS_raw_dir, 'r')
         self.bin_info()
-        print(self.ATLAS_raw_dir)
+        #print(self.ATLAS_raw_dir)
         
     def bin_info(self):
         with h5py.File(self.ATLAS_raw_dir, 'r') as file:
@@ -36,7 +36,7 @@ class HighLevelFeatures_ATLAS_regular:
             self.binstart_alpha = {}
             self.binsize_radius = {}
             self.binstart_radius = {}
-            print("Keys: %s" % list(file.keys()))
+            #print("Keys: %s" % list(file.keys()))
             for key in file.keys():
                 # self.data[key] = torch.tensor(np.array(file[key]))
                 if "binsize_alpha_layer_" in key:
