@@ -26,7 +26,6 @@ def get_atlas_dataset(cfg):
 
     train_idx, val_idx, test_idx = [], [], []
     for indices in bin_to_indices.values():
-        np.random.shuffle(indices)
         n = len(indices)
         n_train = int(cfg.data.frac_train_dataset * n)
         n_val = int(cfg.data.frac_val_dataset * n)

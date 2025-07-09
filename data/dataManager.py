@@ -4,9 +4,8 @@ import numpy as np
 from torch.utils.data import DataLoader, Dataset
 from CaloQuVAE import logging
 
-# for specific datasets
+# for atlas dataset
 from data.atlas import get_atlas_dataset
-from data.calo import get_calo_dataset
 
 logger = logging.getLogger(__name__)
 
@@ -23,8 +22,7 @@ class CaloDataset(Dataset):
 class DataManager():
     def __init__(self, cfg=None):
         self._config = cfg
-        self.load_dataset() 
-        self.select_dataset()          # specific datasets
+        self.select_dataset()          # for different datasets
         self.create_dataloaders()      # slice into train/val/test
 
     def load_dataset(self):
@@ -45,12 +43,9 @@ class DataManager():
             logger.info(f"Loading ATLAS dataset: {self._config.data.dataset_name}")
             self.f = get_atlas_dataset(self._config)
 
-        elif "calo" in dataset_name:
-            logger.info(f"Loading CaloChallenge dataset: {self._config.data.dataset_name}")
-            self.f = get_calo_dataset(self._config)
-
         else:
-            raise ValueError(f"Loading other dataset: '{dataset_name}")
+            logger.info(f"Loading other dataset: {self._config.data.dataset_name}")
+            self.load_dataset()
 
     def create_dataloaders(self):
         total = self.f["showers"].shape[0]
