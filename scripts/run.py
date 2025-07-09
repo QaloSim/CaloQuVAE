@@ -136,7 +136,10 @@ def setup_model(config=None):
 def run(engine):
     config = engine._config
     for epoch in range(config.epoch_start, config.n_epochs):
-        engine.fit(epoch)
+        if config.engine.train_vae_separate:
+            engine.fit_ae(epoch)
+        else:
+            engine.fit_vae(epoch)
 
         engine.evaluate(engine.data_mgr.val_loader, epoch)
 

@@ -2,7 +2,7 @@
 #SBATCH --account=def-tafirout              # PI's account
 #SBATCH --job-name=caloqvae-test           # Descriptive job name
 #SBATCH --output=logs/%x-%j.out            # Logs go to logs/jobname-jobid.out
-#SBATCH --time=02:00:00                    # 2 hours of wall time
+#SBATCH --time=02:30:00                    # 2 hours of wall time
 #SBATCH --cpus-per-task=4                  # Number of CPU cores
 #SBATCH --mem=32G                          # Amount of system RAM
 #SBATCH --gpus-per-node=a100:1            # Request 1 full A100

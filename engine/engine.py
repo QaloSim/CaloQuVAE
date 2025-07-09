@@ -108,7 +108,7 @@ class Engine():
             self.beta = min(self._config.engine.beta_gumbel_start + delta_beta/delta * ((epoch-1)*num_batches + batch_idx), self._config.engine.beta_gumbel_end)
             self.slope = max(self._config.engine.slope_act_fct_start + delta_slope/delta * ((epoch-1)*num_batches + batch_idx), 0.0)
 
-    def fit(self, epoch):
+    def fit_vae(self, epoch):
         log_batch_idx = max(len(self.data_mgr.train_loader)//self._config.engine.n_batches_log_train, 1)
         self.model.train()
         for i, (x, x0) in enumerate(self.data_mgr.train_loader):
@@ -124,6 +124,32 @@ class Engine():
             loss_dict["loss"] = torch.stack([loss_dict[key] * self._config.model.loss_coeff[key]  for key in loss_dict.keys() if "loss" != key]).sum()
             self.model.prior.gradient_rbm_centered(output[2])
             self.model.prior.update_params()
+            
+            # Backward pass and optimization
+            self.optimiser.zero_grad()
+            loss_dict["loss"].backward()
+            self.optimiser.step()
+
+            if (i % log_batch_idx) == 0:
+                    logger.info('Epoch: {} [{}/{} ({:.0f}%)]\t beta: {:.3f}, slope: {:.3f} \t Batch Loss: {:.4f}'.format(epoch,
+                        i, len(self.data_mgr.train_loader),100.*i/len(self.data_mgr.train_loader),
+                        self.beta, self.slope, loss_dict["loss"]))
+                    wandb.log(loss_dict)
+
+                    
+    def fit_ae(self, epoch):
+        log_batch_idx = max(len(self.data_mgr.train_loader)//self._config.engine.n_batches_log_train, 1)
+        self.model.train()
+        for i, (x, x0) in enumerate(self.data_mgr.train_loader):
+            # Anneal parameters
+            self._anneal_params(len(self.data_mgr.train_loader), i, epoch)
+            x = x.to(self.device).to(dtype=torch.float32)
+            x0 = x0.to(self.device).to(dtype=torch.float32)
+            # Forward pass
+            output = self.model((x, x0), self.beta, self.slope)
+            # Compute loss
+            loss_dict = self.model.loss(x, output)
+            loss_dict["loss"] = torch.stack([loss_dict[key] * self._config.model.loss_coeff[key]  for key in loss_dict.keys() if "loss" != key]).sum()
             
             # Backward pass and optimization
             self.optimiser.zero_grad()

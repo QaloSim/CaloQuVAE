@@ -1,30 +1,43 @@
 #!/bin/bash
 #SBATCH --account=def-tafirout              # PI's account
-#SBATCH --job-name=caloquvae-test           # Descriptive job name
+#SBATCH --job-name=caloqvae-test           # Descriptive job name
 #SBATCH --output=logs/%x-%j.out            # Logs go to logs/jobname-jobid.out
-#SBATCH --time=02:00:00                    # 2 hours of wall time
+#SBATCH --time=02:30:00                    # 2 hours of wall time
 #SBATCH --cpus-per-task=4                  # Number of CPU cores
 #SBATCH --mem=32G                          # Amount of system RAM
 #SBATCH --gpus-per-node=a100:1            # Request 1 full A100
 #SBATCH --ntasks=1                         # One process/task
+#SBATCH --mail-type=BEGIN,END,FAIL
+#SBATCH --mail-user=email@domain.ca
+
 
 # Load container support
 module load apptainer
 
-# Optional: create logs folder if it doesn't exist
+# Add current directory to PATH
+export PYTHONPATH=/home/lzhu/projects/def-tafirout/lzhu:/home/lzhu/projects/def-tafirout/lzhu/CaloQuVAE:$PYTHONPATH
+
+# create logs folder if it doesn't exist
 mkdir -p logs
 
-# Define container path
-CONTAINER=/home/lzhu/scratch/container_qml_v3.5.5.0.sif
+# Copy the container to the compute node's fast local storage ($SLURM_TMPDIR)
+echo "Copying container to node-local storage..."
+cp /home/lzhu/scratch/container_qml_v3.5.5.0.sif $SLURM_TMPDIR
+echo "Copy complete."
 
-# Define bind mounts (scratch and project are typically needed)
-BIND_PATHS="/home/lzhu/scratch,/home/lzhu/projects"
+# Define the container path to be the one on the local node
+CONTAINER=$SLURM_TMPDIR/container_qml_v3.5.5.0.sif
 
-# Change to repo root (adjust if needed)
+# Define bind paths 
+BIND_PATHS="/home/lzhu/scratch,/home/lzhu/projects/def-tafirout/lzhu/CaloQuVAE"
+
+# Change to repo root
 cd /home/lzhu/projects/def-tafirout/lzhu/CaloQuVAE
 
-# Run script inside container
+# Export environment variables
+export DWAVE_API_TOKEN=[DWAVE_API_TOKEN]  # Replace with your actual D-Wave API token
+export PYTORCH_CUDA_ALLOC_CONF="max_split_size_mb:512"
+
+# Run script inside container, using the fast local copy
 apptainer exec --nv -B $BIND_PATHS \
-    --env PYTORCH_CUDA_ALLOC_CONF=max_split_size_mb:512 \
-    --env DWAVE_API_TOKEN= [DWAVE TOKEN] \
     $CONTAINER python scripts/runCC.py hydra.run.dir=. hydra.output_subdir=null
