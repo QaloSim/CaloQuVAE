@@ -28,9 +28,10 @@ from engine.engine import Engine
 import wandb
 wandb.init(mode="disabled")
 
-@hydra.main(config_path="../config", config_name="config", version_base=None)
+@hydra.main(config_path="../config", config_name="configCC", version_base=None)
 def main(cfg):
     print(OmegaConf.to_yaml(cfg, resolve=True))
+    os.chdir(os.path.dirname(os.path.abspath(__file__)))  # Prevent Hydra from changing dir
 
     # Setup model and training infrastructure
     engine = setup_model(cfg)

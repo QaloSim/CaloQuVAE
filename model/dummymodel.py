@@ -1,7 +1,7 @@
 import torch.nn as nn
 from model.autoencoder.autoencoderbase import AutoEncoderBase
 
-from CaloQVAE import logging
+from CaloQuVAE import logging
 logger = logging.getLogger(__name__)
 
 
