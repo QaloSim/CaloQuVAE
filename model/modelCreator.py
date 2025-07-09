@@ -49,8 +49,6 @@ class ModelCreator():
     
         
     def save_state(self, cfg_string='test'):
-        logger.info("Saving state")
-
         # Use wandb.run.dir if available, else fallback to local directory
         if wandb.run is not None:
             save_dir = wandb.run.dir
@@ -61,6 +59,7 @@ class ModelCreator():
         os.makedirs(save_dir, exist_ok=True)
 
         path = os.path.join(save_dir, f"{cfg_string}.pth")
+        logger.info(f"Saving model state to {path}")
 
         modules = list(self._model._modules.keys())
         state_dict = {module: getattr(self._model, module).state_dict() for module in modules}

@@ -76,7 +76,11 @@ def run(engine):
     cfg = engine._config
 
     for epoch in range(cfg.epoch_start, cfg.n_epochs):
-        engine.fit(epoch)
+        if cfg.engine.train_vae_separate:
+            engine.fit_ae(epoch)
+        else:
+            engine.fit_vae(epoch)
+            
         engine.evaluate(engine.data_mgr.val_loader, epoch)
 
         if cfg.freeze_vae and epoch > cfg.epoch_freeze:
