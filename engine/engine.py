@@ -195,33 +195,34 @@ class Engine():
                         wandb.log(loss_dict)
                         
             # Calorimeter layer plots
-            calo_input, calo_recon, calo_sampled = plot_calorimeter_shower(
-                cfg=self._config,
-                showers=self.showers,
-                showers_recon=self.showers_recon,
-                showers_sampled=self.showers_prior,
-                incident_energy=self.incident_energy,
-                epoch=epoch,
-                save_dir=None
-            )
-            
-            # Log plots
-            overall_fig, fig_energy_sum, fig_incidence_ratio, fig_target_recon_ratio, fig_sparsity = vae_plots(
-                self.incident_energy, self.showers, self.showers_recon, self.showers_prior)
-            
-            rbm_hist = plot_rbm_histogram(self.RBM_energy_post, self.RBM_energy_prior)
-            
-            wandb.log({
-                "overall_plots": wandb.Image(overall_fig),
-                "conditioned_energy_sum": wandb.Image(fig_energy_sum),
-                "conditioned_incidence_ratio": wandb.Image(fig_incidence_ratio),
-                "conditioned_target_recon_ratio": wandb.Image(fig_target_recon_ratio),
-                "conditioned_sparsity": wandb.Image(fig_sparsity),
-                "RBM histogram": wandb.Image(rbm_hist),
-                "calo_layer_input": wandb.Image(calo_input),
-                "calo_layer_recon": wandb.Image(calo_recon),
-                "calo_layer_sampled": wandb.Image(calo_sampled)       
-            })
+            if wandb.run is not None and wandb.run._settings.mode != "disabled":
+                calo_input, calo_recon, calo_sampled = plot_calorimeter_shower(
+                    cfg=self._config,
+                    showers=self.showers,
+                    showers_recon=self.showers_recon,
+                    showers_sampled=self.showers_prior,
+                    incident_energy=self.incident_energy,
+                    epoch=epoch,
+                    save_dir=None
+                )
+                
+                # Log plots
+                overall_fig, fig_energy_sum, fig_incidence_ratio, fig_target_recon_ratio, fig_sparsity = vae_plots(
+                    self.incident_energy, self.showers, self.showers_recon, self.showers_prior)
+                
+                rbm_hist = plot_rbm_histogram(self.RBM_energy_post, self.RBM_energy_prior)
+                
+                wandb.log({
+                    "overall_plots": wandb.Image(overall_fig),
+                    "conditioned_energy_sum": wandb.Image(fig_energy_sum),
+                    "conditioned_incidence_ratio": wandb.Image(fig_incidence_ratio),
+                    "conditioned_target_recon_ratio": wandb.Image(fig_target_recon_ratio),
+                    "conditioned_sparsity": wandb.Image(fig_sparsity),
+                    "RBM histogram": wandb.Image(rbm_hist),
+                    "calo_layer_input": wandb.Image(calo_input),
+                    "calo_layer_recon": wandb.Image(calo_recon),
+                    "calo_layer_sampled": wandb.Image(calo_sampled)       
+                })
 
     
     @property
