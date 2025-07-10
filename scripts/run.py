@@ -98,7 +98,8 @@ def setup_model(config=None):
     #create the NN infrastructure
     model.create_networks()
     model.print_model_info()
-    model.prior._n_batches = len(dataMgr.train_loader) - 1
+    if not config.engine.train_vae_separate:
+        model.prior._n_batches = len(dataMgr.train_loader) - 1
 
     # Load the model on the GPU if applicable
     dev = set_device(config)
@@ -136,7 +137,10 @@ def setup_model(config=None):
 def run(engine):
     config = engine._config
     for epoch in range(config.epoch_start, config.n_epochs):
-        engine.fit(epoch)
+        if config.engine.train_vae_separate:
+            engine.fit_ae(epoch)
+        else:
+            engine.fit_vae(epoch)
 
         engine.evaluate(engine.data_mgr.val_loader, epoch)
 

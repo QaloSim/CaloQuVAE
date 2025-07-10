@@ -17,7 +17,7 @@ from model.decoder.decoderhierarchy0 import DecoderHierarchy0
 from model.rbm.rbm import RBM
 
 #logging module with handmade settings.
-from CaloQVAE import logging
+from CaloQuVAE import logging
 logger = logging.getLogger(__name__)
 
 # Base Class for Autoencoder models

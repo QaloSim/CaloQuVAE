@@ -29,7 +29,8 @@ from torch import nn
 import os
 import pickle
 
-from CaloQVAE import logging
+import CaloQuVAE
+from CaloQuVAE import logging
 logger = logging.getLogger(__name__)
 
 class ZephyrRBM(nn.Module):
@@ -246,11 +247,20 @@ class ZephyrRBM(nn.Module):
                     )
             self.m, self.t = 12,4
             print(os.getcwd())
-            with open(os.getcwd() + '/model/rbm/nodelist.pickle', 'rb') as handle:
+            repo_root = os.path.dirname(CaloQuVAE.__file__)  # /.../CaloQuVAE
+
+            nodelist_path = os.path.join(repo_root, 'model', 'rbm', 'nodelist.pickle')
+            edgelist_path = os.path.join(repo_root, 'model', 'rbm', 'edgelist.pickle')
+            adjacency_path = os.path.join(repo_root, 'model', 'rbm', 'adjacency.pickle')
+
+            # Load the pickle files
+            with open(nodelist_path, 'rb') as handle:
                 self.nodelist = pickle.load(handle)
-            with open(os.getcwd() + '/model/rbm/edgelist.pickle', 'rb') as handle:
+
+            with open(edgelist_path, 'rb') as handle:
                 self.edgelist = pickle.load(handle)
-            with open(os.getcwd() + '/model/rbm/adjacency.pickle', 'rb') as handle:
+
+            with open(adjacency_path, 'rb') as handle:
                 self.adjacency = pickle.load(handle)
             graph = dnx.zephyr_graph(m=self.m, t=self.t,
                                 node_list=self.nodelist, edge_list=self.edgelist)
