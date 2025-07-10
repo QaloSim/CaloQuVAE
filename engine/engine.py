@@ -159,8 +159,8 @@ class Engine():
             self.RBM_energy_post = torch.zeros((ar_size, 1), dtype=torch.float32)
 
             for i, (x, x0) in enumerate(data_loader):
-                x = x.to(self.device).to(dtype=torch.float32)
-                x0 = x0.to(self.device).to(dtype=torch.float32)
+                x = x.to(self.device)
+                x0 = x0.to(self.device)
                 x_reduce = self._reduce(x, x0)
                 # Forward pass
                 output = self.model((x_reduce, x0))
