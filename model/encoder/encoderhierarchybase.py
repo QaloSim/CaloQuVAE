@@ -31,6 +31,8 @@ class HierarchicalEncoder(nn.Module):
 
         if self._config.model.encoderblock == "AtlasReg":
             return EncoderBlockPBH3Dv3Reg(self._config)
+        elif self._config.model.encoderblock == "CaloChallenge2":
+            return EncoderBlockPBH3Dv3(self._config)
 
     def forward(self, x, x0, beta_smoothing_fct=5):
         """ This function defines a hierarchical approximate posterior distribution. The length of the output is equal 
@@ -141,6 +143,66 @@ class EncoderBlockPBH3Dv3Reg(nn.Module):
         # s_map = max(scaled voxel energy u_i) * (incidence energy / slope of total energy in shower) of the dataset
         return ((torch.log(x0) - log_e_min)/(log_e_max - log_e_min)) * s_map
 
+class EncoderBlockPBH3Dv3(nn.Module):
+    def __init__(self, cfg=None):
+        super(EncoderBlockPBH3Dv3, self).__init__()
+        self._config = cfg
+        self.n_latent_nodes = self._config.rbm.latent_nodes_per_p
+        self.z = self._config.data.z #45
+        self.r = self._config.data.r #9
+        self.phi = self._config.data.phi #16
+        
+        self.seq1 = nn.Sequential(
+    
+                   PeriodicConv3d(1, 32, (3,3,3), (2,1,1), 1),
+                   nn.BatchNorm3d(32),
+                   nn.PReLU(32, 0.02),
+    
+                   PeriodicConv3d(32, 64, (3,3,3), (2,1,1), 1),
+                   nn.BatchNorm3d(64),
+                   nn.PReLU(64, 0.02),
+
+                   PeriodicConv3d(64, 128, (3,3,3), (1,2,1), 1),
+                   nn.BatchNorm3d(128),
+                   nn.PReLU(128, 0.02),
+                )
+
+        self.seq2 = nn.Sequential(
+                           PeriodicConv3d(129, 256, (3,3,3), (2,2,1), 0),
+                           nn.BatchNorm3d(256),
+                           nn.PReLU(256, 0.02),
+
+                           PeriodicConv3d(256, self.n_latent_nodes, (3,3,3), (1,2,2), 0),
+                           nn.PReLU(self.n_latent_nodes, 1.0),
+                           nn.Flatten(),
+                        )
+        
+
+    def forward(self, x, x0, post_samples):
+        # 1 channel of a 3d object / shower
+        x = x.reshape(x.shape[0], 1, self.z, self.phi, self.r) 
+        pos_enc_samples = self._pos_enc(post_samples)
+        x = x + pos_enc_samples.unsqueeze(2).unsqueeze(3).unsqueeze(4).repeat(1,1,torch.tensor(x.shape[-3:-2]).item(),torch.tensor(x.shape[-2:-1]).item(), torch.tensor(x.shape[-1:]).item())
+        x = self.seq1(x)
+            
+        x0 = self.trans_energy(x0)
+        x = torch.cat((x, x0.unsqueeze(2).unsqueeze(3).unsqueeze(4).repeat(1,1,torch.tensor(x.shape[-3:-2]).item(),torch.tensor(x.shape[-2:-1]).item(), torch.tensor(x.shape[-1:]).item())), 1)
+        x = self.seq2(x)
+        
+        return x
+    
+    def _pos_enc(self, post_samples):
+        post_samples = torch.cat(post_samples,1)
+        M = post_samples.shape[1]
+
+        pres = [(torch.arange(0,M).multiply(np.pi/M).cos().to(post_samples.device) * post_samples + torch.arange(0,M).multiply(np.pi/M).sin().to(post_samples.device) *(1 - post_samples).abs()).divide(np.sqrt(M)).unsqueeze(2) for i in np.arange(1,M/4-1,1)]
+        pos_enc = torch.cat(pres,2).transpose(1,2)
+        res = pos_enc.sum([1,2])/(M-1)
+        return res.unsqueeze(1)
+    
+    def trans_energy(self, x0, log_e_max=14.0, log_e_min=6.0, s_map = 1.0):
+        # s_map = max(scaled voxel energy u_i) * (incidence energy / slope of total energy in shower) of the dataset
+        return ((torch.log(x0) - log_e_min)/(log_e_max - log_e_min)) * s_map
 
 class PeriodicConv3d(nn.Module):
     def __init__(self, in_channels, out_channels, kernel_size, stride=1, padding=0, dilation=1, groups=1, bias=True):

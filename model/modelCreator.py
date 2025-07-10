@@ -13,7 +13,7 @@ import wandb
 
 from omegaconf import OmegaConf
 
-from CaloQVAE import logging
+from CaloQuVAE import logging
 logger = logging.getLogger(__name__)
 
 import torch.nn as nn
@@ -21,10 +21,12 @@ import torch.nn as nn
 #import defined models
 from model.dummymodel import MLP
 from model.autoencoder.autoencoderbase import AutoEncoderBase
+from model.autoencoder.ae_separate import AutoEncoderSeparate
 
 _MODEL_DICT={
     "mlp": MLP,
-    "autoencoderbase": AutoEncoderBase
+    "autoencoderbase": AutoEncoderBase,
+    "ae_separate": AutoEncoderSeparate
 }
 
 class ModelCreator():
@@ -47,22 +49,30 @@ class ModelCreator():
     def model(self,model):
         self._model=model
     
+        
     def save_state(self, cfg_string='test'):
-        logger.info("Saving state")
-        path = os.path.join(wandb.run.dir, "{0}.pth".format(cfg_string))
-        
-        # Extract modules from the model dict and add to start_dict 
-        modules=list(self._model._modules.keys())
-        state_dict={module: getattr(self._model, module).state_dict() for module in modules}
-        
-        # Save the model parameter dict
+        # Use wandb.run.dir if available, else fallback to local directory
+        if wandb.run is not None:
+            save_dir = wandb.run.dir
+        else:
+            # e.g., set a folder relative to current working directory or config run_path
+            save_dir = self._config.run_path if hasattr(self._config, 'run_path') else os.getcwd()
+
+        os.makedirs(save_dir, exist_ok=True)
+
+        path = os.path.join(save_dir, f"{cfg_string}.pth")
+        logger.info(f"Saving model state to {path}")
+
+        modules = list(self._model._modules.keys())
+        state_dict = {module: getattr(self._model, module).state_dict() for module in modules}
+
         torch.save(state_dict, path)
 
-        #save config
-        config_path = os.path.join(wandb.run.dir, "{0}_config.yaml".format(cfg_string))
+        config_path = os.path.join(save_dir, f"{cfg_string}_config.yaml")
         self._config.run_path = path
         self._config.config_path = config_path
-        OmegaConf.save(self._config, config_path, resolve=True )
+        OmegaConf.save(self._config, config_path, resolve=True)
+
         
     def save_RBM_state(self, cfg_string='test', encoded_data_energy=None):
         logger.info("Saving RBM state")

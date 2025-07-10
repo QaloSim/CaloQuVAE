@@ -13,10 +13,11 @@ from model.gumbel import GumbelMod
 from model.encoder.encoderhierarchybase import HierarchicalEncoder
 from model.decoder.decoder import Decoder
 from model.decoder.decoderhierarchybase import DecoderHierarchyBase, DecoderHierarchyBaseV2
+from model.decoder.decoderhierarchy0 import DecoderHierarchy0
 from model.rbm.rbm import RBM
 
 #logging module with handmade settings.
-from CaloQVAE import logging
+from CaloQuVAE import logging
 logger = logging.getLogger(__name__)
 
 # Base Class for Autoencoder models
@@ -51,6 +52,8 @@ class AutoEncoderBase(nn.Module):
             return DecoderHierarchyBase(self._config)
         elif self._config.model.decoder == "hierarchicaldecoderv2":
             return DecoderHierarchyBaseV2(self._config)
+        elif self._config.model.decoder == "decoderhierachy0":
+            return DecoderHierarchy0(self._config)
         
     def _create_prior(self):
         logger.debug("::_create_prior")

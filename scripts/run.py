@@ -98,7 +98,8 @@ def setup_model(config=None):
     #create the NN infrastructure
     model.create_networks()
     model.print_model_info()
-    model.prior._n_batches = len(dataMgr.train_loader) - 1
+    if not config.engine.train_vae_separate:
+        model.prior._n_batches = len(dataMgr.train_loader) - 1
 
     # Load the model on the GPU if applicable
     dev = set_device(config)
@@ -135,25 +136,36 @@ def setup_model(config=None):
 
 def run(engine):
     config = engine._config
-    for epoch in range(config.epoch_start, config.n_epochs):
-        engine.fit(epoch)
+    if config.engine.train_vae_separate:
+        for epoch in range(config.epoch_start, config.n_epochs):
+            engine.fit_ae(epoch)
 
-        engine.evaluate(engine.data_mgr.val_loader, epoch)
+            engine.evaluate_ae(engine.data_mgr.val_loader, epoch)
+            
+            if epoch % 10 == 0:
+                engine._save_model(name=str(epoch))
 
-        if config.freeze_vae and epoch > config.epoch_freeze:
-            for name, param in engine.model.named_parameters():
-                if 'decoder' in name or 'encoder' in name:
-                    param.requires_grad = False
-                print(name, param.requires_grad)
-            # engine.optimiser = torch.optim.Adam(filter(lambda p: p.requires_grad, engine.model.parameters()), lr=config.engine.learning_rate)
-            engine._save_model(name="at_freezing_point")
-            engine._config.rbm.method = "PCD"
-            logger.info(f'RBM will use {engine._config.model.rbmMethod}')
-        
-        if epoch % 10 == 0:
-            engine._save_model(name=str(epoch))
+        engine.evaluate_ae(engine.data_mgr.test_loader, 0)
+    else:
+        for epoch in range(config.epoch_start, config.n_epochs):
+            engine.fit_vae(epoch)
 
-    engine.evaluate(engine.data_mgr.test_loader, 0)
+            engine.evaluate_vae(engine.data_mgr.val_loader, epoch)
+
+            if config.freeze_vae and epoch > config.epoch_freeze:
+                for name, param in engine.model.named_parameters():
+                    if 'decoder' in name or 'encoder' in name:
+                        param.requires_grad = False
+                    print(name, param.requires_grad)
+                # engine.optimiser = torch.optim.Adam(filter(lambda p: p.requires_grad, engine.model.parameters()), lr=config.engine.learning_rate)
+                engine._save_model(name="at_freezing_point")
+                engine._config.rbm.method = "PCD"
+                logger.info(f'RBM will use {engine._config.model.rbmMethod}')
+            
+            if epoch % 10 == 0:
+                engine._save_model(name=str(epoch))
+
+        engine.evaluate_vae(engine.data_mgr.test_loader, 0)
 
 #     if config.save_state:
 #         config_string = "_".join(str(i) for i in [config.model.model_type, 

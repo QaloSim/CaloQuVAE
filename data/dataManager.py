@@ -17,7 +17,7 @@ class CaloDataset(Dataset):
         return len(self.showers)
 
     def __getitem__(self, index):
-        return self.showers[index, :], self.incident_energies[index, :]
+        return self.showers[index, :].float(), self.incident_energies[index, :].float()
 
 class DataManager():
     def __init__(self, cfg=None):
