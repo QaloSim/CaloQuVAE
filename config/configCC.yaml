@@ -14,11 +14,11 @@ gpu_list:
 defaults:
   - data: CCtest
   - wandb: ML2
-  - model: model3
+  - model: model5
   - engine: engine1
   - rbm: zephyr
   - _self_
 
-n_epochs: 1
-epoch_freeze: 0
+n_epochs: 40
+epoch_freeze: 100
 epoch_start: 0
