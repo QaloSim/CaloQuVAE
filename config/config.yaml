@@ -12,9 +12,9 @@ gpu_list:
   - 0
 
 defaults:
-  - data: AtlasReg035
+  - data: CaloChallenge2
   - wandb: ML2
-  - model: model5
+  - model: model3_calo
   - engine: engine1
   - rbm: zephyr
   - _self_
