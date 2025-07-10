@@ -14,7 +14,7 @@ gpu_list:
 defaults:
   - data: AtlasReg025
   - wandb: ML2
-  - model: model2
+  - model: model3
   - engine: engine1
   - rbm: zephyr
   - _self_

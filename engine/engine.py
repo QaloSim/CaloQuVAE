@@ -114,8 +114,8 @@ class Engine():
         for i, (x, x0) in enumerate(self.data_mgr.train_loader):
             # Anneal parameters
             self._anneal_params(len(self.data_mgr.train_loader), i, epoch)
-            x = x.to(self.device).to(dtype=torch.float32)
-            x0 = x0.to(self.device).to(dtype=torch.float32)
+            x = x.to(self.device)
+            x0 = x0.to(self.device)
             x = self._reduce(x, x0)
             # Forward pass
             output = self.model((x, x0), self.beta, self.slope)
