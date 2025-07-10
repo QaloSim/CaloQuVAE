@@ -5,7 +5,6 @@ import torch
 def plot_histograms(ax, target, recon, sampled, xlabel, ylabel, title, bins=30, log_scale=True):
     max_value = max(target.max(), recon.max(), sampled.max())
     min_value = min(target.min(), recon.min(), sampled.min())
-    print(f"Max value: {max_value}, Min value: {min_value}")
     if min_value == max_value:
         print("Warning: min and max values are the same, adjusting to avoid division by zero.")
         max_value += 0.1  # Avoid division by zero if all values are the same

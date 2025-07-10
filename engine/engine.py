@@ -145,6 +145,7 @@ class Engine():
             self._anneal_params(len(self.data_mgr.train_loader), i, epoch)
             x = x.to(self.device).to(dtype=torch.float32)
             x0 = x0.to(self.device).to(dtype=torch.float32)
+            x = self._reduce(x, x0)
             # Forward pass
             output = self.model((x, x0), self.beta, self.slope)
             # Compute loss
@@ -176,10 +177,11 @@ class Engine():
             self.showers_reduce = torch.zeros((ar_size, ar_input_size), dtype=torch.float32)
             self.showers_recon = torch.zeros((ar_size, ar_input_size), dtype=torch.float32)
             self.showers_reduce_recon = torch.zeros((ar_size, ar_input_size), dtype=torch.float32)
-            self.showers_prior = torch.zeros((ar_size, ar_input_size), dtype=torch.float32)
-            self.showers_reduce_prior = torch.zeros((ar_size, ar_input_size), dtype=torch.float32)
             self.post_samples = torch.zeros((ar_size, ar_latent_size * 4), dtype=torch.float32)
             self.post_logits = torch.zeros((ar_size, ar_latent_size * 3), dtype=torch.float32)
+
+            self.showers_prior = torch.zeros((ar_size, ar_input_size), dtype=torch.float32)
+            self.showers_reduce_prior = torch.zeros((ar_size, ar_input_size), dtype=torch.float32)
             self.prior_samples = torch.zeros((ar_size, ar_latent_size * 4), dtype=torch.float32)
             self.RBM_energy_prior = torch.zeros((ar_size, 1), dtype=torch.float32)
             self.RBM_energy_post = torch.zeros((ar_size, 1), dtype=torch.float32)
@@ -191,8 +193,9 @@ class Engine():
                 # Forward pass
                 output = self.model((x_reduce, x0))
                 # Get prior samples
-                prior_samples = self.model.prior.block_gibbs_sampling_cond(p0 = output[2][0])
-                _, shower_prior = self.model.decode(prior_samples, x_reduce, x0)
+                if not self._config.engine.train_vae_separate:
+                    prior_samples = self.model.prior.block_gibbs_sampling_cond(p0 = output[2][0])
+                    _, shower_prior = self.model.decode(prior_samples, x_reduce, x0)
                 # Compute loss
                 loss_dict = self.model.loss(x_reduce, output)
                 loss_dict["loss"] = torch.stack([loss_dict[key] * self._config.model.loss_coeff[key]  for key in loss_dict.keys() if "loss" != key]).sum()
@@ -208,20 +211,27 @@ class Engine():
                 self.showers_reduce_recon[idx1:idx2,:] = output[3].cpu()
                 self.post_samples[idx1:idx2,:] = torch.cat(output[2],dim=1).cpu()
                 self.post_logits[idx1:idx2,:] = torch.cat(output[1],dim=1).cpu()
-                self.prior_samples[idx1:idx2,:] = torch.cat(prior_samples,dim=1).cpu()
-                self.showers_prior[idx1:idx2,:] = self._reduceinv(shower_prior, x0).cpu()
-                self.showers_reduce_prior[idx1:idx2,:] = shower_prior.cpu()
-                self.RBM_energy_prior[idx1:idx2,:] = self.model.prior.energy_exp_cond(prior_samples[0], prior_samples[1], prior_samples[2], prior_samples[3]).cpu().unsqueeze(1)
-                self.RBM_energy_post[idx1:idx2,:] = self.model.prior.energy_exp_cond(output[2][0], output[2][1], output[2][2], output[2][3]).cpu().unsqueeze(1)
 
+                if not self._config.engine.train_vae_separate:
+                    self.prior_samples[idx1:idx2,:] = torch.cat(prior_samples,dim=1).cpu()
+                    self.showers_prior[idx1:idx2,:] = self._reduceinv(shower_prior, x0).cpu()
+                    self.showers_reduce_prior[idx1:idx2,:] = shower_prior.cpu()
+                    self.RBM_energy_prior[idx1:idx2,:] = self.model.prior.energy_exp_cond(prior_samples[0], prior_samples[1], prior_samples[2], prior_samples[3]).cpu().unsqueeze(1)
+                    self.RBM_energy_post[idx1:idx2,:] = self.model.prior.energy_exp_cond(output[2][0], output[2][1], output[2][2], output[2][3]).cpu().unsqueeze(1)
+                else:
+                    # Use recon as prior
+                    self.prior_samples[idx1:idx2,:] = torch.cat(output[2],dim=1).cpu()
+                    self.showers_prior[idx1:idx2,:] = self._reduceinv(output[3], x0).cpu()
+                    self.showers_reduce_prior[idx1:idx2,:] = output[3].cpu()
                 if (i % log_batch_idx) == 0:
                         logger.info('Epoch: {} [{}/{} ({:.0f}%)]\t Batch Loss: {:.4f}'.format(epoch,
                             i, len(data_loader),100.*i/len(data_loader),
                             loss_dict["val_loss"]))
                         wandb.log(loss_dict)
                         
-            # Calorimeter layer plots
-            if wandb.run is not None and wandb.run._settings.mode != "disabled":
+            if wandb.run is not None and wandb.run._settings.mode != "disabled": # Only log if wandb is enabled
+                # Calorimeter layer plots
+
                 calo_input, calo_recon, calo_sampled = plot_calorimeter_shower(
                     cfg=self._config,
                     showers=self.showers,
@@ -236,19 +246,30 @@ class Engine():
                 overall_fig, fig_energy_sum, fig_incidence_ratio, fig_target_recon_ratio, fig_sparsity = vae_plots(
                     self.incident_energy, self.showers, self.showers_recon, self.showers_prior)
                 
-                rbm_hist = plot_rbm_histogram(self.RBM_energy_post, self.RBM_energy_prior)
+                if not self._config.engine.train_vae_separate:
+                    rbm_hist = plot_rbm_histogram(self.RBM_energy_post, self.RBM_energy_prior)
                 
-                wandb.log({
-                    "overall_plots": wandb.Image(overall_fig),
-                    "conditioned_energy_sum": wandb.Image(fig_energy_sum),
-                    "conditioned_incidence_ratio": wandb.Image(fig_incidence_ratio),
-                    "conditioned_target_recon_ratio": wandb.Image(fig_target_recon_ratio),
-                    "conditioned_sparsity": wandb.Image(fig_sparsity),
-                    "RBM histogram": wandb.Image(rbm_hist),
-                    "calo_layer_input": wandb.Image(calo_input),
-                    "calo_layer_recon": wandb.Image(calo_recon),
-                    "calo_layer_sampled": wandb.Image(calo_sampled)       
-                })
+                    wandb.log({
+                        "overall_plots": wandb.Image(overall_fig),
+                        "conditioned_energy_sum": wandb.Image(fig_energy_sum),
+                        "conditioned_incidence_ratio": wandb.Image(fig_incidence_ratio),
+                        "conditioned_target_recon_ratio": wandb.Image(fig_target_recon_ratio),
+                        "conditioned_sparsity": wandb.Image(fig_sparsity),
+                        "RBM histogram": wandb.Image(rbm_hist),
+                        "calo_layer_input": wandb.Image(calo_input),
+                        "calo_layer_recon": wandb.Image(calo_recon),
+                        "calo_layer_sampled": wandb.Image(calo_sampled)       
+                    })
+                else:
+                    wandb.log({
+                        "overall_plots": wandb.Image(overall_fig),
+                        "conditioned_energy_sum": wandb.Image(fig_energy_sum),
+                        "conditioned_incidence_ratio": wandb.Image(fig_incidence_ratio),
+                        "conditioned_target_recon_ratio": wandb.Image(fig_target_recon_ratio),
+                        "conditioned_sparsity": wandb.Image(fig_sparsity),
+                        "calo_layer_input": wandb.Image(calo_input),
+                        "calo_layer_recon": wandb.Image(calo_recon)
+                    })
 
     
     @property

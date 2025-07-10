@@ -12,6 +12,8 @@ from model.encoder.encoderhierarchybase import HierarchicalEncoder
 from model.decoder.decoder import Decoder
 from model.decoder.decoderhierarchybase import DecoderHierarchyBase, DecoderHierarchyBaseV2
 from model.rbm.rbm import RBM
+from torch.distributions import Bernoulli
+
 
 #logging module with handmade settings.
 from CaloQuVAE import logging
@@ -37,15 +39,27 @@ class AutoEncoderSeparate(AutoEncoderBase):
         Replaces KL divergence in generic autoencoder base class.
         
         """
-        logits = torch.cat(post_logits, dim=1)
+        # logits = torch.cat(post_logits, dim=1)
 
-        p_z = torch.sigmoid(logits)
-        epsilon = 1e-8
-        entropy_per_node = -1 * p_z * torch.log(p_z + epsilon) - (1 - p_z) * torch.log(1 - p_z + epsilon)
+        # p_z = torch.sigmoid(logits).detach()
+        # epsilon = 1e-8
+        # entropy_per_node = - self._bce_loss(logits, p_z)
+        # entropy_per_z = torch.sum(entropy_per_node, dim=1)
+
+        # batch_average_entropy = torch.mean(entropy_per_z, dim=0)
+
+        # return batch_average_entropy
+
+        logits = torch.cat(post_logits, dim=1)        
+        if torch.isnan(logits).any():
+            logger.warning("NaN detected in post_logits, returning zero entropy.")
+            return None
+
+        dist = Bernoulli(logits=logits)
+        entropy_per_node = dist.entropy()
         entropy_per_z = torch.sum(entropy_per_node, dim=1)
-
-        batch_average_entropy = torch.mean(entropy_per_z)
-
+        batch_average_entropy = torch.mean(entropy_per_z, dim=0)
+        
         return batch_average_entropy
     
     def loss(self, input_data, args):
@@ -57,7 +71,8 @@ class AutoEncoderSeparate(AutoEncoderBase):
         logger.debug("loss")
         beta, post_logits, post_samples, output_activations, output_hits = args
 
-        entropy = self.posterior_entropy(post_logits)
+        entropy_loss = -1 * self.posterior_entropy(post_logits)        
+
         
         ae_loss = torch.pow((input_data - output_activations),2) * torch.exp(self._config.model.mse_weight*input_data)
         ae_loss = torch.mean(torch.sum(ae_loss, dim=1), dim=0) * self._config.model.coefficient
@@ -68,6 +83,6 @@ class AutoEncoderSeparate(AutoEncoderBase):
         return {
             "ae_loss": ae_loss,
             "hit_loss": hit_loss,
-            "entropy": entropy,
+            "entropy": entropy_loss,
         }
 

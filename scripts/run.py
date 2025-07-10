@@ -98,7 +98,8 @@ def setup_model(config=None):
     #create the NN infrastructure
     model.create_networks()
     model.print_model_info()
-    model.prior._n_batches = len(dataMgr.train_loader) - 1
+    if not config.engine.train_vae_separate:
+        model.prior._n_batches = len(dataMgr.train_loader) - 1
 
     # Load the model on the GPU if applicable
     dev = set_device(config)
