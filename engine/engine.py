@@ -283,9 +283,9 @@ class Engine():
                             i, len(data_loader),100.*i/len(data_loader),
                             loss_dict["val_loss"]))
                         wandb.log(loss_dict)
-            self.generate_plots()
+            self.generate_plots(epoch)
     
-    def generate_plots(self):
+    def generate_plots(self, epoch):
         if self._config.wandb.mode != "disabled": # Only log if wandb is enabled
             # Calorimeter layer plots
 
