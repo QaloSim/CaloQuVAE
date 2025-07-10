@@ -74,28 +74,38 @@ def setup_model(config):
     return engine
 
 def run(engine):
-    cfg = engine._config
-
-    for epoch in range(cfg.epoch_start, cfg.n_epochs):
-        if cfg.engine.train_vae_separate:
+    config = engine._config
+    if config.engine.train_vae_separate:
+        for epoch in range(config.epoch_start, config.n_epochs):
             engine.fit_ae(epoch)
-        else:
-            engine.fit_vae(epoch)
+
+            engine.evaluate_ae(engine.data_mgr.val_loader, epoch)
             
-        engine.evaluate(engine.data_mgr.val_loader, epoch)
+            if epoch % 10 == 0:
+                engine._save_model(name=str(epoch))
 
-        if cfg.freeze_vae and epoch > cfg.epoch_freeze:
-            for name, param in engine.model.named_parameters():
-                if 'decoder' in name or 'encoder' in name:
-                    param.requires_grad = False
-            engine._save_model(name="at_freezing_point")
-            engine._config.rbm.method = "PCD"
-            logger.info(f"RBM will use {engine._config.model.rbmMethod}")
+        engine.evaluate_ae(engine.data_mgr.test_loader, 0)
+    else:
+        for epoch in range(config.epoch_start, config.n_epochs):
+            engine.fit_vae(epoch)
 
-        if epoch % 10 == 0:
-            engine._save_model(name=str(epoch))
+            engine.evaluate_vae(engine.data_mgr.val_loader, epoch)
 
-    engine.evaluate(engine.data_mgr.test_loader, 0)
+            if config.freeze_vae and epoch > config.epoch_freeze:
+                for name, param in engine.model.named_parameters():
+                    if 'decoder' in name or 'encoder' in name:
+                        param.requires_grad = False
+                    print(name, param.requires_grad)
+                # engine.optimiser = torch.optim.Adam(filter(lambda p: p.requires_grad, engine.model.parameters()), lr=config.engine.learning_rate)
+                engine._save_model(name="at_freezing_point")
+                engine._config.rbm.method = "PCD"
+                logger.info(f'RBM will use {engine._config.model.rbmMethod}')
+            
+            if epoch % 10 == 0:
+                engine._save_model(name=str(epoch))
+
+        engine.evaluate_vae(engine.data_mgr.test_loader, 0)
+
 
 if __name__ == "__main__":
     logger.info("Starting CC-compatible run.")

@@ -13,7 +13,7 @@ gpu_list:
 
 defaults:
   - data: CCtest
-  - wandb: ML2
+  - wandb: CC
   - model: model5
   - engine: engine1
   - rbm: zephyr

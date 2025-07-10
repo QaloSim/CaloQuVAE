@@ -52,14 +52,16 @@ class ModelCreator():
         
     def save_state(self, cfg_string='test'):
         # Use wandb.run.dir if available, else fallback to local directory
-        if wandb.run is not None:
+        if wandb.run is not None and self._config.wandb.mode != "disabled":
             save_dir = wandb.run.dir
+            logger.info(f"Using WandB run directory: {save_dir}")
         else:
             # e.g., set a folder relative to current working directory or config run_path
             if hasattr(self._config, 'run_path'):
+                logger.info(f"Using config run directory: {self._config.run_path}")
                 save_dir = self._config.run_path
             else:
-                logger.warning("No wandb run directory found, using current working directory.")
+                logger.warning("No config run directory found, using current working directory.")
                 save_dir = os.getcwd()
 
         os.makedirs(save_dir, exist_ok=True)
