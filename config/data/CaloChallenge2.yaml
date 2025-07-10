@@ -1,4 +1,9 @@
+dataset_name: CaloChallenge2
 path: /fast_scratch_1/caloqvae/data/atlas_dataset2and3/dataset_2_1.hdf5
+
+binning_path: /fast_scratch_1/caloqvae/data/atlas_dataset2and3/dataset_2_1.hdf5
+
+relevantLayers : [0, 1, 2, 3, 12, 13, 14, 44]
 
 z: 45
 r: 9

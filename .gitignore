@@ -1,5 +1,6 @@
 runJT.sh
 runLZ.sh
+submit_caloquvae_LZ.slurm
 nbLZ.ipynb
 outputs/
 cfg_test.yaml
