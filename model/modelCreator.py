@@ -56,7 +56,11 @@ class ModelCreator():
             save_dir = wandb.run.dir
         else:
             # e.g., set a folder relative to current working directory or config run_path
-            save_dir = self._config.run_path if hasattr(self._config, 'run_path') else os.getcwd()
+            if hasattr(self._config, 'run_path'):
+                save_dir = self._config.run_path
+            else:
+                logger.warning("No wandb run directory found, using current working directory.")
+                save_dir = os.getcwd()
 
         os.makedirs(save_dir, exist_ok=True)
 

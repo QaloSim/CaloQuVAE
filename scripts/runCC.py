@@ -51,7 +51,8 @@ def setup_model(config):
     model = modelCreator.init_model()
     model.create_networks()
     model.print_model_info()
-    model.prior._n_batches = len(dataMgr.train_loader) - 1
+    if not config.engine.train_vae_separate:
+        model.prior._n_batches = len(dataMgr.train_loader) - 1
 
     # Select device
     dev = set_device()
