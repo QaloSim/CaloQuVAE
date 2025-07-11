@@ -13,15 +13,14 @@ def plot_calorimeter_shower(cfg, showers, showers_recon, showers_sampled, epoch,
         HLF = HighLevelFeatures_ATLAS_regular(
             particle=cfg.data.particle,
             filename=cfg.data.binning_path,
-            relevantLayers=cfg.data.relevantLayers,
-            wandb=True
+            relevantLayers=cfg.data.relevantLayers
         )
         
     else:
         HLF = HighLevelFeatures(
             particle=cfg.data.particle,
             filename=cfg.data.binning_path,
-            wandb=True
+            relevantLayers=cfg.data.relevantLayers
         )
 
     idx = 0  # event index (pick event)

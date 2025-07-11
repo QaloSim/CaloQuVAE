@@ -8,9 +8,8 @@ import matplotlib.pyplot as plt
 from matplotlib.colors import LogNorm as LN
 from mpl_toolkits.axes_grid1.inset_locator import inset_axes
 
-from io import BytesIO
-from PIL import Image
-import wandb
+# from io import BytesIO
+# from PIL import Image
 
 # reads the xml binning file
 from utils.XMLHandler import XMLHandler
@@ -18,17 +17,16 @@ from utils.XMLHandler import XMLHandler
 class HighLevelFeatures:
     """ Computes all high-level features based on the specific geometry stored in the binning file
     """
-    def __init__(self, particle, filename='binning.xml', wandb = True):
+    def __init__(self, particle, filename='binning.xml', relevantLayers=[0,1,2,3,4,5]):
         """ particle (str): particle to be considered
             filename (str): path/to/binning.xml of the specific detector geometry.
             particle is redundant, as it is also part of the binning file, however, it serves as a
             crosscheck to ensure the correct binning is used.
         """
-        self.wandb = wandb
         xml = XMLHandler(particle, filename=filename)
         self.bin_edges = xml.GetBinEdges()
         self.eta_all_layers, self.phi_all_layers = xml.GetEtaPhiAllLayers()
-        self.relevantLayers = xml.GetRelevantLayers()
+        self.relevantLayers = relevantLayers #xml.GetRelevantLayers()
         self.layersBinnedInAlpha = xml.GetLayersWithBinningInAlpha()
         self.r_edges = [redge for redge in xml.r_edges if len(redge) > 1]
         self.num_alpha = [len(xml.alphaListPerLayer[idx][0]) for idx, redge in \
@@ -195,23 +193,7 @@ class HighLevelFeatures:
                                borderpad=0)
         cbar = plt.colorbar(pcm, cax=axins, fraction=0.2, orientation="horizontal")
         cbar.set_label(r'Energy (MeV)', y=0.83, fontsize=12)
-        if self.wandb:
-            buf = BytesIO()
-            plt.savefig(buf, format='png', dpi=500)
-            buf.seek(0)
-            image = wandb.Image(Image.open(buf))
-            buf.close()
-            plt.close(fig)
-            return image
-        else:
-            if title is not None:
-                plt.gcf().suptitle(title)
-            if filename is not None:
-                plt.savefig(filename, facecolor='white')
-            else:
-                plt.show()
-            plt.close()
-        
+        return fig
 
     def GetEtot(self):
         """ returns total energy of the showers """
