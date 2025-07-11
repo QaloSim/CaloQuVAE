@@ -295,7 +295,7 @@ class Engine():
                 showers_recon=self.showers_recon,
                 showers_sampled=self.showers_prior,
                 epoch=epoch,
-                save_dir='plots'
+                save_dir=None
             )
             
             # Log plots
