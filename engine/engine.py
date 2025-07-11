@@ -222,7 +222,7 @@ class Engine():
                             i, len(data_loader),100.*i/len(data_loader),
                             loss_dict["val_loss"]))
                         wandb.log(loss_dict)
-            self.generate_plots()
+            self.generate_plots(epoch)
 
     def evaluate_ae(self, data_loader, epoch):
         log_batch_idx = max(len(data_loader)//self._config.engine.n_batches_log_val, 1)
@@ -283,9 +283,9 @@ class Engine():
                             i, len(data_loader),100.*i/len(data_loader),
                             loss_dict["val_loss"]))
                         wandb.log(loss_dict)
-            self.generate_plots()
+            self.generate_plots(epoch)
     
-    def generate_plots(self):
+    def generate_plots(self, epoch):
         if self._config.wandb.mode != "disabled": # Only log if wandb is enabled
             # Calorimeter layer plots
 
@@ -294,13 +294,12 @@ class Engine():
                 showers=self.showers,
                 showers_recon=self.showers_recon,
                 showers_sampled=self.showers_prior,
-                incident_energy=self.incident_energy,
                 epoch=epoch,
-                save_dir=None
+                save_dir='plots'
             )
             
             # Log plots
-            overall_fig, fig_energy_sum, fig_incidence_ratio, fig_target_recon_ratio, fig_sparsity = vae_plots(
+            overall_fig, fig_energy_sum, fig_incidence_ratio, fig_target_recon_ratio, fig_sparsity = vae_plots(self._config,
                 self.incident_energy, self.showers, self.showers_recon, self.showers_prior)
             
             if not self._config.engine.train_vae_separate:

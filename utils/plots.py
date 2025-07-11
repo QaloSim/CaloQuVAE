@@ -22,10 +22,12 @@ def plot_histograms(ax, target, recon, sampled, xlabel, ylabel, title, bins=30, 
     ax.legend()
 
 
-def vae_plots(incident_energies, target_showers, recon_showers, sampled_showers):
+def vae_plots(cfg, incident_energies, target_showers, recon_showers, sampled_showers):
     """
     Plot the energy sums and ratios for target, reconstructed, and sampled showers (overall and binned by incident energy).
     """
+    dataset_name = cfg.data.dataset_name.lower()
+    
     epsilon = 1e-7  # to avoid division by zero
 
     target_energy_sums = torch.sum(target_showers, dim=1)
@@ -74,7 +76,7 @@ def vae_plots(incident_energies, target_showers, recon_showers, sampled_showers)
         max_ratio += 0.1
     binning_ratio = np.arange(min_ratio, max_ratio, (max_ratio - min_ratio) / 30)
     overall_ax[1, 0].hist(target_recon_ratio_np, histtype="stepfilled", bins=binning_ratio, density=True,
-                          alpha=0.7, label='Target / Reconstructed', color='c', linewidth=2.5)
+                          alpha=0.7, label='Reconstructed / Target', color='c', linewidth=2.5)
     overall_ax[1, 0].set_xlabel('Recon / Target Energy Ratio')
     overall_ax[1, 0].set_ylabel('Density')
     overall_ax[1, 0].set_yscale('log')
@@ -87,8 +89,12 @@ def vae_plots(incident_energies, target_showers, recon_showers, sampled_showers)
 
     overall_fig.tight_layout()
 
-
-    energy_bin_centers = [2 ** i for i in range(8, 23)] 
+    # set up the binning for conditioned plots:
+    if 'atlas' in dataset_name:
+        energy_bin_centers = [2 ** i for i in range(8, 23)] # for atlas
+    else:
+        energy_bin_centers = [10 ** i for i in np.linspace(3, 6, num=15, endpoint=True)] # for calo
+        
     fig_energy_sum, ax_energy_sum = plt.subplots(3, 5, figsize=(16, 10))
     fig_incidence_ratio, ax_incidence_ratio = plt.subplots(3, 5, figsize=(16, 10))
     fig_target_recon_ratio, ax_target_recon_ratio = plt.subplots(3, 5, figsize=(16, 10))
@@ -126,10 +132,15 @@ def vae_plots(incident_energies, target_showers, recon_showers, sampled_showers)
 
         max_ratio = target_recon_ratio_e.max()
         min_ratio = target_recon_ratio_e.min()
+        if max_ratio == min_ratio:
+            print('Warning: min and max values are the same, adjusting to avoid division by zero.')
+            max_ratio += 0.1 
         binning_ratio = np.arange(min_ratio, max_ratio, (max_ratio - min_ratio) / 30)
+
         ax_target_recon_ratio[row, col].hist(target_recon_ratio_e, histtype="stepfilled", bins=binning_ratio,
-                                             density=True, alpha=0.7, label='Target / Reconstructed', color='c',
+                                             density=True, alpha=0.7, label='Reconstructed / Target', color='c',
                                              linewidth=2.5)
+        ax_target_recon_ratio[row, col].set_title(f'Recon/Target~{e_low / 1000:.1f} - {e_high / 1000:.1f} GeV')
         ax_target_recon_ratio[row, col].set_xlabel('Recon / Target Energy Ratio')
         ax_target_recon_ratio[row, col].set_ylabel('Density')
         ax_target_recon_ratio[row, col].set_yscale('log')
