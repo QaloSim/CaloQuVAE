@@ -166,6 +166,7 @@ class Engine():
     def evaluate_vae(self, data_loader, epoch):
         log_batch_idx = max(len(data_loader)//self._config.engine.n_batches_log_val, 1)
         self.model.eval()
+        total_loss_dict = {}
         with torch.no_grad():
             bs = [batch[0].shape[0] for batch in data_loader]
             ar_size = np.sum(bs)
@@ -203,6 +204,13 @@ class Engine():
                     loss_dict['val_'+key] = loss_dict[key]
                     loss_dict.pop(key)
                 
+                # Aggregate loss
+                for key in loss_dict.keys():
+                    if key not in total_loss_dict:
+                        total_loss_dict[key] = 0.0
+                    total_loss_dict[key] += loss_dict[key].item()
+                
+                
                 idx1, idx2 = int(np.sum(bs[:i])), int(np.sum(bs[:i+1]))
                 self.incident_energy[idx1:idx2,:] = x0.cpu()
                 self.showers[idx1:idx2,:] = x.cpu()
@@ -216,12 +224,11 @@ class Engine():
                 self.showers_reduce_prior[idx1:idx2,:] = shower_prior.cpu()
                 self.RBM_energy_prior[idx1:idx2,:] = self.model.prior.energy_exp_cond(prior_samples[0], prior_samples[1], prior_samples[2], prior_samples[3]).cpu().unsqueeze(1)
                 self.RBM_energy_post[idx1:idx2,:] = self.model.prior.energy_exp_cond(output[2][0], output[2][1], output[2][2], output[2][3]).cpu().unsqueeze(1)
-                
-                if (i % log_batch_idx) == 0:
-                        logger.info('Epoch: {} [{}/{} ({:.0f}%)]\t Batch Loss: {:.4f}'.format(epoch,
-                            i, len(data_loader),100.*i/len(data_loader),
-                            loss_dict["val_loss"]))
-                        wandb.log(loss_dict)
+            
+            # Log average loss after loop
+            num_batches = len(data_loader)
+            avg_loss_dict = {key: value / num_batches for key, value in total_loss_dict.items()}
+            logger.info("Epoch: {} - Average Validation Loss: {:.4f}".format(epoch, avg_loss_dict["val_loss"]))
             self.generate_plots(epoch)
 
     def evaluate_ae(self, data_loader, epoch):
