@@ -4,7 +4,11 @@ save_hists: 1
 save_partition: 1
 freeze_vae: 0
 
+<<<<<<< HEAD
+run_path: "/home/dkraft/scratch/test_run"
+=======
 run_path: "/home/lzhu/scratch/test_run"
+>>>>>>> origin/dev
 config_path: "/fast_scratch_1/caloqvae/jtoledo/wandb/run-20250702_212524-kqu1hwdb/files/autoencoderbase_0_config.yaml"
 
 device: gpu
@@ -14,11 +18,20 @@ gpu_list:
 defaults:
   - data: CCtest
   - wandb: ML2
+<<<<<<< HEAD
+  - model: model3
+=======
   - model: model5
+>>>>>>> origin/dev
   - engine: engine1
   - rbm: zephyr
   - _self_
 
+<<<<<<< HEAD
+n_epochs: 1
+epoch_freeze: 0
+=======
 n_epochs: 40
 epoch_freeze: 100
+>>>>>>> origin/dev
 epoch_start: 0
