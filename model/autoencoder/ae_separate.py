@@ -26,12 +26,6 @@ class AutoEncoderSeparate(AutoEncoderBase):
     def __init__(self, cfg):
         super(AutoEncoderSeparate, self).__init__(cfg)
 
-    def create_networks(self):
-        """Override to create encoder and decoder networks without RBM prior."""
-        logger.debug("Creating Network Structures")
-        self.encoder = self._create_encoder()
-        self.decoder = self._create_decoder()
-
     def posterior_entropy(self, post_logits, is_training=True):
         """
         Calculate the posterior entropy for the given logits
