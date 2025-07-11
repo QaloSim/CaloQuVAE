@@ -74,7 +74,7 @@ def vae_plots(incident_energies, target_showers, recon_showers, sampled_showers)
         max_ratio += 0.1
     binning_ratio = np.arange(min_ratio, max_ratio, (max_ratio - min_ratio) / 30)
     overall_ax[1, 0].hist(target_recon_ratio_np, histtype="stepfilled", bins=binning_ratio, density=True,
-                          alpha=0.7, label='Target / Reconstructed', color='c', linewidth=2.5)
+                          alpha=0.7, label='Recon / Target', color='c', linewidth=2.5)
     overall_ax[1, 0].set_xlabel('Recon / Target Energy Ratio')
     overall_ax[1, 0].set_ylabel('Density')
     overall_ax[1, 0].set_yscale('log')
@@ -136,6 +136,7 @@ def vae_plots(incident_energies, target_showers, recon_showers, sampled_showers)
         ax_target_recon_ratio[row, col].grid(True)
         ax_target_recon_ratio[row, col].axvline(1, color='r', linestyle='--', label='Ideal Ratio (1.0)')
         ax_target_recon_ratio[row, col].legend()
+        ax_target_recon_ratio[row, col].set_title(f'Recon Ratio ~ {e_low / 1000:.1f} - {e_high / 1000:.1f} GeV')
 
         plot_histograms(ax_sparsity[row, col], target_sparsity_np[mask], recon_sparsity_np[mask], sampled_sparsity_np[mask],
                         xlabel='Sparsity', ylabel='Density',
