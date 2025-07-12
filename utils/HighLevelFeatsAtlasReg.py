@@ -7,12 +7,11 @@ from matplotlib.cm import ScalarMappable
 import matplotlib.pyplot as plt
 import h5py
 
-from io import BytesIO
-from PIL import Image
-import wandb
+# from io import BytesIO
+# from PIL import Image
 
 class HighLevelFeatures_ATLAS_regular:
-    def __init__(self, particle, filename, relevantLayers=[0,1,2,3,12,13,14], wandb = True):
+    def __init__(self, particle, filename, relevantLayers=[0,1,2,3,12,13,14]):
         """
         Initialize the PLT_ATLAS object.
 
@@ -21,7 +20,6 @@ class HighLevelFeatures_ATLAS_regular:
         - event_n: Event number to process.
         - relevantLayers: List of layer numbers to plot. Defaults to [0, 1, 2, 3, 12].
         """
-        self.wandb = wandb
         self.relevantLayers = relevantLayers
         self.ATLAS_raw_dir = filename
         # self.data = h5py.File(self.ATLAS_raw_dir, 'r')
@@ -147,20 +145,4 @@ class HighLevelFeatures_ATLAS_regular:
         sm.set_array([])
         fig.colorbar(sm, ax=axes.ravel().tolist(), orientation='horizontal',
                      fraction=0.05, pad=0.1, label='Energy')
-            
-        if self.wandb:
-            buf = BytesIO()
-            plt.savefig(buf, format='png', dpi=500)
-            buf.seek(0)
-            image = wandb.Image(Image.open(buf))
-            buf.close()
-            plt.close(fig)
-            return image
-        else:
-            if title is not None:
-                plt.gcf().suptitle(title)
-            if filename is not None:
-                plt.savefig(filename, facecolor='white')
-            else:
-                plt.show()
-            plt.close()
+        return fig

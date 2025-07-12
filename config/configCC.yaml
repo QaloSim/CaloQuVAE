@@ -4,7 +4,7 @@ save_hists: 1
 save_partition: 1
 freeze_vae: 0
 
-run_path: "/home/lzhu/scratch/test_run"
+run_path: "/home/dkraft/scratch/test_run"
 config_path: "/fast_scratch_1/caloqvae/jtoledo/wandb/run-20250702_212524-kqu1hwdb/files/autoencoderbase_0_config.yaml"
 
 device: gpu
@@ -13,8 +13,8 @@ gpu_list:
 
 defaults:
   - data: CCtest
-  - wandb: CC
-  - model: model5
+  - wandb: ML2
+  - model: model3
   - engine: engine1
   - rbm: zephyr
   - _self_

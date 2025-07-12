@@ -162,6 +162,7 @@ class Engine():
                         i, len(self.data_mgr.train_loader),100.*i/len(self.data_mgr.train_loader),
                         self.beta, self.slope, loss_dict["loss"]))
                     wandb.log(loss_dict)
+
     def aggr_loss(self, loss_dict, data_loader, end_loop=False):
         if not end_loop:
             for key in loss_dict.keys():
@@ -174,7 +175,6 @@ class Engine():
             logger.info("Epoch: {} - Average Val Loss: {:.4f}".format(self._config.epoch_start, self.total_loss_dict["val_loss"]))
             wandb.log(self.total_loss_dict)
             self.total_loss_dict = {}
-
 
     def evaluate_vae(self, data_loader, epoch):
         log_batch_idx = max(len(data_loader)//self._config.engine.n_batches_log_val, 1)
@@ -318,7 +318,7 @@ class Engine():
             )
             
             # Log plots
-            overall_fig, fig_energy_sum, fig_incidence_ratio, fig_target_recon_ratio, fig_sparsity = vae_plots(
+            overall_fig, fig_energy_sum, fig_incidence_ratio, fig_target_recon_ratio, fig_sparsity = vae_plots(self._config,
                 self.incident_energy, self.showers, self.showers_recon, self.showers_prior)
             
             if not self._config.engine.train_vae_separate:
