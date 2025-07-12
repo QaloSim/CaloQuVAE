@@ -11,7 +11,7 @@ class GumbelMod(torch.nn.Module):
         super(GumbelMod, self).__init__()
         self.activation_fct = torch.nn.Sigmoid()
         
-    def forward(self, logits, beta):
+    def forward(self, logits, beta=100.0):
         """
         Gumbel reparameterization trick
         """

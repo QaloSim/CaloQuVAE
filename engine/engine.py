@@ -163,8 +163,8 @@ class Engine():
                         self.beta, self.slope, loss_dict["loss"]))
                     wandb.log(loss_dict)
 
-    def aggr_loss(self, loss_dict, data_loader, end_loop=False):
-        if not end_loop:
+    def aggr_loss(self, data_loader, loss_dict=None):
+        if loss_dict is not None:
             for key in loss_dict.keys():
                 if key not in self.total_loss_dict:
                     self.total_loss_dict[key] = 0.0
@@ -218,7 +218,7 @@ class Engine():
                     loss_dict.pop(key)
                 
                 # Aggregate loss
-                self.aggr_loss(loss_dict, data_loader, end_loop=False)
+                self.aggr_loss(data_loader, loss_dict)
                 
                 
                 idx1, idx2 = int(np.sum(bs[:i])), int(np.sum(bs[:i+1]))
@@ -236,7 +236,7 @@ class Engine():
                 self.RBM_energy_post[idx1:idx2,:] = self.model.prior.energy_exp_cond(output[2][0], output[2][1], output[2][2], output[2][3]).cpu().unsqueeze(1)
             
             # Log average loss after loop
-            self.aggr_loss(self.total_loss_dict, data_loader, end_loop=True)
+            self.aggr_loss(data_loader)
             self.generate_plots(epoch)
 
     def evaluate_ae(self, data_loader, epoch):
@@ -281,7 +281,7 @@ class Engine():
                     loss_dict.pop(key)
                 
                 # Aggregate loss
-                self.aggr_loss(loss_dict, data_loader, end_loop=False)
+                self.aggr_loss(data_loader, loss_dict)
 
                 
                 idx1, idx2 = int(np.sum(bs[:i])), int(np.sum(bs[:i+1]))
@@ -300,19 +300,18 @@ class Engine():
                 self.showers_reduce_prior[idx1:idx2,:] = output[3].cpu()
             
             # Log average loss after loop
-            self.aggr_loss(self.total_loss_dict, data_loader, end_loop=True)
+            self.aggr_loss(data_loader)
             self.generate_plots(epoch)
     
     def generate_plots(self, epoch):
         if self._config.wandb.mode != "disabled": # Only log if wandb is enabled
             # Calorimeter layer plots
 
-            calo_input, calo_recon, calo_sampled = plot_calorimeter_shower(
+            calo_input, calo_recon, calo_sampled, calo_input_avg, calo_recon_avg, calo_sampled_avg = plot_calorimeter_shower(
                 cfg=self._config,
                 showers=self.showers,
                 showers_recon=self.showers_recon,
                 showers_sampled=self.showers_prior,
-                incident_energy=self.incident_energy,
                 epoch=epoch,
                 save_dir=None
             )
@@ -333,7 +332,10 @@ class Engine():
                     "RBM histogram": wandb.Image(rbm_hist),
                     "calo_layer_input": wandb.Image(calo_input),
                     "calo_layer_recon": wandb.Image(calo_recon),
-                    "calo_layer_sampled": wandb.Image(calo_sampled)       
+                    "calo_layer_sampled": wandb.Image(calo_sampled),
+                    "calo_layer_input_avg": wandb.Image(calo_input_avg),
+                    "calo_layer_recon_avg": wandb.Image(calo_recon_avg),
+                    "calo_layer_sampled_avg": wandb.Image(calo_sampled_avg)       
                 })
             else:
                 wandb.log({
@@ -343,7 +345,9 @@ class Engine():
                     "conditioned_target_recon_ratio": wandb.Image(fig_target_recon_ratio),
                     "conditioned_sparsity": wandb.Image(fig_sparsity),
                     "calo_layer_input": wandb.Image(calo_input),
-                    "calo_layer_recon": wandb.Image(calo_recon)
+                    "calo_layer_recon": wandb.Image(calo_recon),
+                    "calo_layer_input_avg": wandb.Image(calo_input_avg),
+                    "calo_layer_recon_avg": wandb.Image(calo_recon_avg)     
                 })
 
     

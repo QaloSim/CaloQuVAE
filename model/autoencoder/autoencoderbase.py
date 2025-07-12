@@ -98,12 +98,12 @@ class AutoEncoderBase(nn.Module):
         
         output_hits, output_activations = self.decoder(torch.cat(post_samples,1), x0)
 
-        beta = torch.tensor(self._config.model.output_smoothing_fct, dtype=torch.float, device=output_hits.device, requires_grad=False)
+        # beta = torch.tensor(self._config.model.output_smoothing_fct, dtype=torch.float, device=output_hits.device, requires_grad=False)
         
         if self.training:
             output_activations = self._activation_fct(act_fct_slope)(output_activations) * torch.where(x > 0, 1., 0.)
         else:
-            output_activations = self._activation_fct(0.0)(output_activations) * self._hit_smoothing_dist_mod(output_hits, beta)
+            output_activations = self._activation_fct(0.0)(output_activations) * self._hit_smoothing_dist_mod(output_hits)
        
         return output_hits, output_activations
     
@@ -120,7 +120,9 @@ class AutoEncoderBase(nn.Module):
         ae_loss = torch.pow((input_data - output_activations),2) * torch.exp(self._config.model.mse_weight*input_data)
         ae_loss = torch.mean(torch.sum(ae_loss, dim=1), dim=0) * self._config.model.coefficient
 
-        hit_loss = binary_cross_entropy_with_logits(output_hits, torch.where(input_data > 0, 1., 0.), reduction='none')
+        hit_loss = binary_cross_entropy_with_logits(output_hits, torch.where(input_data > 0, 1., 0.),
+                        reduction='none')
+        # weight= (1+input_data).pow(self._config.model.bce_weights_power)
         hit_loss = torch.mean(torch.sum(hit_loss, dim=1), dim=0)
 
         return {"ae_loss":ae_loss, "kl_loss":kl_loss, "hit_loss":hit_loss,
