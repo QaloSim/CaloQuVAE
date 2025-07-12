@@ -162,10 +162,24 @@ class Engine():
                         i, len(self.data_mgr.train_loader),100.*i/len(self.data_mgr.train_loader),
                         self.beta, self.slope, loss_dict["loss"]))
                     wandb.log(loss_dict)
-    
+
+    def aggr_loss(self, loss_dict, data_loader, end_loop=False):
+        if not end_loop:
+            for key in loss_dict.keys():
+                if key not in self.total_loss_dict:
+                    self.total_loss_dict[key] = 0.0
+                self.total_loss_dict[key] += loss_dict[key].item()
+        else:
+            for key in self.total_loss_dict.keys():
+                self.total_loss_dict[key] /= len(data_loader)
+            logger.info("Epoch: {} - Average Val Loss: {:.4f}".format(self._config.epoch_start, self.total_loss_dict["val_loss"]))
+            wandb.log(self.total_loss_dict)
+            self.total_loss_dict = {}
+
     def evaluate_vae(self, data_loader, epoch):
         log_batch_idx = max(len(data_loader)//self._config.engine.n_batches_log_val, 1)
         self.model.eval()
+        self.total_loss_dict = {}
         with torch.no_grad():
             bs = [batch[0].shape[0] for batch in data_loader]
             ar_size = np.sum(bs)
@@ -202,6 +216,10 @@ class Engine():
                 for key in list(loss_dict.keys()):
                     loss_dict['val_'+key] = loss_dict[key]
                     loss_dict.pop(key)
+                
+                # Aggregate loss
+                self.aggr_loss(loss_dict, data_loader, end_loop=False)
+                
                 
                 idx1, idx2 = int(np.sum(bs[:i])), int(np.sum(bs[:i+1]))
                 self.incident_energy[idx1:idx2,:] = x0.cpu()
@@ -216,17 +234,15 @@ class Engine():
                 self.showers_reduce_prior[idx1:idx2,:] = shower_prior.cpu()
                 self.RBM_energy_prior[idx1:idx2,:] = self.model.prior.energy_exp_cond(prior_samples[0], prior_samples[1], prior_samples[2], prior_samples[3]).cpu().unsqueeze(1)
                 self.RBM_energy_post[idx1:idx2,:] = self.model.prior.energy_exp_cond(output[2][0], output[2][1], output[2][2], output[2][3]).cpu().unsqueeze(1)
-                
-                if (i % log_batch_idx) == 0:
-                        logger.info('Epoch: {} [{}/{} ({:.0f}%)]\t Batch Loss: {:.4f}'.format(epoch,
-                            i, len(data_loader),100.*i/len(data_loader),
-                            loss_dict["val_loss"]))
-                        wandb.log(loss_dict)
+            
+            # Log average loss after loop
+            self.aggr_loss(self.total_loss_dict, data_loader, end_loop=True)
             self.generate_plots(epoch)
 
     def evaluate_ae(self, data_loader, epoch):
         log_batch_idx = max(len(data_loader)//self._config.engine.n_batches_log_val, 1)
         self.model.eval()
+        self.total_loss_dict = {}
         with torch.no_grad():
             bs = [batch[0].shape[0] for batch in data_loader]
             ar_size = np.sum(bs)
@@ -263,6 +279,10 @@ class Engine():
                 for key in list(loss_dict.keys()):
                     loss_dict['val_'+key] = loss_dict[key]
                     loss_dict.pop(key)
+                
+                # Aggregate loss
+                self.aggr_loss(loss_dict, data_loader, end_loop=False)
+
                 
                 idx1, idx2 = int(np.sum(bs[:i])), int(np.sum(bs[:i+1]))
                 self.incident_energy[idx1:idx2,:] = x0.cpu()
@@ -278,11 +298,9 @@ class Engine():
                 self.prior_samples[idx1:idx2,:] = torch.cat(output[2],dim=1).cpu()
                 self.showers_prior[idx1:idx2,:] = self._reduceinv(output[3], x0).cpu()
                 self.showers_reduce_prior[idx1:idx2,:] = output[3].cpu()
-                if (i % log_batch_idx) == 0:
-                        logger.info('Epoch: {} [{}/{} ({:.0f}%)]\t Batch Loss: {:.4f}'.format(epoch,
-                            i, len(data_loader),100.*i/len(data_loader),
-                            loss_dict["val_loss"]))
-                        wandb.log(loss_dict)
+            
+            # Log average loss after loop
+            self.aggr_loss(self.total_loss_dict, data_loader, end_loop=True)
             self.generate_plots(epoch)
     
     def generate_plots(self, epoch):
@@ -294,6 +312,7 @@ class Engine():
                 showers=self.showers,
                 showers_recon=self.showers_recon,
                 showers_sampled=self.showers_prior,
+                incident_energy=self.incident_energy,
                 epoch=epoch,
                 save_dir=None
             )
