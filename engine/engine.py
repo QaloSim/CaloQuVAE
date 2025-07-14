@@ -317,7 +317,7 @@ class Engine():
             )
             
             # Log plots
-            overall_fig, fig_energy_sum, fig_incidence_ratio, fig_target_recon_ratio, fig_sparsity = vae_plots(self._config,
+            overall_fig, fig_energy_sum, fig_incidence_ratio, fig_target_recon_ratio, fig_sparsity, fig_sum_layers, fig_incidence_layers, fig_ratio_layers, fig_sparsity_layers = vae_plots(self._config,
                 self.incident_energy, self.showers, self.showers_recon, self.showers_prior)
             
             if not self._config.engine.train_vae_separate:
@@ -329,6 +329,10 @@ class Engine():
                     "conditioned_incidence_ratio": wandb.Image(fig_incidence_ratio),
                     "conditioned_target_recon_ratio": wandb.Image(fig_target_recon_ratio),
                     "conditioned_sparsity": wandb.Image(fig_sparsity),
+                    "energy_sum_layers": wandb.Image(fig_sum_layers),
+                    "incidence_ratio_layers": wandb.Image(fig_incidence_layers),
+                    "target_recon_ratio_layers": wandb.Image(fig_ratio_layers),
+                    "sparsity_layers": wandb.Image(fig_sparsity_layers),
                     "RBM histogram": wandb.Image(rbm_hist),
                     "calo_layer_input": wandb.Image(calo_input),
                     "calo_layer_recon": wandb.Image(calo_recon),
@@ -344,6 +348,10 @@ class Engine():
                     "conditioned_incidence_ratio": wandb.Image(fig_incidence_ratio),
                     "conditioned_target_recon_ratio": wandb.Image(fig_target_recon_ratio),
                     "conditioned_sparsity": wandb.Image(fig_sparsity),
+                    "energy_sum_layers": wandb.Image(fig_sum_layers),
+                    "incidence_ratio_layers": wandb.Image(fig_incidence_layers),
+                    "target_recon_ratio_layers": wandb.Image(fig_ratio_layers),
+                    "sparsity_layers": wandb.Image(fig_sparsity_layers),
                     "calo_layer_input": wandb.Image(calo_input),
                     "calo_layer_recon": wandb.Image(calo_recon),
                     "calo_layer_input_avg": wandb.Image(calo_input_avg),
