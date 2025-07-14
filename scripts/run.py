@@ -160,7 +160,7 @@ def run(engine):
                 # engine.optimiser = torch.optim.Adam(filter(lambda p: p.requires_grad, engine.model.parameters()), lr=config.engine.learning_rate)
                 engine._save_model(name="at_freezing_point")
                 engine._config.rbm.method = "PCD"
-                logger.info(f'RBM will use {engine._config.model.rbmMethod}')
+                logger.info(f'RBM will use {engine._config.rbm.method}')
             
             if epoch % 10 == 0:
                 engine._save_model(name=str(epoch))
