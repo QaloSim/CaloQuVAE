@@ -54,12 +54,13 @@ def main(cfg=None):
         iden = get_project_id(cfg.run_path)
         wandb.init(tags = [cfg.data.dataset_name], project=cfg.wandb.project, entity=cfg.wandb.entity, config=OmegaConf.to_container(cfg, resolve=True), mode=mode,
                 resume='allow', id=iden)
+        engine = load_model_instance(cfg.config_path)
     else:
         wandb.init(tags = [cfg.data.dataset_name], project=cfg.wandb.project, entity=cfg.wandb.entity, config=OmegaConf.to_container(cfg, resolve=True), mode=mode)
+        engine = setup_model(config=cfg)
     print(OmegaConf.to_yaml(cfg, resolve=True))
-    
-    engine = setup_model(config=cfg)
-    run(engine)
+
+    run(engine, callback)
 
 def set_device(config=None):
     if (config.device == 'gpu') and config.gpu_list:
@@ -98,8 +99,8 @@ def setup_model(config=None):
     #create the NN infrastructure
     model.create_networks()
     model.print_model_info()
-    if not config.engine.train_vae_separate:
-        model.prior._n_batches = len(dataMgr.train_loader) - 1
+    # if not config.engine.train_vae_separate:
+    model.prior._n_batches = len(dataMgr.train_loader) - 1
 
     # Load the model on the GPU if applicable
     dev = set_device(config)
@@ -134,35 +135,44 @@ def setup_model(config=None):
     
     return engine
 
-def run(engine):
-    config = engine._config
-    if config.engine.train_vae_separate:
-        for epoch in range(config.epoch_start, config.n_epochs):
+def run(engine, _callback=lambda _: False):
+    if engine._config.engine.training_mode == "ae":
+        logger.info("Training AutoEncoder")
+        for epoch in range(engine._config.epoch_start, engine._config.n_epochs):
             engine.fit_ae(epoch)
 
             engine.evaluate_ae(engine.data_mgr.val_loader, epoch)
             
-            if epoch % 10 == 0:
+            if epoch+1 % 10 == 0:
                 engine._save_model(name=str(epoch))
 
+            if _callback(engine, epoch):
+                break
+
         engine.evaluate_ae(engine.data_mgr.test_loader, 0)
-    else:
-        for epoch in range(config.epoch_start, config.n_epochs):
+    if engine._config.engine.training_mode == "vae":
+        logger.info("Training Variational AutoEncoder")
+        for epoch in range(engine._config.epoch_start, engine._config.n_epochs):
+
             engine.fit_vae(epoch)
-
             engine.evaluate_vae(engine.data_mgr.val_loader, epoch)
-
-            if config.freeze_vae and epoch > config.epoch_freeze:
-                for name, param in engine.model.named_parameters():
-                    if 'decoder' in name or 'encoder' in name:
-                        param.requires_grad = False
-                    print(name, param.requires_grad)
-                # engine.optimiser = torch.optim.Adam(filter(lambda p: p.requires_grad, engine.model.parameters()), lr=config.engine.learning_rate)
-                engine._save_model(name="at_freezing_point")
-                engine._config.rbm.method = "PCD"
-                logger.info(f'RBM will use {engine._config.model.rbmMethod}')
             
-            if epoch % 10 == 0:
+            if epoch+1 % 10 == 0:
+                engine._save_model(name=str(epoch))
+
+            if _callback(engine, epoch):
+                break
+
+        engine.evaluate_vae(engine.data_mgr.test_loader, 0)
+    if engine._config.engine.training_mode == "rbm":
+        logger.info("Training RBM")
+        freeze_vae(engine)
+        for epoch in range(engine._config.epoch_start, engine._config.n_epochs):
+
+            engine.fit_rbm(epoch)
+            engine.evaluate_vae(engine.data_mgr.val_loader, epoch)
+            
+            if epoch+1 % 10 == 0:
                 engine._save_model(name=str(epoch))
 
         engine.evaluate_vae(engine.data_mgr.test_loader, 0)
@@ -183,6 +193,29 @@ def run(engine):
 
 #     logger.info("run() finished successfully.")
 
+def freeze_vae(engine):
+    for name, param in engine.model.named_parameters():
+        if 'decoder' in name or 'encoder' in name:
+            param.requires_grad = False
+        print(name, param.requires_grad)
+    # engine._save_model(name="at_freezing_point")
+    engine._config.rbm.method = "PCD"
+    logger.info(f'RBM will use {engine._config.rbm.method}')
+
+def callback(engine, epoch):
+    """
+    Callback function to be used with the engine.
+    """
+    logger.info("Callback function executed.")
+    if engine._config.freeze_ae and epoch > engine._config.epoch_freeze:
+        engine._config.engine.training_mode = "rbm"
+        engine._config.epoch_start = epoch + 1
+        logger.info("AE frozen, switching to RBM training mode.")
+        return True
+    else:
+        logger.info("Continuing training in AE mode.")
+        return False
+
 def get_project_id(path):
     files = os.listdir(path.split('files')[0])
     b = [ ".wandb" in file for file in files]
@@ -192,6 +225,7 @@ def get_project_id(path):
 
 def load_model_instance(path):
     config = OmegaConf.load(path)
+    config.epoch_start = int(config.run_path.split("_")[-1].split(".")[0])
     self = setup_model(config)
     self._model_creator.load_state(config.run_path, self.device)
     return self
