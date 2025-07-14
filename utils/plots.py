@@ -21,6 +21,82 @@ def plot_histograms(ax, target, recon, sampled, xlabel, ylabel, title, bins=30, 
     ax.grid(True)
     ax.legend()
 
+def layer_plots(cfg, incident_energies, target_showers, recon_showers, sampled_showers):
+    """
+    Plot the energy sums, ratios, and sparsity for target, reconstructed, and sampled showers for each calorimeter layer.
+    """
+    dataset_name = cfg.data.dataset_name.lower()
+
+    layer_cell_count = cfg.data.r * cfg.data.phi
+
+    epsilon = 1e-7  # to avoid division by zero
+
+    num_rows = int(np.ceil(len(cfg.data.relevantLayers) / 4.0))
+
+    energy_sum_layer_fig, energy_sum_layer_ax = plt.subplots(num_rows, 4, figsize=(15, 3*num_rows))
+    incidence_ratio_layer_fig, incidence_ratio_layer_ax = plt.subplots(num_rows, 4, figsize=(15, 3*num_rows))
+    target_recon_ratio_layer_fig, target_recon_ratio_layer_ax = plt.subplots(num_rows, 4, figsize=(15, 3*num_rows))
+    sparsity_layer_fig, sparsity_layer_ax = plt.subplots(num_rows, 4, figsize=(15, 3*num_rows))
+
+    for i, layer_num in enumerate(cfg.data.relevantLayers):
+        row = i // 4
+        col = i % 4
+        idx_prev = i*layer_cell_count
+        idx = (i+1)*layer_cell_count
+
+        target_layer = target_showers[:, idx_prev:idx]
+        recon_layer = recon_showers[:, idx_prev:idx]
+        sampled_layer = sampled_showers[:, idx_prev:idx]
+
+        target_energy_sums_layer = torch.sum(target_layer, dim=1)
+        recon_energy_sums_layer = torch.sum(recon_layer, dim=1)
+        sampled_energy_sums_layer = torch.sum(sampled_layer, dim=1)
+
+        target_incidence_ratio_layer = (target_energy_sums_layer / (incident_energies.view(-1) + epsilon)).numpy()
+        recon_incidence_ratio_layer = (recon_energy_sums_layer / (incident_energies.view(-1) + epsilon)).numpy()
+        sampled_incidence_ratio_layer = (sampled_energy_sums_layer / (incident_energies.view(-1) + epsilon)).numpy()
+
+        target_recon_ratio_layer = (recon_energy_sums_layer / (target_energy_sums_layer.view(-1) + epsilon)).numpy()
+
+        target_sparsity_layer = ((target_layer == 0).sum(dim=1) / target_layer.shape[1]).numpy()
+        recon_sparsity_layer = ((recon_layer == 0).sum(dim=1) / recon_layer.shape[1]).numpy()
+        sampled_sparsity_layer = ((sampled_layer == 0).sum(dim=1) / sampled_layer.shape[1]).numpy()
+
+        plot_histograms(energy_sum_layer_ax[row, col], target_energy_sums_layer, recon_energy_sums_layer, sampled_energy_sums_layer,
+                        xlabel='Deposited Energy (GeV)', ylabel='Density',
+                        title=f'Layer {layer_num} - Energy Sum')
+        plot_histograms(incidence_ratio_layer_ax[row, col], target_incidence_ratio_layer, recon_incidence_ratio_layer, sampled_incidence_ratio_layer,
+                        xlabel='Deposited Energy / Incident Energy', ylabel='Density',
+                        title=f'Layer {layer_num} - Incidence Ratio')
+        
+        max_ratio_layer = target_recon_ratio_layer.max()
+        min_ratio_layer = target_recon_ratio_layer.min()
+        if max_ratio_layer == min_ratio_layer:
+            max_ratio_layer += 0.1
+        binning_ratio_layer = np.arange(min_ratio_layer, max_ratio_layer, (max_ratio_layer - min_ratio_layer) / 30)
+        target_recon_ratio_layer_ax[row, col].hist(target_recon_ratio_layer, histtype="stepfilled", bins=binning_ratio_layer,
+                                                    density=True, alpha=0.7, label='Reconstructed / Target', color='c',
+                                                    linewidth=2.5)
+        target_recon_ratio_layer_ax[row, col].set_xlabel('Recon / Target Energy Ratio')
+        target_recon_ratio_layer_ax[row, col].set_ylabel('Density')
+        target_recon_ratio_layer_ax[row, col].set_yscale('log')
+        target_recon_ratio_layer_ax[row, col].grid(True)
+        target_recon_ratio_layer_ax[row, col].axvline(1, color='r', linestyle='--', label='Ideal Ratio (1.0)')
+        target_recon_ratio_layer_ax[row, col].legend()
+        target_recon_ratio_layer_ax[row, col].set_title(f'Layer {layer_num} - Recon/Target Ratio')
+
+        plot_histograms(sparsity_layer_ax[row, col], target_sparsity_layer, recon_sparsity_layer, sampled_sparsity_layer,
+                        xlabel='Sparsity', ylabel='Density',
+                        title=f'Layer {layer_num} - Sparsity')
+
+
+    energy_sum_layer_fig.tight_layout()
+    incidence_ratio_layer_fig.tight_layout()
+    target_recon_ratio_layer_fig.tight_layout()
+    sparsity_layer_fig.tight_layout()
+
+    return energy_sum_layer_fig, incidence_ratio_layer_fig, target_recon_ratio_layer_fig, sparsity_layer_fig
+
 
 def vae_plots(cfg, incident_energies, target_showers, recon_showers, sampled_showers):
     """
@@ -76,7 +152,7 @@ def vae_plots(cfg, incident_energies, target_showers, recon_showers, sampled_sho
         max_ratio += 0.1
     binning_ratio = np.arange(min_ratio, max_ratio, (max_ratio - min_ratio) / 30)
     overall_ax[1, 0].hist(target_recon_ratio_np, histtype="stepfilled", bins=binning_ratio, density=True,
-                          alpha=0.7, label='Reconstructed / Target', color='c', linewidth=2.5)
+                          alpha=0.7, label='Recon / Target', color='c', linewidth=2.5)
     overall_ax[1, 0].set_xlabel('Recon / Target Energy Ratio')
     overall_ax[1, 0].set_ylabel('Density')
     overall_ax[1, 0].set_yscale('log')
@@ -147,15 +223,18 @@ def vae_plots(cfg, incident_energies, target_showers, recon_showers, sampled_sho
         ax_target_recon_ratio[row, col].grid(True)
         ax_target_recon_ratio[row, col].axvline(1, color='r', linestyle='--', label='Ideal Ratio (1.0)')
         ax_target_recon_ratio[row, col].legend()
+        ax_target_recon_ratio[row, col].set_title(f'Recon Ratio ~ {e_low / 1000:.1f} - {e_high / 1000:.1f} GeV')
 
         plot_histograms(ax_sparsity[row, col], target_sparsity_np[mask], recon_sparsity_np[mask], sampled_sparsity_np[mask],
                         xlabel='Sparsity', ylabel='Density',
                         title=f'Sparsity ~ {e_low / 1000:.1f} - {e_high / 1000:.1f} GeV')
+        
 
     fig_energy_sum.tight_layout()
     fig_incidence_ratio.tight_layout()
     fig_target_recon_ratio.tight_layout()
     fig_sparsity.tight_layout()
 
-    return overall_fig, fig_energy_sum, fig_incidence_ratio, fig_target_recon_ratio, fig_sparsity
+    energy_sum_layer_fig, incidence_ratio_layer_fig, target_recon_ratio_layer_fig, sparsity_layer_fig = layer_plots(cfg, incident_energies, target_showers, recon_showers, sampled_showers)
 
+    return overall_fig, fig_energy_sum, fig_incidence_ratio, fig_target_recon_ratio, fig_sparsity, energy_sum_layer_fig, incidence_ratio_layer_fig, target_recon_ratio_layer_fig, sparsity_layer_fig

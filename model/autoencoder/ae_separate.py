@@ -26,12 +26,6 @@ class AutoEncoderSeparate(AutoEncoderBase):
     def __init__(self, cfg):
         super(AutoEncoderSeparate, self).__init__(cfg)
 
-    def create_networks(self):
-        """Override to create encoder and decoder networks without RBM prior."""
-        logger.debug("Creating Network Structures")
-        self.encoder = self._create_encoder()
-        self.decoder = self._create_decoder()
-
     def posterior_entropy(self, post_logits, is_training=True):
         """
         Calculate the posterior entropy for the given logits
@@ -77,7 +71,8 @@ class AutoEncoderSeparate(AutoEncoderBase):
         ae_loss = torch.pow((input_data - output_activations),2) * torch.exp(self._config.model.mse_weight*input_data)
         ae_loss = torch.mean(torch.sum(ae_loss, dim=1), dim=0) * self._config.model.coefficient
 
-        hit_loss = binary_cross_entropy_with_logits(output_hits, torch.where(input_data > 0, 1., 0.), reduction='none')
+        hit_loss = binary_cross_entropy_with_logits(output_hits, torch.where(input_data > 0, 1., 0.), 
+                    reduction='none')
         hit_loss = torch.mean(torch.sum(hit_loss, dim=1), dim=0)
 
         return {
