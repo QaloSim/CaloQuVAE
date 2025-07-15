@@ -63,7 +63,7 @@ def layer_plots(cfg, incident_energies, target_showers, recon_showers, sampled_s
         sampled_sparsity_layer = ((sampled_layer == 0).sum(dim=1) / sampled_layer.shape[1]).numpy()
 
         plot_histograms(energy_sum_layer_ax[row, col], target_energy_sums_layer, recon_energy_sums_layer, sampled_energy_sums_layer,
-                        xlabel='Deposited Energy (GeV)', ylabel='Density',
+                        xlabel='Deposited Energy (MeV)', ylabel='Density',
                         title=f'Layer {layer_num} - Energy Sum')
         plot_histograms(incidence_ratio_layer_ax[row, col], target_incidence_ratio_layer, recon_incidence_ratio_layer, sampled_incidence_ratio_layer,
                         xlabel='Deposited Energy / Incident Energy', ylabel='Density',
