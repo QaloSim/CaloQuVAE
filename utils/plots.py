@@ -140,7 +140,7 @@ def vae_plots(cfg, incident_energies, target_showers, recon_showers, sampled_sho
     overall_fig, overall_ax = plt.subplots(2, 2, figsize=(15, 15))
 
     plot_histograms(overall_ax[0, 0], target_energy_sums_np, recon_energy_sums_np, sampled_energy_sums_np,
-                    xlabel='Deposited Energy (GeV)', ylabel='Density', title="Overall Deposited Energy")
+                    xlabel='Deposited Energy (MeV)', ylabel='Density', title="Overall Deposited Energy")
 
     plot_histograms(overall_ax[0, 1], target_incidence_ratio_np, recon_incidence_ratio_np, sampled_incidence_ratio_np,
                     xlabel='Deposited Energy / Incident Energy', ylabel='Density', title="Overall Energy Ratio")
@@ -185,7 +185,7 @@ def vae_plots(cfg, incident_energies, target_showers, recon_showers, sampled_sho
 
         mask = (incident_energies_np >= e_low) & (incident_energies_np < e_high)
         if mask.sum() == 0:
-            print(f"No data in energy range {e_low:.1f} - {e_high:.1f} GeV, skipping this bin.")
+            print(f"No data in energy range {e_low:.1f} - {e_high:.1f} MeV, skipping this bin.")
             continue
 
         target_energy_sums_e = target_energy_sums_np[mask]
@@ -199,7 +199,7 @@ def vae_plots(cfg, incident_energies, target_showers, recon_showers, sampled_sho
         target_recon_ratio_e = target_recon_ratio_np[mask]
 
         plot_histograms(ax_energy_sum[row, col], target_energy_sums_e, recon_energy_sums_e, sampled_energy_sums_e,
-                        xlabel='Deposited Energy (GeV)', ylabel='Density',
+                        xlabel='Deposited Energy (MeV)', ylabel='Density',
                         title=f'Energy ~ {e_low / 1000:.1f} - {e_high / 1000:.1f} GeV')
 
         plot_histograms(ax_incidence_ratio[row, col], target_incidence_ratio_e, recon_incidence_ratio_e, sampled_incidence_ratio_e,
