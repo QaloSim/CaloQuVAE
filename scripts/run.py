@@ -143,7 +143,7 @@ def run(engine, _callback=lambda _: False):
 
             engine.evaluate_ae(engine.data_mgr.val_loader, epoch)
             
-            if epoch+1 % 10 == 0:
+            if (epoch+1) % 10 == 0:
                 engine._save_model(name=str(epoch))
 
             if _callback(engine, epoch):
@@ -157,7 +157,7 @@ def run(engine, _callback=lambda _: False):
             engine.fit_vae(epoch)
             engine.evaluate_vae(engine.data_mgr.val_loader, epoch)
             
-            if epoch+1 % 10 == 0:
+            if (epoch+1) % 10 == 0:
                 engine._save_model(name=str(epoch))
 
             if _callback(engine, epoch):
@@ -172,7 +172,7 @@ def run(engine, _callback=lambda _: False):
             engine.fit_rbm(epoch)
             engine.evaluate_vae(engine.data_mgr.val_loader, epoch)
             
-            if epoch+1 % 10 == 0:
+            if (epoch+1) % 10 == 0:
                 engine._save_model(name=str(epoch))
 
         engine.evaluate_vae(engine.data_mgr.test_loader, 0)
@@ -199,7 +199,7 @@ def freeze_vae(engine):
             param.requires_grad = False
         print(name, param.requires_grad)
     # engine._save_model(name="at_freezing_point")
-    engine._config.rbm.method = "PCD"
+    # engine._config.rbm.method = "PCD"
     logger.info(f'RBM will use {engine._config.rbm.method}')
 
 def callback(engine, epoch):
