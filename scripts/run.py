@@ -200,7 +200,7 @@ def callback(engine, epoch):
     Callback function to be used with the engine.
     """
     logger.info("Callback function executed.")
-    if engine._config.freeze_ae and epoch > engine._config.epoch_freeze:
+    if engine._config.freeze_vae and epoch > engine._config.epoch_freeze:
         engine._config.engine.training_mode = "rbm"
         engine._config.epoch_start = epoch + 1
         logger.info("AE frozen, switching to RBM training mode.")
