@@ -8,27 +8,20 @@ Year: 2025
 
 #external libraries
 import os
-import pickle
-import datetime
-import sys
 
 import torch
 torch.manual_seed(32)
 import numpy as np
 np.random.seed(32)
-import matplotlib.pyplot as plt
 import hydra
 from hydra.utils import instantiate
 
 from omegaconf import OmegaConf
 
 # PyTorch imports
-from torch import device, load, save
+from torch import device
 from torch.nn import DataParallel
 from torch.cuda import is_available
-
-# Add the path to the parent directory to augment search for module
-# sys.path.append(os.getcwd())
     
 # Weights and Biases
 import wandb
@@ -54,7 +47,7 @@ def main(cfg=None):
         iden = get_project_id(cfg.run_path)
         wandb.init(tags = [cfg.data.dataset_name], project=cfg.wandb.project, entity=cfg.wandb.entity, config=OmegaConf.to_container(cfg, resolve=True), mode=mode,
                 resume='allow', id=iden)
-        engine = load_model_instance(cfg.config_path)
+        engine = load_model_instance(cfg)
     else:
         wandb.init(tags = [cfg.data.dataset_name], project=cfg.wandb.project, entity=cfg.wandb.entity, config=OmegaConf.to_container(cfg, resolve=True), mode=mode)
         engine = setup_model(config=cfg)
@@ -223,9 +216,10 @@ def get_project_id(path):
     iden = files[idx].split("-")[1].split(".")[0]
     return iden
 
-def load_model_instance(path):
-    config = OmegaConf.load(path)
+def load_model_instance(cfg):
+    config = OmegaConf.load(cfg.config_path)
     config.epoch_start = int(config.run_path.split("_")[-1].split(".")[0])
+    config.gpu_list = cfg.gpu_list
     self = setup_model(config)
     self._model_creator.load_state(config.run_path, self.device)
     return self
