@@ -78,6 +78,7 @@ class ModelCreator():
         self._config.run_path = path
         self._config.config_path = config_path
         OmegaConf.save(self._config, config_path, resolve=True)
+        return config_path
 
         
     def save_RBM_state(self, cfg_string='test', encoded_data_energy=None):

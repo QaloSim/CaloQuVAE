@@ -32,6 +32,7 @@ class Engine():
         self._optimiser_c = None
         self._data_mgr = None
         self._device = None
+        self.best_val_loss = float("inf")
 
     @property
     def model(self):
@@ -197,7 +198,6 @@ class Engine():
                 self.total_loss_dict[key] /= len(data_loader)
             logger.info("Epoch: {} - Average Val Loss: {:.4f}".format(epoch, self.total_loss_dict["val_loss"]))
             wandb.log(self.total_loss_dict)
-            self.total_loss_dict = {}
 
     def evaluate_vae(self, data_loader, epoch):
         log_batch_idx = max(len(data_loader)//self._config.engine.n_batches_log_val, 1)
@@ -259,6 +259,12 @@ class Engine():
             
             # Log average loss after loop
             self.aggr_loss(data_loader, epoch)
+            if self._config.engine.training_mode == "vae" or self._config.engine.training_mode == "ae":
+                if self.best_val_loss > self.total_loss_dict["val_ae_loss"] + self.total_loss_dict["val_hit_loss"]:
+                    self.best_val_loss = self.total_loss_dict["val_ae_loss"] + self.total_loss_dict["val_hit_loss"]
+                    self.best_config_path = self._save_model(name="best")
+            logger.info("Best Val Loss: {:.4f}".format(self.best_val_loss))
+            self.total_loss_dict = {}
             self.generate_plots(epoch, "vae")
 
     def evaluate_ae(self, data_loader, epoch):
@@ -319,6 +325,12 @@ class Engine():
             
             # Log average loss after loop
             self.aggr_loss(data_loader, epoch)
+            if self._config.engine.training_mode == "vae" or self._config.engine.training_mode == "ae":
+                if self.best_val_loss > self.total_loss_dict["val_ae_loss"] + self.total_loss_dict["val_hit_loss"]:
+                    self.best_val_loss = self.total_loss_dict["val_ae_loss"] + self.total_loss_dict["val_hit_loss"]
+                    self.best_config_path = self._save_model(name="best")
+            logger.info("Best Val Loss: {:.4f}".format(self.best_val_loss))
+            self.total_loss_dict = {}
             self.generate_plots(epoch, "ae")
     
     def generate_plots(self, epoch, key):
@@ -388,7 +400,8 @@ class Engine():
 
     def _save_model(self, name="blank"):
         config_string = "_".join(str(i) for i in [self._config.model.model_name,f'{name}'])
-        self._model_creator.save_state(config_string)
+        config_path = self._model_creator.save_state(config_string)
+        return config_path
 
     def _reduce(self, in_data, true_energy, R=1e-7):
         """

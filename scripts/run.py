@@ -145,11 +145,14 @@ def run(engine, _callback=lambda _: False):
             
             if epoch+1 % 10 == 0:
                 engine._save_model(name=str(epoch))
+            
+            should_break, engine = _callback(engine, epoch)
 
-            if _callback(engine, epoch):
+            if should_break:
                 break
 
         engine.evaluate_ae(engine.data_mgr.test_loader, 0)
+
     if engine._config.engine.training_mode == "vae":
         logger.info("Training Variational AutoEncoder")
         for epoch in range(engine._config.epoch_start, engine._config.n_epochs):
@@ -159,11 +162,14 @@ def run(engine, _callback=lambda _: False):
             
             if epoch+1 % 10 == 0:
                 engine._save_model(name=str(epoch))
+            
+            should_break, engine = _callback(engine, epoch)
 
-            if _callback(engine, epoch):
+            if should_break:
                 break
 
         engine.evaluate_vae(engine.data_mgr.test_loader, 0)
+
     if engine._config.engine.training_mode == "rbm":
         logger.info("Training RBM")
         freeze_vae(engine)
@@ -206,15 +212,18 @@ def callback(engine, epoch):
     """
     Callback function to be used with the engine.
     """
-    logger.info("Callback function executed.")
+    logger.info(f"Callback function executed at epoch {epoch}.")
     if engine._config.freeze_vae and epoch > engine._config.epoch_freeze:
-        engine._config.engine.training_mode = "rbm"
-        engine._config.epoch_start = epoch + 1
         logger.info("AE frozen, switching to RBM training mode.")
-        return True
+        new_engine = load_model_instance(engine.best_config_path, adjust_epoch_start=False)
+        new_engine._config.epoch_start = epoch + 1
+        new_engine._config.engine.training_mode = "rbm"
+        new_engine.best_val_loss = engine.best_val_loss
+        logger.info(f"Starting RBM training from epoch {new_engine._config.epoch_start}.")
+        return True, new_engine
     else:
         logger.info("Continuing training in AE mode.")
-        return False
+        return False, engine
 
 def get_project_id(path):
     files = os.listdir(path.split('files')[0])
@@ -223,9 +232,11 @@ def get_project_id(path):
     iden = files[idx].split("-")[1].split(".")[0]
     return iden
 
-def load_model_instance(path):
+def load_model_instance(path, adjust_epoch_start=True):
     config = OmegaConf.load(path)
-    config.epoch_start = int(config.run_path.split("_")[-1].split(".")[0])
+    if adjust_epoch_start:
+        # Adjust the epoch start based on the run_path
+        config.epoch_start = int(config.run_path.split("_")[-1].split(".")[0])
     self = setup_model(config)
     self._model_creator.load_state(config.run_path, self.device)
     return self
