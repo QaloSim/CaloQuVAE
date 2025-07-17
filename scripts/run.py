@@ -141,16 +141,17 @@ def run(engine, _callback=lambda _: False):
         for epoch in range(engine._config.epoch_start, engine._config.n_epochs):
             engine.fit_ae(epoch)
 
-            engine.evaluate_ae(engine.data_mgr.val_loader, epoch)
+            total_loss_dict = engine.evaluate_ae(engine.data_mgr.val_loader, epoch)
+            engine.track_best_val_loss(total_loss_dict)
+            engine.generate_plots(epoch, "ae")
             
-            if epoch+1 % 10 == 0:
+            if (epoch+1) % 1 == 0:
+                logger.info(f"Saving model at epoch {epoch}")
                 engine._save_model(name=str(epoch))
             
-            should_break, engine = _callback(engine, epoch)
-
-            if should_break:
+            if _callback(engine, epoch):
                 break
-
+            
         engine.evaluate_ae(engine.data_mgr.test_loader, 0)
 
     if engine._config.engine.training_mode == "vae":
@@ -158,14 +159,14 @@ def run(engine, _callback=lambda _: False):
         for epoch in range(engine._config.epoch_start, engine._config.n_epochs):
 
             engine.fit_vae(epoch)
-            engine.evaluate_vae(engine.data_mgr.val_loader, epoch)
+            total_loss_dict = engine.evaluate_vae(engine.data_mgr.val_loader, epoch)
+            engine.track_best_val_loss(total_loss_dict)
+            engine.generate_plots(epoch, "vae")
             
-            if epoch+1 % 10 == 0:
+            if (epoch+1) % 10 == 0:
                 engine._save_model(name=str(epoch))
-            
-            should_break, engine = _callback(engine, epoch)
 
-            if should_break:
+            if _callback(engine, epoch):
                 break
 
         engine.evaluate_vae(engine.data_mgr.test_loader, 0)
@@ -177,8 +178,9 @@ def run(engine, _callback=lambda _: False):
 
             engine.fit_rbm(epoch)
             engine.evaluate_vae(engine.data_mgr.val_loader, epoch)
+            engine.generate_plots(epoch, "rbm")
             
-            if epoch+1 % 10 == 0:
+            if (epoch+1) % 10 == 0:
                 engine._save_model(name=str(epoch))
 
         engine.evaluate_vae(engine.data_mgr.test_loader, 0)
@@ -214,16 +216,12 @@ def callback(engine, epoch):
     """
     logger.info(f"Callback function executed at epoch {epoch}.")
     if engine._config.freeze_vae and epoch > engine._config.epoch_freeze:
-        logger.info("AE frozen, switching to RBM training mode.")
-        new_engine = load_model_instance(engine.best_config_path, adjust_epoch_start=False)
-        new_engine._config.epoch_start = epoch + 1
-        new_engine._config.engine.training_mode = "rbm"
-        new_engine.best_val_loss = engine.best_val_loss
-        logger.info(f"Starting RBM training from epoch {new_engine._config.epoch_start}.")
-        return True, new_engine
+        engine.load_best_model(epoch)
+        engine.switch_mode("rbm")
+        return True
     else:
         logger.info("Continuing training in AE mode.")
-        return False, engine
+        return False
 
 def get_project_id(path):
     files = os.listdir(path.split('files')[0])
