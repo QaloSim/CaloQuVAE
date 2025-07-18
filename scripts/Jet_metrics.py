@@ -33,7 +33,7 @@ def main(cfg=None):
     filenames = create_filenames_dict(config)
     for i,idx in enumerate(np.sort(list(filenames.keys()))):
         engine = load_engine(filenames[idx], config1)
-        engine.evaluate_vae(engine.data_mgr.val_loader, 0)
+        engine.evaluate_vae(engine.data_mgr.train_loader, 0)
         if i == 0:
             logger.info("First instance model")
             hepMet = HepMetrics(engine)

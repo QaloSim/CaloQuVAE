@@ -42,15 +42,18 @@ def main(cfg=None):
     mode = cfg.wandb.mode
     if cfg.load_state:
         logger.info(f"Loading config from {cfg.config_path}")
-        cfg = OmegaConf.load(cfg.config_path)
-        os.environ["WANDB_DIR"] = cfg.run_path.split("wandb")[0]
+        engine = load_model_instance(cfg)
+        cfg = engine._config
+        os.environ["WANDB_DIR"] = cfg.config_path.split("wandb")[0]
         iden = get_project_id(cfg.run_path)
         wandb.init(tags = [cfg.data.dataset_name], project=cfg.wandb.project, entity=cfg.wandb.entity, config=OmegaConf.to_container(cfg, resolve=True), mode=mode,
                 resume='allow', id=iden)
-        engine = load_model_instance(cfg)
+        # Log metrics with wandb
+        wandb.watch(engine.model)
     else:
-        wandb.init(tags = [cfg.data.dataset_name], project=cfg.wandb.project, entity=cfg.wandb.entity, config=OmegaConf.to_container(cfg, resolve=True), mode=mode)
         engine = setup_model(config=cfg)
+        wandb.init(tags = [cfg.data.dataset_name], project=cfg.wandb.project, entity=cfg.wandb.entity, config=OmegaConf.to_container(cfg, resolve=True), mode=mode)
+        wandb.watch(engine.model)
     print(OmegaConf.to_yaml(cfg, resolve=True))
 
     run(engine, callback)
@@ -100,8 +103,6 @@ def setup_model(config=None):
         
     # Send the model to the selected device
     model.to(dev)
-    # Log metrics with wandb
-    wandb.watch(model)
 
     # For some reason, need to use postional parameter cfg instead of named parameter
     # with updated Hydra - used to work with named param but now is cfg=None 
@@ -220,6 +221,7 @@ def load_model_instance(cfg):
     config = OmegaConf.load(cfg.config_path)
     config.epoch_start = int(config.run_path.split("_")[-1].split(".")[0])
     config.gpu_list = cfg.gpu_list
+    config.load_state = cfg.load_state
     self = setup_model(config)
     self._model_creator.load_state(config.run_path, self.device)
     return self

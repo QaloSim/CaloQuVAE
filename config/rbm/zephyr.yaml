@@ -4,17 +4,17 @@ latent_nodes_per_p: 302
 partitions: 4
 method: "CD"
 bgs_steps: 3000
-lr: 0.01
+lr: 0.1
 w_std: 
   - 1.0
   - 1.0
   - 1.0
-  - 0.01
-  - 0.01
-  - 0.01
+  - 1.0
+  - 1.0
+  - 1.0
 b_std: 
-  - 0.01
-  - 0.01
-  - 0.01
-  - 0.01
+  - 1.0
+  - 1.0
+  - 1.0
+  - 1.0
 optimize_partition: 0
