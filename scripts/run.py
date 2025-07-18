@@ -217,7 +217,7 @@ def callback(engine, epoch):
     logger.info(f"Callback function executed at epoch {epoch}.")
     if engine._config.freeze_vae and epoch > engine._config.epoch_freeze:
         engine.load_best_model(epoch)
-        engine.switch_mode("rbm")
+        engine._config.engine.training_mode = "rbm"
         return True
     else:
         logger.info("Continuing training in AE mode.")

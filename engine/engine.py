@@ -402,9 +402,6 @@ class Engine():
         self._model_creator.load_state(best_config.run_path, self.device)
         self._config.epoch_start = epoch + 1
     
-    def switch_mode(self, mode):
-        self._config.engine.training_mode = mode
-
     def _reduce(self, in_data, true_energy, R=1e-7):
         """
         CaloDiff Transformation Scheme
