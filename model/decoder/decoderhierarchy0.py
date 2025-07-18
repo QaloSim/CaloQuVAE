@@ -22,7 +22,8 @@ class DecoderHierarchy0(nn.Module):
 
         self.moduleLayers = nn.ModuleList([])
         for i in range(len(inp_layers)):
-            self.moduleLayers.append(Decoder(self._config, inp_layers[i], out_layers[i]))   
+            # self.moduleLayers.append(Decoder(self._config, inp_layers[i], out_layers[i]))
+            self.moduleLayers.append(DecoderLinAtt(self._config, inp_layers[i], out_layers[i]))   
 
     def _create_skipcon_decoders(self):
         latent_inp = 2 * self._config.rbm.latent_nodes_per_p
