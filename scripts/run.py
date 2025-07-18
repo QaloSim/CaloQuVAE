@@ -135,21 +135,26 @@ def run(engine, _callback=lambda _: False):
         for epoch in range(engine._config.epoch_start, engine._config.n_epochs):
             engine.fit_ae(epoch)
 
-            engine.evaluate_ae(engine.data_mgr.val_loader, epoch)
+            total_loss_dict = engine.evaluate_ae(engine.data_mgr.val_loader, epoch)
+            engine.track_best_val_loss(total_loss_dict)
+            engine.generate_plots(epoch, "ae")
             
             if (epoch+1) % 10 == 0:
                 engine._save_model(name=str(epoch))
-
+            
             if _callback(engine, epoch):
                 break
-
+            
         engine.evaluate_ae(engine.data_mgr.test_loader, 0)
+
     if engine._config.engine.training_mode == "vae":
         logger.info("Training Variational AutoEncoder")
         for epoch in range(engine._config.epoch_start, engine._config.n_epochs):
 
             engine.fit_vae(epoch)
-            engine.evaluate_vae(engine.data_mgr.val_loader, epoch)
+            total_loss_dict = engine.evaluate_vae(engine.data_mgr.val_loader, epoch)
+            engine.track_best_val_loss(total_loss_dict)
+            engine.generate_plots(epoch, "vae")
             
             if (epoch+1) % 10 == 0:
                 engine._save_model(name=str(epoch))
@@ -158,6 +163,7 @@ def run(engine, _callback=lambda _: False):
                 break
 
         engine.evaluate_vae(engine.data_mgr.test_loader, 0)
+
     if engine._config.engine.training_mode == "rbm":
         logger.info("Training RBM")
         freeze_vae(engine)
@@ -165,6 +171,7 @@ def run(engine, _callback=lambda _: False):
 
             engine.fit_rbm(epoch)
             engine.evaluate_vae(engine.data_mgr.val_loader, epoch)
+            engine.generate_plots(epoch, "rbm")
             
             if (epoch+1) % 10 == 0:
                 engine._save_model(name=str(epoch))
@@ -200,11 +207,10 @@ def callback(engine, epoch):
     """
     Callback function to be used with the engine.
     """
-    logger.info("Callback function executed.")
+    logger.info(f"Callback function executed at epoch {epoch}.")
     if engine._config.freeze_vae and epoch > engine._config.epoch_freeze:
+        engine.load_best_model(epoch)
         engine._config.engine.training_mode = "rbm"
-        engine._config.epoch_start = epoch + 1
-        logger.info("AE frozen, switching to RBM training mode.")
         return True
     else:
         logger.info("Continuing training in AE mode.")
@@ -217,9 +223,11 @@ def get_project_id(path):
     iden = files[idx].split("-")[1].split(".")[0]
     return iden
 
-def load_model_instance(cfg):
-    config = OmegaConf.load(cfg.config_path)
-    config.epoch_start = int(config.run_path.split("_")[-1].split(".")[0])
+def load_model_instance(path, adjust_epoch_start=True):
+    config = OmegaConf.load(path)
+    if adjust_epoch_start:
+        # Adjust the epoch start based on the run_path
+        config.epoch_start = int(config.run_path.split("_")[-1].split(".")[0])
     config.gpu_list = cfg.gpu_list
     config.load_state = cfg.load_state
     self = setup_model(config)

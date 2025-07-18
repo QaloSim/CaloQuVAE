@@ -13,7 +13,9 @@ from utils.plots import vae_plots
 from utils.atlas_plots import plot_calorimeter_shower
 from utils.rbm_plots import plot_rbm_histogram, plot_rbm_params
 
-# from collections import defaultdict
+
+from collections import defaultdict
+from omegaconf import OmegaConf
 
 from CaloQuVAE import logging
 logger = logging.getLogger(__name__)
@@ -32,6 +34,7 @@ class Engine():
         self._optimiser_c = None
         self._data_mgr = None
         self._device = None
+        self.best_val_loss = float("inf")
 
     @property
     def model(self):
@@ -198,7 +201,13 @@ class Engine():
                 self.total_loss_dict[key] /= len(data_loader)
             logger.info("Epoch: {} - Average Val Loss: {:.4f}".format(epoch, self.total_loss_dict["val_loss"]))
             wandb.log(self.total_loss_dict)
-            self.total_loss_dict = {}
+            return self.total_loss_dict
+    
+    def track_best_val_loss(self, loss_dict):
+        if self.best_val_loss > loss_dict["val_ae_loss"] + loss_dict["val_hit_loss"]:
+            self.best_val_loss = loss_dict["val_ae_loss"] + loss_dict["val_hit_loss"]
+            self.best_config_path = self._save_model(name="best")
+            logger.info("Best Val loss: {:.4f}".format(self.best_val_loss))
 
     def evaluate_vae(self, data_loader, epoch):
         log_batch_idx = max(len(data_loader)//self._config.engine.n_batches_log_val, 1)
@@ -259,8 +268,7 @@ class Engine():
                 self.RBM_energy_post[idx1:idx2,:] = self.model.prior.energy_exp_cond(output[2][0], output[2][1], output[2][2], output[2][3]).cpu().unsqueeze(1)
             
             # Log average loss after loop
-            self.aggr_loss(data_loader, epoch)
-            self.generate_plots(epoch, "vae")
+            return self.aggr_loss(data_loader, epoch)
 
     def evaluate_ae(self, data_loader, epoch):
         log_batch_idx = max(len(data_loader)//self._config.engine.n_batches_log_val, 1)
@@ -319,8 +327,7 @@ class Engine():
                 self.showers_reduce_prior[idx1:idx2,:] = output[3].cpu()
             
             # Log average loss after loop
-            self.aggr_loss(data_loader, epoch)
-            self.generate_plots(epoch, "ae")
+            return self.aggr_loss(data_loader, epoch)
     
     def generate_plots(self, epoch, key):
         if self._config.wandb.mode != "disabled": # Only log if wandb is enabled
@@ -391,8 +398,14 @@ class Engine():
 
     def _save_model(self, name="blank"):
         config_string = "_".join(str(i) for i in [self._config.model.model_name,f'{name}'])
-        self._model_creator.save_state(config_string)
-
+        config_path = self._model_creator.save_state(config_string)
+        return config_path
+    
+    def load_best_model(self, epoch):
+        best_config = OmegaConf.load(self.best_config_path)
+        self._model_creator.load_state(best_config.run_path, self.device)
+        self._config.epoch_start = epoch + 1
+    
     def _reduce(self, in_data, true_energy, R=1e-7):
         """
         CaloDiff Transformation Scheme
