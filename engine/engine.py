@@ -11,7 +11,8 @@ import wandb
 # Plotting
 from utils.plots import vae_plots
 from utils.atlas_plots import plot_calorimeter_shower
-from utils.rbm_plots import plot_rbm_histogram
+from utils.rbm_plots import plot_rbm_histogram, plot_rbm_params
+
 
 from collections import defaultdict
 from omegaconf import OmegaConf
@@ -180,6 +181,7 @@ class Engine():
             loss_dict = self.model.loss(x, output)
             loss_dict["loss"] = torch.stack([loss_dict[key] * self._config.model.loss_coeff[key]  for key in loss_dict.keys() if "loss" != key]).sum()
             self.model.prior.gradient_rbm_centered(output[2])
+            # self.model.prior.gradient_rbm(output[2])
             self.model.prior.update_params()
 
             if (i % log_batch_idx) == 0:
@@ -346,6 +348,7 @@ class Engine():
             
             if key != "ae":
                 rbm_hist = plot_rbm_histogram(self.RBM_energy_post, self.RBM_energy_prior)
+                rbm_params = plot_rbm_params(self)
             
                 wandb.log({
                     "overall_plots": wandb.Image(overall_fig),
@@ -358,6 +361,7 @@ class Engine():
                     "target_recon_ratio_layers": wandb.Image(fig_ratio_layers),
                     "sparsity_layers": wandb.Image(fig_sparsity_layers),
                     "RBM histogram": wandb.Image(rbm_hist),
+                    "RBM params": wandb.Image(rbm_params),
                     "calo_layer_input": wandb.Image(calo_input),
                     "calo_layer_recon": wandb.Image(calo_recon),
                     "calo_layer_sampled": wandb.Image(calo_sampled),

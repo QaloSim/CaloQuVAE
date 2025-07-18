@@ -5,7 +5,8 @@ save_partition: 1
 freeze_vae: 1
 
 run_path: ""
-config_path: "/home/jtoledo/CaloQuVAE/outputs_sym/run-20250713_203455-5z4zvttz/files/ae_separate_240_config.yaml"
+# config_path: "/fast_scratch_1/caloqvae/jtoledo/wandb/run-20250712_153312-7p5kb9zm/files/ae_separate_230_config.yaml"
+config_path: "/fast_scratch_1/caloqvae/jtoledo/wandb/run-20250718_004118-9vdkr3bn/files/ae_separate_109_config.yaml"
 
 device: gpu
 gpu_list:
