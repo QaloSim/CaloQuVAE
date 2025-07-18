@@ -145,7 +145,7 @@ def run(engine, _callback=lambda _: False):
             engine.track_best_val_loss(total_loss_dict)
             engine.generate_plots(epoch, "ae")
             
-            if (epoch+1) % 1 == 0:
+            if (epoch+1) % 10 == 0:
                 logger.info(f"Saving model at epoch {epoch}")
                 engine._save_model(name=str(epoch))
             
