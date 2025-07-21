@@ -10,12 +10,12 @@ config_path: "/fast_scratch_1/caloqvae/jtoledo/wandb/run-20250718_004118-9vdkr3b
 
 device: gpu
 gpu_list:
-  - 3
+  - 1
 
 defaults:
   - data: CaloChallenge2
   - wandb: ML2
-  - model: model3_calochallenge
+  - model: model5_calochallenge
   - engine: engine1
   - rbm: zephyr
   - _self_
