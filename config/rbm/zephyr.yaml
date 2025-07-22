@@ -2,7 +2,7 @@ model_name: Zephyr
 fullyconnected: 0
 latent_nodes_per_p: 302
 partitions: 4
-method: "CD"
+method: "PCD"
 bgs_steps: 3000
 lr: 0.1
 w_std: 

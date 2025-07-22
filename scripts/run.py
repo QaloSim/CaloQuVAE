@@ -223,8 +223,8 @@ def get_project_id(path):
     iden = files[idx].split("-")[1].split(".")[0]
     return iden
 
-def load_model_instance(path, adjust_epoch_start=True):
-    config = OmegaConf.load(path)
+def load_model_instance(cfg, adjust_epoch_start=True):
+    config = OmegaConf.load(cfg.config_path)
     if adjust_epoch_start:
         # Adjust the epoch start based on the run_path
         config.epoch_start = int(config.run_path.split("_")[-1].split(".")[0])
