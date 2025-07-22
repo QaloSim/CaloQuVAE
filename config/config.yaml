@@ -1,16 +1,16 @@
 save_state: 1
-load_state: 0
+load_state: 1
 save_hists: 1
 save_partition: 1
 freeze_vae: 1
 
 run_path: ""
 # config_path: "/fast_scratch_1/caloqvae/jtoledo/wandb/run-20250712_153312-7p5kb9zm/files/ae_separate_230_config.yaml"
-config_path: "/fast_scratch_1/caloqvae/jtoledo/wandb/run-20250718_004118-9vdkr3bn/files/ae_separate_249_config.yaml"
+config_path: "/fast_scratch_1/caloqvae/jtoledo/wandb/run-20250720_233628-4hns88vo/files/autoencoderbase_199_config.yaml"
 
 device: gpu
 gpu_list:
-  - 1
+  - 3
 
 defaults:
   - data: CaloChallenge2

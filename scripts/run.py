@@ -200,7 +200,7 @@ def freeze_vae(engine):
             param.requires_grad = False
         print(name, param.requires_grad)
     # engine._save_model(name="at_freezing_point")
-    # engine._config.rbm.method = "PCD"
+    engine._config.rbm.method = "PCD"
     logger.info(f'RBM will use {engine._config.rbm.method}')
 
 def callback(engine, epoch):
@@ -223,8 +223,8 @@ def get_project_id(path):
     iden = files[idx].split("-")[1].split(".")[0]
     return iden
 
-def load_model_instance(path, adjust_epoch_start=True):
-    config = OmegaConf.load(path)
+def load_model_instance(cfg, adjust_epoch_start=True):
+    config = OmegaConf.load(cfg.config_path)
     if adjust_epoch_start:
         # Adjust the epoch start based on the run_path
         config.epoch_start = int(config.run_path.split("_")[-1].split(".")[0])
