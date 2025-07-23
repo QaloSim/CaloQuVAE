@@ -14,7 +14,7 @@ gpu_list:
 defaults:
   - data: CaloChallenge2
   - wandb: DGX
-  - model: model3_calochallenge
+  - model: model6_calochallenge
   - engine: engine1
   - rbm: zephyr
   - _self_

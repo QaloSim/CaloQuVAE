@@ -200,7 +200,7 @@ def freeze_vae(engine):
             param.requires_grad = False
         print(name, param.requires_grad)
     # engine._save_model(name="at_freezing_point")
-    # engine._config.rbm.method = "PCD"
+    engine._config.rbm.method = "PCD"
     logger.info(f'RBM will use {engine._config.rbm.method}')
 
 def callback(engine, epoch):
@@ -208,7 +208,7 @@ def callback(engine, epoch):
     Callback function to be used with the engine.
     """
     logger.info(f"Callback function executed at epoch {epoch}.")
-    if engine._config.freeze_vae and epoch > engine._config.epoch_freeze:
+    if engine._config.freeze_vae and epoch + 1 >= engine._config.epoch_freeze:
         engine.load_best_model(epoch)
         engine._config.engine.training_mode = "rbm"
         return True
