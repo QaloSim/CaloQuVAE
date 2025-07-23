@@ -355,16 +355,9 @@ class RBM(ZephyrRBM):
         n_nodes_p = self._config.rbm.latent_nodes_per_p
 
         post_zetas = torch.cat(post_samples, 1)
-        # data_mean = post_zetas.mean(dim=0)
-        data_mean = ((post_zetas - post_zetas.mean(dim=0))/(post_zetas.std(dim=0)+1e-10)).mean(dim=0)
+        data_mean = ((post_zetas - post_zetas.mean(dim=0)) / (post_zetas.std(dim=0) + 1e-8)).mean(dim=0)
         torch.clamp_(data_mean, min=1e-4, max=(1. - 1e-4))
-        # vh_data_mean = (post_zetas.transpose(0,1) @ post_zetas) / post_zetas.size(0)
-        vh_samples = torch.einsum("bi,bj->bij", post_zetas, post_zetas)
-        vh_data_mean = ((vh_samples - vh_samples.mean(dim=0)) / (vh_samples.std(dim=0)+1e-10)).mean(dim=0)
-        # vh_samples = post_zetas.unsqueeze(2) * post_zetas.unsqueeze(1)  # shape: (batch, features, features)
-        # vh_mean = vh_samples.mean(dim=0)
-        # vh_std = vh_samples.std(dim=0) + 1e-10
-        # vh_data_mean = ((vh_samples - vh_mean) / vh_std).mean(dim=0)
+        vh_data_cov = torch.cov(post_zetas.T) / (post_zetas.std(dim=0) * post_zetas.std(dim=0).T + 1e-8)
 
         if self._config.rbm.method == "PCD":
             if self._chain==False:
@@ -389,16 +382,9 @@ class RBM(ZephyrRBM):
                 self.p_zetas_pcd_chains[idx,:,:] = torch.cat([p0_state, p1_state, p2_state, p3_state], dim=1).to('cpu') #post_zetas.to('cpu')
 
         post_zetas_gen = torch.cat([p0_state,p1_state,p2_state,p3_state], dim=1)
-        # data_gen = post_zetas_gen.mean(dim=0)
-        data_gen = ((post_zetas_gen - post_zetas_gen.mean(dim=0))/(post_zetas_gen.std(dim=0)+1e-10)).mean(dim=0)
+        data_gen = ((post_zetas_gen - post_zetas_gen.mean(dim=0)) / (post_zetas_gen.std(dim=0) + 1e-8)).mean(dim=0)
         torch.clamp_(data_gen, min=1e-4, max=(1. - 1e-4));
-        # vh_gen_mean = (post_zetas_gen.transpose(0,1) @ post_zetas_gen) / post_zetas_gen.size(0)
-        vh_gen_samples = torch.einsum("bi,bj->bij", post_zetas_gen, post_zetas_gen)
-        vh_gen_mean = ((vh_gen_samples - vh_gen_samples.mean(dim=0)) / (vh_gen_samples.std(dim=0)+1e-10)).mean(dim=0)
-        # vh_gen_samples = post_zetas_gen.unsqueeze(2) * post_zetas_gen.unsqueeze(1)  # shape: (batch, features, features)
-        # vh_gen_mean = vh_gen_samples.mean(dim=0)
-        # vh_gen_std = vh_gen_samples.std(dim=0) + 1e-10
-        # vh_data_mean = ((vh_gen_samples - vh_gen_mean) / vh_gen_std).mean(dim=0)
+        vh_gen_cov = torch.cov(post_zetas_gen.T) / (post_zetas_gen.std(dim=0) * post_zetas_gen.std(dim=0).T + 1e-8)
         
         # compute gradient
         self.grad = {"bias": {}, "weight":{}}
@@ -408,7 +394,7 @@ class RBM(ZephyrRBM):
         for i in range(3):
             for j in [0,1,2,3]:
                 if j > i:
-                    self.grad["weight"][str(i)+str(j)] = (vh_data_mean[n_nodes_p*i:n_nodes_p*(i+1),n_nodes_p*j:n_nodes_p*(j+1)] - vh_gen_mean[n_nodes_p*i:n_nodes_p*(i+1),n_nodes_p*j:n_nodes_p*(j+1)]) * self._weight_mask_dict[str(i)+str(j)]
+                    self.grad["weight"][str(i)+str(j)] = (vh_data_cov[n_nodes_p*i:n_nodes_p*(i+1),n_nodes_p*j:n_nodes_p*(j+1)] - vh_gen_cov[n_nodes_p*i:n_nodes_p*(i+1),n_nodes_p*j:n_nodes_p*(j+1)]) * self._weight_mask_dict[str(i)+str(j)]
 
     def update_params(self):
         for i in range(4):
