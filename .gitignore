@@ -10,6 +10,8 @@ wandb/
 outputs_sym/
 outputs_sym
 modelsJT.txt
+nbDGX.ipynb
+modelsDGX.txt
 
 # Byte-compiled / optimized / DLL files
 __pycache__/

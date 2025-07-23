@@ -5,16 +5,15 @@ save_partition: 1
 freeze_vae: 1
 
 run_path: ""
-# config_path: "/fast_scratch_1/caloqvae/jtoledo/wandb/run-20250712_153312-7p5kb9zm/files/ae_separate_230_config.yaml"
-config_path: "/fast_scratch_1/caloqvae/jtoledo/wandb/run-20250721_152921-c22o2vxp/files/ae_separate_249_config.yaml"
+config_path: "/home/javier/Projects/CaloQuVAE/outputs_sym/run-20250722_031201-ofpw4wr9/files/autoencoderbase_79_config.yaml"
 
 device: gpu
 gpu_list:
-  - 1
+  - 0
 
 defaults:
   - data: CaloChallenge2
-  - wandb: ML2
+  - wandb: DGX
   - model: model6_calochallenge
   - engine: engine1
   - rbm: zephyr
