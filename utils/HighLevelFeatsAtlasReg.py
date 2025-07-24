@@ -146,3 +146,67 @@ class HighLevelFeatures_ATLAS_regular:
         fig.colorbar(sm, ax=axes.ravel().tolist(), orientation='horizontal',
                      fraction=0.05, pad=0.1, label='Energy')
         return fig
+    
+    def plot_single_layer_with_highlights(self, data, layer, r, phi, highlight_coords, scale='equal_bin', cmap='rainbow', vmin=1e-4, vmax=1e4, title=None):
+        """
+        Plot one calorimeter layer slice and highlight specific (r_idx, phi_idx) patches.
+        Adds (r, phi) labels next to each highlighted voxel to specify the r and phi values
+        """
+        fig, ax = plt.subplots(figsize=(6, 6))
+        norm = LogNorm(vmin=vmin, vmax=vmax)
+        
+        layer_idx = self.relevantLayers.index(layer)
+        self.single_event_energy = data[layer_idx * r * phi : (layer_idx + 1) * r * phi]
+        self.current_layer = str(layer)
+
+        # plot base calorimeter
+        self.plot_calorimeter(ax, scale=scale, cmap=cmap, norm=norm, title=title or f"Layer {layer}")
+
+        # overlay highlighted patches
+        r0, r1, a0, a1, _ = self.get_sector_arrays(self.current_layer)
+
+        if scale == "equal_bin":
+            transform = self._make_equal_bin_transform(r0, r1)
+            r0p, r1p = transform(r0), transform(r1)
+        else:
+            r0p, r1p = r0, r1
+        
+        # go through coordinates given:
+        for (r_idx, phi_idx) in highlight_coords:
+            flat_idx = r_idx * phi + phi_idx
+            inner, outer = r0p[flat_idx], r1p[flat_idx]
+            theta_start, theta_end = a0[flat_idx], a1[flat_idx]
+
+            # highlight the voxel selected
+            wedge = Wedge(
+                center=(0, 0),
+                r=outer,
+                theta1=theta_start,
+                theta2=theta_end,
+                width=outer - inner,
+                facecolor='none',
+                edgecolor='black',
+                linewidth=1.5)
+            ax.add_patch(wedge)
+
+            # compute label position to add labels
+            theta = 0.5 * (theta_start + theta_end)
+            r_text = 0.5 * (inner + outer)
+            x_text = r_text * np.cos(np.deg2rad(theta))
+            y_text = r_text * np.sin(np.deg2rad(theta))
+            
+            # add the labels
+            ax.text(
+                x_text,
+                y_text,
+                f"({r_idx},{phi_idx})",
+                color="black",
+                fontsize=7,
+                ha="center",
+                va="center",
+                bbox=dict(boxstyle="round,pad=0.15", fc="white", ec="black", lw=0.3, alpha=0.8))
+
+        plt.show()
+        return fig
+
+
