@@ -1,0 +1,11 @@
+neat-cloud-380 at: http://localhost:8080/caloqvae/caloqvae/ofpw4wr9
+/home/javier/Projects/CaloQuVAE/outputs_sym/run-20250722_031201-ofpw4wr9/files/autoencoderbase_79_config.yaml
+# VAE up to 199 epochs. Loads best model. RBM training for 50 epochs more.
+# This is using the exact same arch used in CaloQVAE for current best model.
+# RBM training with enhanced + standardized
+
+golden-surf-389 at: http://localhost:8080/caloqvae/caloqvae/bqf92gzx
+/fast_scratch_1/caloqvae/jtoledo/wandb/run-20250722_173542-hqwcdd54/files/autoencoderbase_best_config.yaml
+# VAE up to 199 epochs. Loads best model. RBM training for 50 epochs more.
+# This is using the exact same arch used in CaloQVAE for current best model.
+# RBM training with standardized
