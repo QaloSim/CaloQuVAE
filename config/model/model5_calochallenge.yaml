@@ -22,4 +22,4 @@ coefficient: 0.01
 loss_coeff:
   ae_loss: 1.0
   hit_loss: 1.0
-  entropy: 0.1
+  entropy: 0.0
