@@ -8,9 +8,9 @@ decoder: decoderhierachytf
 
 decoder_input:
   - 1208
-  - 2416
-  - 3624
-  - 4832
+  - 1880
+  - 1880
+  - 1880
 
 skip_output_size: 672
 head_size: 32

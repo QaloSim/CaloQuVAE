@@ -37,7 +37,8 @@ class DecoderHierarchyTF(nn.Module):
             z_skip = torch.cat((z_prime[:,:self.lnpp], z_prime[:,self.lnpp*(3-i):self.lnpp*(4-i)]), dim=1)
 
             out = self.subdecs[i](z_skip, keys)
-            z_prime = torch.cat((z_prime,z),dim=1)
+            # z_prime = torch.cat((z_prime,z),dim=1)
+            z_prime = torch.cat((out,z),dim=1)
                 
         x1, x2 = self.moduleLayers[-1](z_prime, x0)
         return x1,x2 #,out,z_prime
