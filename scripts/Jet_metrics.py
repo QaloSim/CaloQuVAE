@@ -7,6 +7,7 @@ import wandb
 from scripts.run import get_project_id
 
 from utils.HighLevelFeatures import HighLevelFeatures as HLF
+from utils.HighLevelFeatsAtlasReg import HighLevelFeatures_ATLAS_regular as HLF2
 
 from scripts.run import setup_model
 from hydra import initialize, compose
@@ -33,7 +34,7 @@ def main(cfg=None):
     filenames = create_filenames_dict(config)
     for i,idx in enumerate(np.sort(list(filenames.keys()))):
         engine = load_engine(filenames[idx], config1)
-        engine.evaluate_vae(engine.data_mgr.train_loader, 0)
+        engine.evaluate_vae(engine.data_mgr.val_loader, 0)
         if i == 0:
             logger.info("First instance model")
             hepMet = HepMetrics(engine)
@@ -50,8 +51,15 @@ class HepMetrics:
     Class to handle HEP metrics calculations and plotting.
     """
     def __init__(self, engine):
-        self.hlf = HLF('electron', filename=engine._config.data.binning_path)
-        self.ref_hlf = HLF('electron', filename=engine._config.data.binning_path)
+        print(engine._config.data.dataset_name)
+        self.if_Atlas = "Atlas" in engine._config.data.dataset_name
+        if self.if_Atlas:
+            self.hlf = HLF2('electron', filename=engine._config.data.binning_path)
+            self.ref_hlf = HLF2('electron', filename=engine._config.data.binning_path)
+        else:
+            self.hlf = HLF('electron', filename=engine._config.data.binning_path)
+            self.ref_hlf = HLF('electron', filename=engine._config.data.binning_path)
+
         self.hlf.Einc = engine.incident_energy
         self.en_list = []
         self.fpd_recon, self.fpd_sample = [], []
@@ -61,9 +69,9 @@ class HepMetrics:
 
     def run(self, engine, idx):
         recon_HEPMetrics = get_fpd_kpd_metrics(np.array(engine.showers), 
-                    np.array(engine.showers_recon), False, self.hlf, self.ref_hlf)
+                    np.array(engine.showers_recon), False, self.hlf, self.ref_hlf, if_Atlas=self.if_Atlas)
         sample_HEPMetrics = get_fpd_kpd_metrics(np.array(engine.showers), 
-                    np.array(engine.showers_prior), False, self.hlf, self.ref_hlf)
+                    np.array(engine.showers_prior), False, self.hlf, self.ref_hlf, if_Atlas=self.if_Atlas)
         print(sample_HEPMetrics)
         
         self.en_list.append(idx)
@@ -91,7 +99,7 @@ class HepMetrics:
         self.fpd_recon_err, self.fpd_sample_err = [], []
         self.kpd_recon, self.kpd_sample = [], []
         self.kpd_recon_err, self.kpd_sample_err = [], []
-    
+        logger.info("HEP Metrics flushed and saved successfully.")
 
 def create_filenames_dict(config):
     pattern = r'\d+.pth$'
