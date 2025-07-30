@@ -7,6 +7,7 @@ import wandb
 from scripts.run import get_project_id
 
 from utils.HighLevelFeatures import HighLevelFeatures as HLF
+from utils.HighLevelFeatsAtlasReg import HighLevelFeatures_ATLAS_regular as HLF2
 
 from scripts.run import setup_model
 from hydra import initialize, compose
@@ -33,7 +34,7 @@ def main(cfg=None):
     filenames = create_filenames_dict(config)
     for i,idx in enumerate(np.sort(list(filenames.keys()))):
         engine = load_engine(filenames[idx], config1)
-        engine.evaluate_vae(engine.data_mgr.train_loader, 0)
+        engine.evaluate_vae(engine.data_mgr.val_loader, 0)
         if i == 0:
             logger.info("First instance model")
             hepMet = HepMetrics(engine)
@@ -50,8 +51,15 @@ class HepMetrics:
     Class to handle HEP metrics calculations and plotting.
     """
     def __init__(self, engine):
-        self.hlf = HLF('electron', filename=engine._config.data.binning_path)
-        self.ref_hlf = HLF('electron', filename=engine._config.data.binning_path)
+        print(engine._config.data.dataset_name)
+        self.if_Atlas = "Atlas" in engine._config.data.dataset_name
+        if self.if_Atlas:
+            self.hlf = HLF2('electron', filename=engine._config.data.binning_path)
+            self.ref_hlf = HLF2('electron', filename=engine._config.data.binning_path)
+        else:
+            self.hlf = HLF('electron', filename=engine._config.data.binning_path)
+            self.ref_hlf = HLF('electron', filename=engine._config.data.binning_path)
+
         self.hlf.Einc = engine.incident_energy
         self.en_list = []
         self.fpd_recon, self.fpd_sample = [], []
@@ -61,9 +69,9 @@ class HepMetrics:
 
     def run(self, engine, idx):
         recon_HEPMetrics = get_fpd_kpd_metrics(np.array(engine.showers), 
-                    np.array(engine.showers_recon), False, self.hlf, self.ref_hlf)
+                    np.array(engine.showers_recon), False, self.hlf, self.ref_hlf, if_Atlas=self.if_Atlas)
         sample_HEPMetrics = get_fpd_kpd_metrics(np.array(engine.showers), 
-                    np.array(engine.showers_prior), False, self.hlf, self.ref_hlf)
+                    np.array(engine.showers_prior), False, self.hlf, self.ref_hlf, if_Atlas=self.if_Atlas)
         print(sample_HEPMetrics)
         
         self.en_list.append(idx)
@@ -91,7 +99,7 @@ class HepMetrics:
         self.fpd_recon_err, self.fpd_sample_err = [], []
         self.kpd_recon, self.kpd_sample = [], []
         self.kpd_recon_err, self.kpd_sample_err = [], []
-    
+        logger.info("HEP Metrics flushed and saved successfully.")
 
 def create_filenames_dict(config):
     pattern = r'\d+.pth$'
@@ -171,6 +179,32 @@ def prepare_high_data_for_classifier(test, e_inc, hlf_class, label):
     ret = np.concatenate([np.log10(E_inc), np.log10(E_layer+1e-8), EC_etas/1e2, EC_phis/1e2,
                           Width_etas/1e2, Width_phis/1e2, label*np.ones_like(E_inc)], axis=1)
     return ret
+def prepare_high_data_for_classifier_atlas(test, e_inc, hlf_class, label):
+    """
+    Prepare high-level features for classifier evaluation.
+    """
+    voxel, E_inc = test, e_inc
+    E_tot = hlf_class.GetEtot()
+    E_layers = []
+    EC_rs = []
+    EC_phis = []
+    width_rs = []
+    width_phis = []
+    for layer_id in hlf_class.GetElayers():
+        E_layers.append(hlf_class.GetElayers()[layer_id].reshape(-1, 1))
+        EC_rs.append(hlf_class.GetECrs()[layer_id].reshape(-1, 1))
+        EC_phis.append(hlf_class.GetECphis()[layer_id].reshape(-1, 1))
+        width_rs.append(hlf_class.GetWidthrs()[layer_id].reshape(-1, 1))
+        width_phis.append(hlf_class.GetWidthphis()[layer_id].reshape(-1, 1))
+    E_layers = np.concatenate(E_layers, axis=1)
+    EC_rs = np.concatenate(EC_rs, axis=1)
+    EC_phis = np.concatenate(EC_phis, axis=1)
+    width_rs = np.concatenate(width_rs, axis=1)
+    width_phis = np.concatenate(width_phis, axis=1)
+    ret = np.concatenate((np.log10(E_inc), np.log10(E_layers + 1e-8), 
+    EC_rs / 1e2, EC_phis / 1e2, width_rs / 1e2, width_phis / 1e2, E_tot.reshape(-1, 1), label * np.ones_like(E_inc)), axis=1)
+    return ret
+
 
 def check_and_replace_nans_infs(data):
     if np.isnan(data).any() or np.isinf(data).any():
@@ -179,7 +213,7 @@ def check_and_replace_nans_infs(data):
         data = np.nan_to_num(data, nan=0.0, posinf=0.0, neginf=0.0)
     return data
 
-def get_fpd_kpd_metrics(test_data, gen_data, syn_bool, hlf, ref_hlf):
+def get_fpd_kpd_metrics(test_data, gen_data, syn_bool, hlf, ref_hlf, if_Atlas=False):
     # print("TESTING HELLO")
     if syn_bool == True:
         data_showers = (np.array(test_data['showers']))
@@ -191,8 +225,12 @@ def get_fpd_kpd_metrics(test_data, gen_data, syn_bool, hlf, ref_hlf):
         gen_showers = gen_data
     hlf.CalculateFeatures(data_showers)
     ref_hlf.CalculateFeatures(gen_showers)
-    hlf_test_data = prepare_high_data_for_classifier(test_data, hlf.Einc, hlf, 0.)[:, :-1]
-    hlf_gen_data = prepare_high_data_for_classifier(gen_data, hlf.Einc, ref_hlf, 1.)[:, :-1]
+    if if_Atlas:
+        hlf_test_data = prepare_high_data_for_classifier_atlas(test_data, hlf.Einc, hlf, 0.)[:, :-1]
+        hlf_gen_data = prepare_high_data_for_classifier_atlas(gen_data, hlf.Einc, ref_hlf, 1.)[:, :-1]
+    else:
+        hlf_test_data = prepare_high_data_for_classifier(test_data, hlf.Einc, hlf, 0.)[:, :-1]
+        hlf_gen_data = prepare_high_data_for_classifier(gen_data, hlf.Einc, ref_hlf, 1.)[:, :-1]
     hlf_test_data = check_and_replace_nans_infs(hlf_test_data)
     hlf_gen_data = check_and_replace_nans_infs(hlf_gen_data)
     fpd_val, fpd_err = jetnet.evaluation.fpd(hlf_test_data, hlf_gen_data)
