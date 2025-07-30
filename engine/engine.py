@@ -181,8 +181,8 @@ class Engine():
             # Compute loss
             loss_dict = self.model.loss(x, output)
             loss_dict["loss"] = torch.stack([loss_dict[key] * self._config.model.loss_coeff[key]  for key in loss_dict.keys() if "loss" != key]).sum()
-            # self.model.prior.gradient_rbm_centered(output[2])
-            self.model.prior.gradient_rbm_stan(output[2])
+            self.model.prior.gradient_rbm_centered(output[2])
+            # self.model.prior.gradient_rbm_stan(output[2])
             self.model.prior.update_params()
 
             if (i % log_batch_idx) == 0:

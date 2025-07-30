@@ -114,6 +114,7 @@ def setup_model(config=None):
     #instantiate and register optimisation algorithm
     engine.optimiser = torch.optim.Adam(model.parameters(),
                                         lr=config.engine.learning_rate)
+    model.prior.initOpt()
     #add the model instance to the engine namespace
     engine.model = model
     # add the modelCreator instance to engine namespace
