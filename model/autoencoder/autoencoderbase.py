@@ -14,7 +14,8 @@ from model.encoder.encoderhierarchybase import HierarchicalEncoder
 from model.decoder.decoder import Decoder
 from model.decoder.decoderhierarchybase import DecoderHierarchyBase, DecoderHierarchyBaseV2, DecoderHierarchyBaseV3, DecoderHierarchyBaseV4
 from model.decoder.decoder_hier_geo import DecoderHierarchyGeometry
-from model.decoder.decoderhierarchy0 import DecoderHierarchy0
+from model.decoder.decoderhierarchy0 import DecoderHierarchy0, DecoderHierarchyv3
+from model.decoder.decoderhierarchytf import DecoderHierarchyTF
 from model.rbm.rbm import RBM
 
 #logging module with handmade settings.
@@ -55,12 +56,16 @@ class AutoEncoderBase(nn.Module):
             return DecoderHierarchyBaseV2(self._config)
         elif self._config.model.decoder == "hierarchicaldecoderv3":
             return DecoderHierarchyBaseV3(self._config)
-        elif self._config.model.decoder == "decoderhierachy0":
-            return DecoderHierarchy0(self._config)
         elif self._config.model.decoder == "decoderhiergeo":
             return DecoderHierarchyGeometry(self._config)
         elif self._config.model.decoder == "decoderhierarchyv4":
             return DecoderHierarchyBaseV4(self._config)
+        elif self._config.model.decoder == "decoderhierachy0":
+            return DecoderHierarchy0(self._config)
+        elif self._config.model.decoder == "decoderhierachyv3":
+            return DecoderHierarchyv3(self._config)
+        elif self._config.model.decoder == "decoderhierachytf":
+            return DecoderHierarchyTF(self._config)
         
     def _create_prior(self):
         logger.debug("::_create_prior")

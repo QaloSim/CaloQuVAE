@@ -114,6 +114,7 @@ def setup_model(config=None):
     #instantiate and register optimisation algorithm
     engine.optimiser = torch.optim.Adam(model.parameters(),
                                         lr=config.engine.learning_rate)
+    model.prior.initOpt()
     #add the model instance to the engine namespace
     engine.model = model
     # add the modelCreator instance to engine namespace
@@ -200,7 +201,7 @@ def freeze_vae(engine):
             param.requires_grad = False
         print(name, param.requires_grad)
     # engine._save_model(name="at_freezing_point")
-    # engine._config.rbm.method = "PCD"
+    engine._config.rbm.method = "PCD"
     logger.info(f'RBM will use {engine._config.rbm.method}')
 
 def callback(engine, epoch):
@@ -208,7 +209,7 @@ def callback(engine, epoch):
     Callback function to be used with the engine.
     """
     logger.info(f"Callback function executed at epoch {epoch}.")
-    if engine._config.freeze_vae and epoch > engine._config.epoch_freeze:
+    if engine._config.freeze_vae and epoch + 1 >= engine._config.epoch_freeze:
         engine.load_best_model(epoch)
         engine._config.engine.training_mode = "rbm"
         return True
@@ -223,8 +224,8 @@ def get_project_id(path):
     iden = files[idx].split("-")[1].split(".")[0]
     return iden
 
-def load_model_instance(path, adjust_epoch_start=True):
-    config = OmegaConf.load(path)
+def load_model_instance(cfg, adjust_epoch_start=True):
+    config = OmegaConf.load(cfg.config_path)
     if adjust_epoch_start:
         # Adjust the epoch start based on the run_path
         config.epoch_start = int(config.run_path.split("_")[-1].split(".")[0])
