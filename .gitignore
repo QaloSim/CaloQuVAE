@@ -9,6 +9,9 @@ cfg_test.yaml
 wandb/
 outputs_sym/
 outputs_sym
+modelsJT.md
+nbDGX.ipynb
+modelsDGX.md
 
 # Byte-compiled / optimized / DLL files
 __pycache__/

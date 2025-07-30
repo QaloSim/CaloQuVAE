@@ -126,6 +126,7 @@ class Engine():
             loss_dict = self.model.loss(x, output)
             loss_dict["loss"] = torch.stack([loss_dict[key] * self._config.model.loss_coeff[key]  for key in loss_dict.keys() if "loss" != key]).sum()
             self.model.prior.gradient_rbm_centered(output[2])
+            # self.model.prior.gradient_rbm_stan(output[2])
             self.model.prior.update_params()
             
             # Backward pass and optimization
@@ -181,7 +182,7 @@ class Engine():
             loss_dict = self.model.loss(x, output)
             loss_dict["loss"] = torch.stack([loss_dict[key] * self._config.model.loss_coeff[key]  for key in loss_dict.keys() if "loss" != key]).sum()
             self.model.prior.gradient_rbm_centered(output[2])
-            # self.model.prior.gradient_rbm(output[2])
+            # self.model.prior.gradient_rbm_stan(output[2])
             self.model.prior.update_params()
 
             if (i % log_batch_idx) == 0:
@@ -204,8 +205,8 @@ class Engine():
             return self.total_loss_dict
     
     def track_best_val_loss(self, loss_dict):
-        if self.best_val_loss > loss_dict["val_ae_loss"] + loss_dict["val_hit_loss"]:
-            self.best_val_loss = loss_dict["val_ae_loss"] + loss_dict["val_hit_loss"]
+        if self.best_val_loss > loss_dict["val_ae_loss"]: #+ loss_dict["val_hit_loss"]:
+            self.best_val_loss = loss_dict["val_ae_loss"] #+ loss_dict["val_hit_loss"]
             self.best_config_path = self._save_model(name="best")
             logger.info("Best Val loss: {:.4f}".format(self.best_val_loss))
 

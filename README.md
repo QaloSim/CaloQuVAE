@@ -8,11 +8,12 @@ This repository is a lighter and faster version of the CaloQVAE repo. It trims 1
 - [x] Also fix the RBM issue when increasing size.
 - [x] Also figure out what we wanna plot, and make it easier to turn off/on certain plots
 - [x] Add AE stand-alone training 
-- [ ] Add Plots for CaloChallenge
-- [ ] Add RBM stand-alone training
+- [x] Add Plots for CaloChallenge
+- [x] Add RBM stand-alone training
+- [x] Add KPD and FPD estimation
+- [x] Add Transformer architecture
 - [ ] Add D-Wave sampling and inverse Temp estimation
-- [ ] Add KPD and FPD estimation
-- [ ] Add Transformer architecture
+- [ ] Add Frobenius metric
 
 ## A Quantum-assisted Deep Generative Particle-Calorimeter Surrogate
 ![](https://github.com/QaloSim/CaloQuVAE/blob/main/infographic.png)
