@@ -322,7 +322,6 @@ def plot_patch_layer_correlation_matrix(corr_matrix, patch_coords, relevant_laye
     plt.tight_layout()
     return fig
 
-import time
 # function called in the engine to generate the correlation plots and frobenius metrics
 def correlation_plots(cfg, incident_energy, showers, showers_prior, epoch):
     target_corr = compute_voxelwise_correlation_matrix(showers) # ground truth
