@@ -322,6 +322,7 @@ def plot_patch_layer_correlation_matrix(corr_matrix, patch_coords, relevant_laye
     plt.tight_layout()
     return fig
 
+import time
 # function called in the engine to generate the correlation plots and frobenius metrics
 def correlation_plots(cfg, incident_energy, showers, showers_prior, epoch):
     target_corr = compute_voxelwise_correlation_matrix(showers) # ground truth
@@ -420,7 +421,20 @@ def correlation_plots(cfg, incident_energy, showers, showers_prior, epoch):
     fig_prior_patch = plot_patch_layer_correlation_matrix(corr_prior, patch_coords, relevant_layers, title_prefix="Prior")
     frob_patch_layer = frobenius_distance(corr, corr_prior)
     logger.info(f"Epoch {epoch} - Frobenius Metric (Patch-Layer Correlation): {frob_patch_layer:.4f}")
-                                        
-    return fig_target_corr, fig_sampled_corr, fig_gt_grid, fig_prior_grid, fig_frob_layerwise, fig_gt, fig_prior, gt_spars_corr, prior_spars_corr, fig_gt_sparsity, fig_prior_sparsity, fig_gt_sparsity_corr, fig_prior_sparsity_corr, fig_gt_patch, fig_prior_patch
+
+    return (
+            fig_target_corr, fig_sampled_corr, fig_gt_grid, fig_prior_grid,
+            fig_frob_layerwise, fig_gt, fig_prior,
+            gt_spars_corr, prior_spars_corr,
+            fig_gt_sparsity, fig_prior_sparsity,
+            fig_gt_sparsity_corr, fig_prior_sparsity_corr,
+            fig_gt_patch, fig_prior_patch,
+            { # dictionary of frob metrics:
+                "frob_dist_voxel": frob_dist,
+                "frob_dist_energy_corr_layer": frob_dist_energy_corr,
+                "sparsity_frob_distance": sparsity_frob_distance,
+                "frob_sparsity_dists_layer": frob_sparsity_dists,
+                "frob_patch_layer": frob_patch_layer
+            })
     
     
