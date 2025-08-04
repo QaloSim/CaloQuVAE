@@ -1,5 +1,6 @@
 dataset_name: CaloChallenge2
 path: /fast_scratch_1/caloqvae/data/atlas_dataset2and3/dataset_2_1_filtered.hdf5
+# path: /fast_scratch_1/caloqvae/data/atlas_dataset2and3/dataset_2_2.hdf5
 
 binning_path: /fast_scratch_1/caloqvae/data/atlas_dataset2and3/binning_dataset_2.xml
 
