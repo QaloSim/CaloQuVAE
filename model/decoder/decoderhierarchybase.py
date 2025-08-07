@@ -184,6 +184,7 @@ class DecoderHierarchyBaseV4(DecoderHierarchyBase):
         output_hits, output_activations = None, None
         partition_idx_start = (self.hierarchical_levels-1) * self._config.rbm.latent_nodes_per_p  # start index for the z3 RBM partition
         partition_idx_end = partition_idx_start + self._config.rbm.latent_nodes_per_p  # end index for the z3 RBM partition
+        prev_output = None
 
         for lvl in range(self.hierarchical_levels):
             cur_decoder = self.subdecoders[lvl]
@@ -195,10 +196,13 @@ class DecoderHierarchyBaseV4(DecoderHierarchyBase):
                 enc_z = torch.cat((x_lat[:, 0:self._config.rbm.latent_nodes_per_p], x_lat[:, partition_idx_start:partition_idx_end]), dim=1)  # concatenate the incident energy and the latent nodes of the current RBM partition
                 enc_z = torch.unflatten(enc_z, 1, (self._config.rbm.latent_nodes_per_p*(2+lvl), 1, 1, 1))
                 # Apply skip connection
-                enc_z = self.skip_connections[lvl](enc_z).view(enc_z.size(0), -1)  # Flatten the output of the skip connection                partition_idx_start -= self._config.rbm.latent_nodes_per_p  # start index for the current RBM partition, moves one partition back every level
-                partition_idx_start -= self._config.rbm.latent_nodes_per_p  # start index for the current RBM partition, moves one partition back every level
-
+                enc_z = self.skip_connections[lvl](enc_z).view(enc_z.size(0), -1)  # Flatten the output of the skip connection
+                enc_z += x_lat.view(x_lat.size(0), -1)  # Add the latent nodes to the skip connection output         
+                partition_idx_start -= self._config.rbm.latent_nodes_per_p  # start index for the current RBM partition, moves one partition back every level                
                 x = torch.cat((enc_z, z), dim=1)  # Concatenate the output of the skip connection with the output of the current decoder
+                if prev_output is not None:
+                    x += prev_output  # add/refine the previous subdecoder output
+                prev_output = x
         # If the last level, just return the output            
         return output_hits, output_activations # Return the output of the last decoder, which is the shower output
     
