@@ -56,6 +56,13 @@ class AutoEncoderSeparate(AutoEncoderBase):
         
         return batch_average_entropy
     
+    def pos_energy(self, post_samples):
+        """
+        Compute positive phase (energy expval under posterior variables)
+        """
+        pos_energy = self.prior.energy_exp_cond(post_samples[0],post_samples[1],post_samples[2],post_samples[3]).mean()
+        return pos_energy
+
     def loss(self, input_data, args):
         """
         Override autoencoderbase loss function
@@ -67,7 +74,8 @@ class AutoEncoderSeparate(AutoEncoderBase):
 
         entropy_loss = -1 * self.posterior_entropy(post_logits)        
 
-        
+        pos_energy = self.pos_energy(post_samples)
+
         ae_loss = torch.pow((input_data - output_activations),2) * torch.exp(self._config.model.mse_weight*input_data)
         ae_loss = torch.mean(torch.sum(ae_loss, dim=1), dim=0) * self._config.model.coefficient
 
@@ -79,5 +87,6 @@ class AutoEncoderSeparate(AutoEncoderBase):
             "ae_loss": ae_loss,
             "hit_loss": hit_loss,
             "entropy": entropy_loss,
+            "pos_energy": pos_energy,
         }
 
