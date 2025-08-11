@@ -210,11 +210,12 @@ def callback(engine, epoch):
     """
     logger.info(f"Callback function executed at epoch {epoch}.")
     if engine._config.freeze_vae and epoch + 1 >= engine._config.epoch_freeze:
-        engine.load_best_model(epoch)
+        # engine.load_best_model(epoch)
         engine._config.engine.training_mode = "rbm"
+        engine._config.epoch_start = epoch + 1
         return True
     else:
-        logger.info("Continuing training in AE mode.")
+        logger.info("Continuing training in current mode.")
         return False
 
 def get_project_id(path):

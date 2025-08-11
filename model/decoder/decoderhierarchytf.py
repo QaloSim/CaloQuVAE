@@ -86,7 +86,7 @@ class DecoderAtt(nn.Module):
 
                 #    PeriodicConvTranspose3d(32, 1, (5,3,3), (1,1,1), 0),
                 #    PeriodicConv3d(1, 1, (self.z - output_size_z + 1, 1, 1), (1,1,1), 0),
-                   nn.PReLU(1, 1.0)
+                #    nn.PReLU(1, 1.0)
                                    )
         
         self._layers3 = nn.Sequential(
@@ -100,7 +100,7 @@ class DecoderAtt(nn.Module):
 
                 #    PeriodicConvTranspose3d(32, 1, (5,3,3), (1,1,1), 0),
                 #    PeriodicConv3d(1, 1, (self.z - output_size_z + 1, 1, 1), (1,1,1), 0),
-                   nn.PReLU(1, 0.02),
+                #    nn.PReLU(1, 0.02),
                                    )
         
     def forward(self, x, x0):
