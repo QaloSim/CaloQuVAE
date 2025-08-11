@@ -244,6 +244,23 @@ def get_fpd_kpd_metrics(test_data, gen_data, syn_bool, hlf, ref_hlf, if_Atlas=Fa
     logger.info(result_str)
     return fpd_val, fpd_err, kpd_val, kpd_err
 
+def get_reference_point():
+    hydra.core.global_hydra.GlobalHydra.instance().clear()
+    initialize(version_base=None, config_path="../config")
+    cfg1 = compose(config_name="config.yaml")
+    cfg2 = compose(config_name="test_config.yaml")
+    wandb.init(tags = [cfg1.data.dataset_name], project=cfg1.wandb.project, entity=cfg1.wandb.entity, config=OmegaConf.to_container(cfg1, resolve=True), mode='disabled')
+    wandb.init(tags = [cfg2.data.dataset_name], project=cfg2.wandb.project, entity=cfg2.wandb.entity, config=OmegaConf.to_container(cfg2, resolve=True), mode='disabled')
+    engine1 = setup_model(cfg1)
+    engine2 = setup_model(cfg2)
+    engine1.evaluate_vae(engine1.data_mgr.test_loader, 0)
+    engine2.evaluate_vae(engine2.data_mgr.test_loader, 0)
+    hlf = HLF2('electron', filename=engine1._config.data.binning_path)
+    hlf.Einc = engine1.incident_energy
+    ref_hlf = HLF2('electron', filename=engine1._config.data.binning_path)
+    ref_metrics = get_fpd_kpd_metrics(np.array(engine2.showers), np.array(engine1.showers), False, hlf, ref_hlf, if_Atlas=True)
+    return ref_metrics
+
 if __name__=="__main__":
     logger.info("Starting main executable.")
     main()
