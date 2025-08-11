@@ -1,7 +1,14 @@
+<<<<<<< HEAD
+dataset_name: AtlasReg030 (CCtest)
+path: /home/dkraft/projects/def-tafirout/dkraft/dataset_eta_030_positive_cat_smeared.hdf5
+
+binning_path: /home/dkraft/scratch/dataset_eta_030_positive.hdf5
+=======
 dataset_name: AtlasReg050 (CCtest)
 path: /home/lzhu/projects/def-tafirout/lzhu/dataset_eta_050_positive_cat_smeared.hdf5
 
 binning_path: /home/lzhu/scratch/dataset_eta_050_positive.hdf5
+>>>>>>> origin/dev
 
 particle: electron2
 
@@ -14,7 +21,11 @@ phi: 14
 frac_val_dataset: 0.1
 frac_train_dataset: 0.8
 
+<<<<<<< HEAD
+batch_size_tr: 128
+=======
 batch_size_tr: 512
+>>>>>>> origin/dev
 batch_size_val: 1024
 batch_size_test: 1024
 num_workers: 8

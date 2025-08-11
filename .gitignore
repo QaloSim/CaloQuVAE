@@ -1,12 +1,17 @@
 runJT.sh
+scriptJT.sh
 runLZ.sh
 submit_caloquvae_LZ.slurm
+wandb-outputs
 nbLZ.ipynb
 outputs/
 cfg_test.yaml
 wandb/
 outputs_sym/
 outputs_sym
+modelsJT.md
+nbDGX.ipynb
+modelsDGX.md
 
 # Byte-compiled / optimized / DLL files
 __pycache__/

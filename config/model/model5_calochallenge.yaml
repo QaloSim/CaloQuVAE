@@ -1,0 +1,25 @@
+model_name: ae_separate
+encoder: hierachicalencoder
+encoderblock: CaloChallenge2
+decoder: decoderhierachy0
+
+decoder_input:
+  - 1208
+  - 3368
+  - 3368
+  - 3368
+
+decoder_output:
+  - 2160
+  - 2160
+  - 2160
+  - 6480
+
+# output_smoothing_fct: 60
+mse_weight: 0.5
+coefficient: 0.01
+
+loss_coeff:
+  ae_loss: 1.0
+  hit_loss: 1.0
+  entropy: 0.0

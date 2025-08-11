@@ -132,6 +132,79 @@ class DecoderHierarchyBaseV2(DecoderHierarchyBase):
         # If the last level, just return the output            
         return output_hits, output_activations # Return the output of the last decoder, which is the shower output
 
+class DecoderHierarchyBaseV3(DecoderHierarchyBaseV2):
+    def _create_skip_connections(self):
+        """
+        Create skip connections for the hierarchical decoder.
+        The ith skip connection feeds the latent nodes of the ith RBM partition to the ith subdecoder,
+        as well as the conditioned incident energy stored in partition 0 of the RBM.
+        """
+        self.skip_connections = nn.ModuleList()
+        input_size = 2*self._config.rbm.latent_nodes_per_p
+        output_size = self.latent_nodes  # Each skip connection outputs the input size of the subdecoders minus the shower size
+        for i in range(self.hierarchical_levels-1):
+            skip_connection = nn.Sequential(
+                nn.Conv3d(
+                    in_channels=input_size,
+                    out_channels=input_size + self._config.rbm.latent_nodes_per_p,
+                    kernel_size=(1, 1, 1),
+                    stride=(1, 1, 1)),
+                nn.Conv3d(
+                    in_channels=input_size + self._config.rbm.latent_nodes_per_p,
+                    out_channels=output_size,
+                    kernel_size=(1, 1, 1),
+                    stride=(1, 1, 1))
+            )
+            self.skip_connections.append(skip_connection)
+
+class DecoderHierarchyBaseV4(DecoderHierarchyBase):
+
+    def _create_skip_connections(self):
+        self.skip_connections = nn.ModuleList()
+        input_sizes = [(2+i)*self._config.rbm.latent_nodes_per_p for i in range(self.hierarchical_levels-1)]  # Each skip connection takes an increasing number of partitions
+        for i in range(self.hierarchical_levels-1):
+            skip_connection = nn.Sequential(
+                nn.Conv3d(
+                    in_channels=input_sizes[i],
+                    out_channels=input_sizes[i]+ self._config.rbm.latent_nodes_per_p,
+                    kernel_size=(1, 1, 1),
+                    stride=(1, 1, 1)),
+                nn.Conv3d(
+                    in_channels=input_sizes[i]+ self._config.rbm.latent_nodes_per_p,
+                    out_channels=self.latent_nodes,
+                    kernel_size=(1, 1, 1),
+                    stride=(1, 1, 1))
+            )
+            self.skip_connections.append(skip_connection)
+
+
+
+    def forward(self, x, x0):
+        x_lat = x
+        output_hits, output_activations = None, None
+        partition_idx_start = (self.hierarchical_levels-1) * self._config.rbm.latent_nodes_per_p  # start index for the z3 RBM partition
+        partition_idx_end = partition_idx_start + self._config.rbm.latent_nodes_per_p  # end index for the z3 RBM partition
+
+        for lvl in range(self.hierarchical_levels):
+            cur_decoder = self.subdecoders[lvl]
+            output_hits, output_activations = cur_decoder(x, x0)
+            if lvl < self.hierarchical_levels - 1: # If not the last level, prepare input for the next level
+                outputs = output_hits * output_activations
+                z = outputs
+                # Concatenate the output of the current decoder with the latent nodes of the next RBM partition
+                enc_z = torch.cat((x_lat[:, 0:self._config.rbm.latent_nodes_per_p], x_lat[:, partition_idx_start:partition_idx_end]), dim=1)  # concatenate the incident energy and the latent nodes of the current RBM partition
+                enc_z = torch.unflatten(enc_z, 1, (self._config.rbm.latent_nodes_per_p*(2+lvl), 1, 1, 1))
+                # Apply skip connection
+                enc_z = self.skip_connections[lvl](enc_z).view(enc_z.size(0), -1)  # Flatten the output of the skip connection                partition_idx_start -= self._config.rbm.latent_nodes_per_p  # start index for the current RBM partition, moves one partition back every level
+                partition_idx_start -= self._config.rbm.latent_nodes_per_p  # start index for the current RBM partition, moves one partition back every level
+
+                x = torch.cat((enc_z, z), dim=1)  # Concatenate the output of the skip connection with the output of the current decoder
+        # If the last level, just return the output            
+        return output_hits, output_activations # Return the output of the last decoder, which is the shower output
+    
+
+        
+
 
 class PeriodicConv3d(nn.Module):
     def __init__(self, in_channels, out_channels, kernel_size, stride=1, padding=0, dilation=1, groups=1, bias=True):

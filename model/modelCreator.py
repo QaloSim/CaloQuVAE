@@ -52,11 +52,19 @@ class ModelCreator():
         
     def save_state(self, cfg_string='test'):
         # Use wandb.run.dir if available, else fallback to local directory
-        if wandb.run is not None:
+        if wandb.run is not None and self._config.wandb.mode != "disabled" and self._config.load_state == 0:
             save_dir = wandb.run.dir
+            logger.info(f"Using WandB run directory: {save_dir}")
+        elif wandb.run is not None and self._config.wandb.mode != "disabled" and self._config.load_state == 1:
+            save_dir = self._config.run_path.split('files')[0] + 'files/'
         else:
             # e.g., set a folder relative to current working directory or config run_path
-            save_dir = self._config.run_path if hasattr(self._config, 'run_path') else os.getcwd()
+            if hasattr(self._config, 'run_path'):
+                logger.info(f"Using config run directory: {self._config.run_path}")
+                save_dir = self._config.run_path
+            else:
+                logger.warning("No config run directory found, using current working directory.")
+                save_dir = os.getcwd()
 
         os.makedirs(save_dir, exist_ok=True)
 
@@ -72,6 +80,7 @@ class ModelCreator():
         self._config.run_path = path
         self._config.config_path = config_path
         OmegaConf.save(self._config, config_path, resolve=True)
+        return config_path
 
         
     def save_RBM_state(self, cfg_string='test', encoded_data_energy=None):

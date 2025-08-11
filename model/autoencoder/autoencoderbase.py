@@ -12,8 +12,10 @@ from torch.nn.functional import binary_cross_entropy_with_logits
 from model.gumbel import GumbelMod
 from model.encoder.encoderhierarchybase import HierarchicalEncoder
 from model.decoder.decoder import Decoder
-from model.decoder.decoderhierarchybase import DecoderHierarchyBase, DecoderHierarchyBaseV2
-from model.decoder.decoderhierarchy0 import DecoderHierarchy0
+from model.decoder.decoderhierarchybase import DecoderHierarchyBase, DecoderHierarchyBaseV2, DecoderHierarchyBaseV3, DecoderHierarchyBaseV4
+from model.decoder.decoder_hier_geo import DecoderHierarchyGeometry
+from model.decoder.decoderhierarchy0 import DecoderHierarchy0, DecoderHierarchyv3
+from model.decoder.decoderhierarchytf import DecoderHierarchyTF
 from model.rbm.rbm import RBM
 
 #logging module with handmade settings.
@@ -52,8 +54,18 @@ class AutoEncoderBase(nn.Module):
             return DecoderHierarchyBase(self._config)
         elif self._config.model.decoder == "hierarchicaldecoderv2":
             return DecoderHierarchyBaseV2(self._config)
+        elif self._config.model.decoder == "hierarchicaldecoderv3":
+            return DecoderHierarchyBaseV3(self._config)
+        elif self._config.model.decoder == "decoderhiergeo":
+            return DecoderHierarchyGeometry(self._config)
+        elif self._config.model.decoder == "decoderhierarchyv4":
+            return DecoderHierarchyBaseV4(self._config)
         elif self._config.model.decoder == "decoderhierachy0":
             return DecoderHierarchy0(self._config)
+        elif self._config.model.decoder == "decoderhierachyv3":
+            return DecoderHierarchyv3(self._config)
+        elif self._config.model.decoder == "decoderhierachytf":
+            return DecoderHierarchyTF(self._config)
         
     def _create_prior(self):
         logger.debug("::_create_prior")
@@ -98,12 +110,12 @@ class AutoEncoderBase(nn.Module):
         
         output_hits, output_activations = self.decoder(torch.cat(post_samples,1), x0)
 
-        beta = torch.tensor(self._config.model.output_smoothing_fct, dtype=torch.float, device=output_hits.device, requires_grad=False)
+        # beta = torch.tensor(self._config.model.output_smoothing_fct, dtype=torch.float, device=output_hits.device, requires_grad=False)
         
         if self.training:
             output_activations = self._activation_fct(act_fct_slope)(output_activations) * torch.where(x > 0, 1., 0.)
         else:
-            output_activations = self._activation_fct(0.0)(output_activations) * self._hit_smoothing_dist_mod(output_hits, beta)
+            output_activations = self._activation_fct(0.0)(output_activations) * self._hit_smoothing_dist_mod(output_hits)
        
         return output_hits, output_activations
     
@@ -120,7 +132,9 @@ class AutoEncoderBase(nn.Module):
         ae_loss = torch.pow((input_data - output_activations),2) * torch.exp(self._config.model.mse_weight*input_data)
         ae_loss = torch.mean(torch.sum(ae_loss, dim=1), dim=0) * self._config.model.coefficient
 
-        hit_loss = binary_cross_entropy_with_logits(output_hits, torch.where(input_data > 0, 1., 0.), reduction='none')
+        hit_loss = binary_cross_entropy_with_logits(output_hits, torch.where(input_data > 0, 1., 0.),
+                        reduction='none')
+        # weight= (1+input_data).pow(self._config.model.bce_weights_power)
         hit_loss = torch.mean(torch.sum(hit_loss, dim=1), dim=0)
 
         return {"ae_loss":ae_loss, "kl_loss":kl_loss, "hit_loss":hit_loss,
