@@ -228,7 +228,10 @@ def load_model_instance(cfg, adjust_epoch_start=True):
     config = OmegaConf.load(cfg.config_path)
     if adjust_epoch_start:
         # Adjust the epoch start based on the run_path
-        config.epoch_start = int(config.run_path.split("_")[-1].split(".")[0])
+        if config.run_path.split("_")[-1].split(".")[0].isdigit():
+            config.epoch_start = int(config.run_path.split("_")[-1].split(".")[0])
+        else:
+            config.epoch_start = cfg.epoch_start
     config.gpu_list = cfg.gpu_list
     config.load_state = cfg.load_state
     self = setup_model(config)
