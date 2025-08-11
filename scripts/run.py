@@ -200,8 +200,6 @@ def freeze_vae(engine):
         if 'decoder' in name or 'encoder' in name:
             param.requires_grad = False
         print(name, param.requires_grad)
-    # engine._save_model(name="at_freezing_point")
-    # engine._config.rbm.method = "PCD"
     logger.info(f'RBM will use {engine._config.rbm.method}')
 
 def callback(engine, epoch):
