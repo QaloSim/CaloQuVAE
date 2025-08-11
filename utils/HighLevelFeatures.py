@@ -17,7 +17,7 @@ from utils.XMLHandler import XMLHandler
 class HighLevelFeatures:
     """ Computes all high-level features based on the specific geometry stored in the binning file
     """
-    def __init__(self, particle, filename='binning.xml', relevantLayers=[0,1,2,3,4,5]):
+    def __init__(self, particle, filename='binning.xml', relevantLayers=None):
         """ particle (str): particle to be considered
             filename (str): path/to/binning.xml of the specific detector geometry.
             particle is redundant, as it is also part of the binning file, however, it serves as a
@@ -26,7 +26,10 @@ class HighLevelFeatures:
         xml = XMLHandler(particle, filename=filename)
         self.bin_edges = xml.GetBinEdges()
         self.eta_all_layers, self.phi_all_layers = xml.GetEtaPhiAllLayers()
-        self.relevantLayers = relevantLayers #xml.GetRelevantLayers()
+        if relevantLayers is None:
+            self.relevantLayers = xml.GetRelevantLayers()
+        else:
+            self.relevantLayers = relevantLayers #xml.GetRelevantLayers()
         self.layersBinnedInAlpha = xml.GetLayersWithBinningInAlpha()
         self.r_edges = [redge for redge in xml.r_edges if len(redge) > 1]
         self.num_alpha = [len(xml.alphaListPerLayer[idx][0]) for idx, redge in \

@@ -8,27 +8,20 @@ Year: 2025
 
 #external libraries
 import os
-import pickle
-import datetime
-import sys
 
 import torch
 torch.manual_seed(32)
 import numpy as np
 np.random.seed(32)
-import matplotlib.pyplot as plt
 import hydra
 from hydra.utils import instantiate
 
 from omegaconf import OmegaConf
 
 # PyTorch imports
-from torch import device, load, save
+from torch import device
 from torch.nn import DataParallel
 from torch.cuda import is_available
-
-# Add the path to the parent directory to augment search for module
-# sys.path.append(os.getcwd())
     
 # Weights and Biases
 import wandb
@@ -49,15 +42,18 @@ def main(cfg=None):
     mode = cfg.wandb.mode
     if cfg.load_state:
         logger.info(f"Loading config from {cfg.config_path}")
-        cfg = OmegaConf.load(cfg.config_path)
-        os.environ["WANDB_DIR"] = cfg.run_path.split("wandb")[0]
+        engine = load_model_instance(cfg)
+        cfg = engine._config
+        os.environ["WANDB_DIR"] = cfg.config_path.split("wandb")[0]
         iden = get_project_id(cfg.run_path)
         wandb.init(tags = [cfg.data.dataset_name], project=cfg.wandb.project, entity=cfg.wandb.entity, config=OmegaConf.to_container(cfg, resolve=True), mode=mode,
                 resume='allow', id=iden)
-        engine = load_model_instance(cfg.config_path)
+        # Log metrics with wandb
+        wandb.watch(engine.model)
     else:
-        wandb.init(tags = [cfg.data.dataset_name], project=cfg.wandb.project, entity=cfg.wandb.entity, config=OmegaConf.to_container(cfg, resolve=True), mode=mode)
         engine = setup_model(config=cfg)
+        wandb.init(tags = [cfg.data.dataset_name], project=cfg.wandb.project, entity=cfg.wandb.entity, config=OmegaConf.to_container(cfg, resolve=True), mode=mode)
+        wandb.watch(engine.model)
     print(OmegaConf.to_yaml(cfg, resolve=True))
 
     run(engine, callback)
@@ -107,8 +103,6 @@ def setup_model(config=None):
         
     # Send the model to the selected device
     model.to(dev)
-    # Log metrics with wandb
-    wandb.watch(model)
 
     # For some reason, need to use postional parameter cfg instead of named parameter
     # with updated Hydra - used to work with named param but now is cfg=None 
@@ -120,6 +114,7 @@ def setup_model(config=None):
     #instantiate and register optimisation algorithm
     engine.optimiser = torch.optim.Adam(model.parameters(),
                                         lr=config.engine.learning_rate)
+    model.prior.initOpt()
     #add the model instance to the engine namespace
     engine.model = model
     # add the modelCreator instance to engine namespace
@@ -141,29 +136,35 @@ def run(engine, _callback=lambda _: False):
         for epoch in range(engine._config.epoch_start, engine._config.n_epochs):
             engine.fit_ae(epoch)
 
-            engine.evaluate_ae(engine.data_mgr.val_loader, epoch)
+            total_loss_dict = engine.evaluate_ae(engine.data_mgr.val_loader, epoch)
+            engine.track_best_val_loss(total_loss_dict)
+            engine.generate_plots(epoch, "ae")
             
-            if epoch+1 % 10 == 0:
+            if (epoch+1) % 10 == 0:
                 engine._save_model(name=str(epoch))
-
+            
             if _callback(engine, epoch):
                 break
-
+            
         engine.evaluate_ae(engine.data_mgr.test_loader, 0)
+
     if engine._config.engine.training_mode == "vae":
         logger.info("Training Variational AutoEncoder")
         for epoch in range(engine._config.epoch_start, engine._config.n_epochs):
 
             engine.fit_vae(epoch)
-            engine.evaluate_vae(engine.data_mgr.val_loader, epoch)
+            total_loss_dict = engine.evaluate_vae(engine.data_mgr.val_loader, epoch)
+            engine.track_best_val_loss(total_loss_dict)
+            engine.generate_plots(epoch, "vae")
             
-            if epoch+1 % 10 == 0:
+            if (epoch+1) % 10 == 0:
                 engine._save_model(name=str(epoch))
 
             if _callback(engine, epoch):
                 break
 
         engine.evaluate_vae(engine.data_mgr.test_loader, 0)
+
     if engine._config.engine.training_mode == "rbm":
         logger.info("Training RBM")
         freeze_vae(engine)
@@ -171,8 +172,9 @@ def run(engine, _callback=lambda _: False):
 
             engine.fit_rbm(epoch)
             engine.evaluate_vae(engine.data_mgr.val_loader, epoch)
+            engine.generate_plots(epoch, "rbm")
             
-            if epoch+1 % 10 == 0:
+            if (epoch+1) % 10 == 0:
                 engine._save_model(name=str(epoch))
 
         engine.evaluate_vae(engine.data_mgr.test_loader, 0)
@@ -199,18 +201,17 @@ def freeze_vae(engine):
             param.requires_grad = False
         print(name, param.requires_grad)
     # engine._save_model(name="at_freezing_point")
-    engine._config.rbm.method = "PCD"
+    # engine._config.rbm.method = "PCD"
     logger.info(f'RBM will use {engine._config.rbm.method}')
 
 def callback(engine, epoch):
     """
     Callback function to be used with the engine.
     """
-    logger.info("Callback function executed.")
-    if engine._config.freeze_ae and epoch > engine._config.epoch_freeze:
+    logger.info(f"Callback function executed at epoch {epoch}.")
+    if engine._config.freeze_vae and epoch + 1 >= engine._config.epoch_freeze:
+        engine.load_best_model(epoch)
         engine._config.engine.training_mode = "rbm"
-        engine._config.epoch_start = epoch + 1
-        logger.info("AE frozen, switching to RBM training mode.")
         return True
     else:
         logger.info("Continuing training in AE mode.")
@@ -223,11 +224,16 @@ def get_project_id(path):
     iden = files[idx].split("-")[1].split(".")[0]
     return iden
 
-def load_model_instance(path):
-    config = OmegaConf.load(path)
-    config.epoch_start = int(config.run_path.split("_")[-1].split(".")[0])
+def load_model_instance(cfg, adjust_epoch_start=True):
+    config = OmegaConf.load(cfg.config_path)
+    if adjust_epoch_start:
+        # Adjust the epoch start based on the run_path
+        config.epoch_start = int(config.run_path.split("_")[-1].split(".")[0]) + 1
+    config.gpu_list = cfg.gpu_list
+    config.load_state = cfg.load_state
     self = setup_model(config)
     self._model_creator.load_state(config.run_path, self.device)
+    self.model.prior.initOpt()
     return self
 
 if __name__=="__main__":
