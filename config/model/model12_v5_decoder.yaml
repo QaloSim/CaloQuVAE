@@ -1,7 +1,7 @@
 model_name: ae_separate
 encoder: hierachicalencoder
 encoderblock: AtlasReg
-decoder: decoderhiergeo
+decoder: decoderhierarchyv5
 
 output_smoothing_fct: 60
 mse_weight: 0.5
@@ -10,5 +10,5 @@ coefficient: 0.01
 loss_coeff:
   ae_loss: 1.0
   hit_loss: 1.0
-  entropy: 0.001
-  pos_energy: 0.01
+  entropy: 0.01
+  pos_energy: 0.1
