@@ -40,11 +40,9 @@ class DecoderFullGeo(nn.Module):
         self.subdecoders = nn.ModuleList()
         for i in range(self.n_latent_hierarchy_lvls):
             if i == 0:
-                subdecoder = SubDecoder(self._config, first_subdecoder=True)
-            elif i == self.n_latent_hierarchy_lvls - 1:
-                subdecoder = SubDecoder(self._config, last_subdecoder=True)
+                subdecoder = FirstSubDecoder(self._config, first_subdecoder=True)
             else:
-                subdecoder = SubDecoder(self._config)
+                subdecoder = SubDecoder(self._config, last_subdecoder=(i == self.n_latent_hierarchy_lvls - 1))
             self.subdecoders.append(subdecoder)
 
     def trans_energy(self, x0, log_e_max=14.0, log_e_min=6.0, s_map = 1.0):
@@ -99,7 +97,54 @@ class DecoderFullGeo(nn.Module):
 
 
             
-        
+class FirstSubDecoder(nn.Module):
+    def __init__(self, cfg):
+        super(FirstSubDecoder, self).__init__()
+        self._config = cfg
+        self.n_latent_nodes = self._config.rbm.latent_nodes_per_p * self._config.rbm.partitions
+        self.shower_size = (self._config.data.z, self._config.data.r, self._config.data.phi)
+
+        self._layers1 = nn.Sequential(
+            nn.Unflatten(1, (self.n_latent_nodes+1, 1, 1, 1)),
+            PeriodicConvTranspose3d(self.n_latent_nodes+1, 512, (3, 3, 3), stride=(1, 1, 1), padding=0),
+            nn.BatchNorm3d(512),
+            nn.PReLU(512, 0.02),
+            # upscales to (512, 3, 3, 3)
+            PeriodicConvTranspose3d(512, 256, kernel_size=(3, 3, 3), stride=(1, 1, 1), padding=0),
+            nn.BatchNorm3d(256),
+            nn.PReLU(256, 0.02),
+            # upscales to (256, 5, 5, 5)
+            PeriodicConvTranspose3d(256, 128, (3, 3, 3), stride=(1, 1, 1), padding=0),
+            nn.BatchNorm3d(128),
+            nn.PReLU(128, 0.02),
+            # upscales to (128, 7, 7, 7)
+        )
+        self._layers2 = nn.Sequential(
+            # layer for activations
+            nn.ConvTranspose3d(129, 64, (3, 3, 5), stride=(1, 2, 3), padding=(1, 0, 0)),
+            nn.GroupNorm(1, 64),
+            nn.SiLU(),
+            LinearAttention(64, cylindrical=False),
+            # upscales to  (64, 7, 15, 23)
+            nn.ConvTranspose3d(64, 32, (3, 2, 2), stride=(1, 1, 1), padding=(1, 0, 0)),
+            nn.GroupNorm(1, 32),
+            nn.SiLU(),
+            LinearAttention(32, cylindrical=False),
+            # upscales to (32, 7, 16, 24)
+            nn.ConvTranspose3d(32, 1, (1, 1, 1), stride=(1, 1, 1), padding=0),
+            CropLayer(),
+            nn.Conv3d(1, 1, (1, 1, 1), stride=(1, 1, 1), padding=0),
+            nn.SiLU(),
+        )
+
+
+
+    def forward(self,x, x0):
+        x = self._layers1(x)
+        d1, d2, d3 = x.shape[-3], x.shape[-2], x.shape[-1]
+        xx0 = torch.cat((x, x0.unsqueeze(2).unsqueeze(3).unsqueeze(4).repeat(1, 1, d1, d2, d3)), dim=1)  # Concatenate the incident energy to the output of the first layer
+        x1 = self._layers2(xx0).reshape(xx0.shape[0], self.shower_size[0], self.shower_size[1], self.shower_size[2])
+        return x1
 
         
 

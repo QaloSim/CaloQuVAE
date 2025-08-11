@@ -12,11 +12,12 @@ from torch.nn.functional import binary_cross_entropy_with_logits
 from model.gumbel import GumbelMod
 from model.encoder.encoderhierarchybase import HierarchicalEncoder
 from model.decoder.decoder import Decoder
-from model.decoder.decoderhierarchybase import DecoderHierarchyBase, DecoderHierarchyBaseV2, DecoderHierarchyBaseV3, DecoderHierarchyBaseV4
+from model.decoder.decoderhierarchybase import DecoderHierarchyBase, DecoderHierarchyBaseV2, DecoderHierarchyBaseV3, DecoderHierarchyBaseV4, DecoderHierarchyBaseV5
 from model.decoder.decoder_hier_geo import DecoderHierarchyGeometry
 from model.decoder.decoder_full_geo import DecoderFullGeo
 from model.decoder.decoderhierarchy0 import DecoderHierarchy0, DecoderHierarchyv3
 from model.decoder.decoderhierarchytf import DecoderHierarchyTF
+from model.decoder.decoder_ATLAS_new import DecoderATLASNew
 from model.rbm.rbm import RBM
 
 #logging module with handmade settings.
@@ -60,7 +61,9 @@ class AutoEncoderBase(nn.Module):
         elif self._config.model.decoder == "decoderhiergeo":
             return DecoderHierarchyGeometry(self._config)
         elif self._config.model.decoder == "decoderhierarchyv4":
-            return DecoderHierarchyBaseV4(self._config)
+            return DecoderHierarchyBaseV4(self._config)        
+        elif self._config.model.decoder == "decoderhierarchyv5":
+            return DecoderHierarchyBaseV5(self._config)
         elif self._config.model.decoder == "decoderhierachy0":
             return DecoderHierarchy0(self._config)
         elif self._config.model.decoder == "decoderhierachyv3":
@@ -69,7 +72,9 @@ class AutoEncoderBase(nn.Module):
             return DecoderHierarchyTF(self._config)
         elif self._config.model.decoder == "decoderfullgeo":
             return DecoderFullGeo(self._config)
-        
+        elif self._config.model.decoder == "decoderatlasnew":
+            return DecoderATLASNew(self._config)
+
     def _create_prior(self):
         logger.debug("::_create_prior")
         return RBM(self._config)

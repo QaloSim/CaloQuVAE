@@ -28,7 +28,7 @@ class DecoderHierarchyBase(nn.Module):
         self.latent_nodes = self._config.rbm.latent_nodes_per_p * self._config.rbm.partitions # Number of latent nodes in total
         self.hierarchical_levels = self._config.rbm.partitions
 
-        self.shower_size = 7 * 24 * 14  # size of the shower output by each subdecoder
+        self.shower_size = self._config.data.z * self._config.data.phi * self._config.data.r  # size of the shower output by each subdecoder
 
         # List of input sizes for each subdecoder
         self.input_sizes = [self.latent_nodes + self.shower_size] * self.hierarchical_levels
@@ -207,7 +207,54 @@ class DecoderHierarchyBaseV4(DecoderHierarchyBase):
         return output_hits, output_activations # Return the output of the last decoder, which is the shower output
     
 
-        
+class DecoderHierarchyBaseV5(DecoderHierarchyBaseV4):
+    def _create_hierarchy_network(self):
+        """
+        Create the hierarchy network. Each subdecoder has identical architecture, but different input and outputs.
+        """
+        self.latent_nodes = self._config.rbm.latent_nodes_per_p * self._config.rbm.partitions # Number of latent nodes in total
+        self.hierarchical_levels = self._config.rbm.partitions
+
+        self.shower_size = self._config.data.z * self._config.data.phi * self._config.data.r  # size of the shower output by each subdecoder
+
+        # List of input sizes for each subdecoder
+        self.input_sizes = [self.latent_nodes + self.shower_size] * self.hierarchical_levels
+        self.input_sizes[0] = self.latent_nodes  # First subdecoder only takes latent nodes as input
+
+        # List of output sizes for each subdecoder
+        self.output_sizes = [self.shower_size] * self.hierarchical_levels
+
+        # Create the subdecoders
+        self.subdecoders = nn.ModuleList()
+        for i in range(self.hierarchical_levels):
+            self.subdecoders.append(SubDecoder(num_input_nodes=self.input_sizes[i],num_output_nodes=self.output_sizes[i], is_last=(i == self.hierarchical_levels - 1)))
+    
+    def forward(self, x, x0):
+        x_lat = x
+        partition_idx_start = (self.hierarchical_levels-1) * self._config.rbm.latent_nodes_per_p
+        partition_idx_end = partition_idx_start + self._config.rbm.latent_nodes_per_p  # end index for the z3 RBM partition
+        prev_output = None
+
+        for lvl in range(self.hierarchical_levels):
+            cur_decoder = self.subdecoders[lvl]
+            if lvl < self.hierarchical_levels - 1:
+                #new subdecoders only output activations until the last level
+                outputs = cur_decoder(x, x0)
+                z = outputs
+                enc_z = torch.cat((x_lat[:, 0:self._config.rbm.latent_nodes_per_p], x_lat[:, partition_idx_start:partition_idx_end]), dim=1)  # concatenate the incident energy and the latent nodes of the current RBM partition
+                enc_z = torch.unflatten(enc_z, 1, (self._config.rbm.latent_nodes_per_p*(2+lvl), 1, 1, 1))
+                # Apply skip connection
+                enc_z = self.skip_connections[lvl](enc_z).view(enc_z.size(0), -1)  # Flatten the output of the skip connection
+                enc_z += x_lat.view(x_lat.size(0), -1)  # Add the latent nodes to the skip connection output
+                partition_idx_start -= self._config.rbm.latent_nodes_per_p  # start index for the current RBM partition, moves one partition back every level
+                x = torch.cat((enc_z, z), dim=1)  # Concatenate the output of the skip connection with the output of the current decoder
+                # add/refine the previous subdecoder output
+                if prev_output is not None:
+                    x += prev_output
+                prev_output = x
+            else:
+                output_activations, output_hits = cur_decoder(x, x0)
+                return output_hits, output_activations  # Return the output of the last decoder, which has both hits and activations
 
 
 class PeriodicConv3d(nn.Module):
@@ -361,4 +408,77 @@ class DecoderCNNPB3Dv4_HEMOD(nn.Module):
         x2 = self._layers3(xx0).reshape(xx0.shape[0], self.num_output_nodes)  # Output activations
 
         return x1, x2
-        
+
+
+class SubDecoder(nn.Module):
+    def __init__(self, num_input_nodes, num_output_nodes, output_activation_fct=nn.Identity(), is_last=False):
+        super(SubDecoder, self).__init__()
+        self.num_input_nodes = num_input_nodes
+        self.num_output_nodes = num_output_nodes
+        self.output_activation_fct = output_activation_fct
+
+        self._layers1 = nn.Sequential(
+            nn.Unflatten(1, (num_input_nodes, 1, 1, 1)),  # Assuming input is flattened, reshape to (batch_size, num_input_nodes, 1, 1, 1)
+            PeriodicConvTranspose3d(num_input_nodes, 512, (3, 3, 3), stride=(1, 1, 1), padding=0),
+            nn.BatchNorm3d(512),
+            nn.PReLU(512, 0.02),
+            # upscales to (batch_size, 512, 3, 3, 3)
+            PeriodicConvTranspose3d(512, 256, kernel_size=(3, 3, 3), stride=(1, 1, 1), padding=0),
+            nn.BatchNorm3d(256),
+            nn.PReLU(256, 0.02),
+            # upscales to (batch_size, 256, 5, 5, 5)
+
+            PeriodicConvTranspose3d(256, 128, kernel_size=(3, 3, 3), stride=(1, 1, 1), padding=0),
+            nn.BatchNorm3d(128),
+            nn.PReLU(128, 0.02),
+            # upscales to (batch_size, 128, 7, 7, 7)
+        )
+        self._layers2 = nn.Sequential(
+            # layer for activations
+            nn.ConvTranspose3d(129, 64, (3, 3, 5), stride=(1, 2, 3), padding=(1, 0, 0)),
+            nn.GroupNorm(1, 64),
+            nn.SiLU(),
+            LinearAttention(64, cylindrical=False),
+
+            nn.ConvTranspose3d(64, 32, (3, 2, 2), stride=(1, 1, 1), padding=(1, 0, 0)),
+            nn.GroupNorm(1, 32),
+            nn.SiLU(),
+            LinearAttention(32, cylindrical=False),
+
+            nn.ConvTranspose3d(32, 1, (1, 1, 1), stride=(1, 1, 1), padding=0),
+            CropLayer(),
+            nn.Conv3d(1, 1, (1, 1, 1), stride=(1, 1, 1), padding=0),
+            nn.SiLU(),
+        )
+        if is_last:
+            self._layers3 = nn.Sequential(
+                # layer for hits
+                nn.ConvTranspose3d(129, 64, (3, 3, 5), stride=(1, 2, 3), padding=(1, 0, 0)),
+                nn.BatchNorm3d(64),
+                nn.PReLU(64, 0.02),
+                # upscales to (batch_size, 64, 7, 15, 23)
+
+                nn.ConvTranspose3d(64, 32, (3, 2, 2), stride=(1, 1, 1), padding=(1, 0, 0)),
+                nn.BatchNorm3d(32),
+                nn.PReLU(32, 1.0),
+                # upscales to (batch_size, 32, 7, 16, 24)
+
+                nn.ConvTranspose3d(32, 1, (1, 1, 1), stride=(1, 1, 1), padding=0),
+                CropLayer(), # Crop to (batch_size, 1, 7, 14, 24)
+                
+                nn.Conv3d(1, 1, (1, 1, 1), stride=(1, 1, 1), padding=0),
+                nn.PReLU(1, 1.0),
+            )
+    def trans_energy(self, x0, log_e_max=14.0, log_e_min=6.0, s_map = 1.0):
+        return ((torch.log(x0) - log_e_min)/(log_e_max - log_e_min)) * s_map
+
+    def forward(self, x, x0):
+        x = self._layers1(x)
+        d1, d2, d3 = x.shape[-3], x.shape[-2], x.shape[-1]
+        xx0 = torch.cat((x, x0.unsqueeze(2).unsqueeze(3).unsqueeze(4).repeat(1, 1, d1, d2, d3)), dim=1)  # Concatenate the incident energy to the output of the first layer
+        x1 = self._layers2(xx0).reshape(xx0.shape[0], self.num_output_nodes)
+        if hasattr(self, '_layers3'):
+            x2 = self._layers3(xx0).reshape(xx0.shape[0], self.num_output_nodes)
+            return x1, x2  # Return activations and hits
+        else:
+            return x1
