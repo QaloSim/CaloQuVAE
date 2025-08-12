@@ -11,7 +11,8 @@ import wandb
 # Plotting
 from utils.plots import vae_plots
 from utils.atlas_plots import plot_calorimeter_shower
-from utils.rbm_plots import plot_rbm_histogram, plot_rbm_params
+from utils.rbm_plots import plot_forward_output_v2, plot_rbm_histogram, plot_rbm_params
+# from utils.correlation_plotting import correlation_plots
 
 
 from collections import defaultdict
@@ -182,7 +183,6 @@ class Engine():
             loss_dict = self.model.loss(x, output)
             loss_dict["loss"] = torch.stack([loss_dict[key] * self._config.model.loss_coeff[key]  for key in loss_dict.keys() if "loss" != key]).sum()
             self.model.prior.gradient_rbm_centered(output[2])
-            # self.model.prior.gradient_rbm_stan(output[2])
             self.model.prior.update_params()
 
             if (i % log_batch_idx) == 0:
@@ -333,8 +333,20 @@ class Engine():
     
     def generate_plots(self, epoch, key):
         if self._config.wandb.mode != "disabled": # Only log if wandb is enabled
+            
+            # Correlation and Frobenius plots
+            # fig_target_corr, fig_sampled_corr, fig_gt_grid, fig_prior_grid, fig_frob_layerwise, fig_gt, fig_prior, gt_spars_corr, 
+            #   prior_spars_corr, fig_gt_sparsity, fig_prior_sparsity, fig_gt_sparsity_corr, fig_prior_sparsity_corr, fig_gt_patch, 
+            #   fig_prior_patch =correlation_plots(
+            #       cfg=self._config,
+            #       incident_energy=self.incident_energy,
+            #       showers=self.showers,
+            #       showers_prior=self.showers_prior,
+            #       epoch=epoch
+            #   )
+           
             # Calorimeter layer plots
-
+            
             calo_input, calo_recon, calo_sampled, calo_input_avg, calo_recon_avg, calo_sampled_avg = plot_calorimeter_shower(
                 cfg=self._config,
                 showers=self.showers,
@@ -351,6 +363,7 @@ class Engine():
             if key != "ae":
                 rbm_hist = plot_rbm_histogram(self.RBM_energy_post, self.RBM_energy_prior)
                 rbm_params = plot_rbm_params(self)
+                rbm_floppy = plot_forward_output_v2(self)
             
                 wandb.log({
                     "overall_plots": wandb.Image(overall_fig),
@@ -364,12 +377,24 @@ class Engine():
                     "sparsity_layers": wandb.Image(fig_sparsity_layers),
                     "RBM histogram": wandb.Image(rbm_hist),
                     "RBM params": wandb.Image(rbm_params),
+                    "RBM floppy": wandb.Image(rbm_floppy),
                     "calo_layer_input": wandb.Image(calo_input),
                     "calo_layer_recon": wandb.Image(calo_recon),
                     "calo_layer_sampled": wandb.Image(calo_sampled),
                     "calo_layer_input_avg": wandb.Image(calo_input_avg),
                     "calo_layer_recon_avg": wandb.Image(calo_recon_avg),
-                    "calo_layer_sampled_avg": wandb.Image(calo_sampled_avg)       
+                    "calo_layer_sampled_avg": wandb.Image(calo_sampled_avg),
+                    # "layer_energy_correlation_GT": wandb.Image(fig_target_corr),
+                    # "layer_energy_correlation_sampled": wandb.Image(fig_sampled_corr),
+                    # "frob_layerwise_GT_vs_sampled": wandb.Image(fig_frob_layerwise),
+                    # "sparsity_GT": wandb.Image(fig_gt_sparsity),
+                    # "sparsity_prior": wandb.Image(fig_prior_sparsity),
+                    # "sparsity_correlation_GT": wandb.Image(fig_gt_sparsity_corr),
+                    # "sparsity_correlation_prior": wandb.Image(fig_prior_sparsity_corr),
+                    # "patch_corr_GT": wandb.Image(fig_gt_patch),
+                    # "patch_corr_prior": wandb.Image(fig_prior_patch),
+                    # "voxel_corr_GT": wandb.Image(fig_gt),
+                    # "voxel_corr_prior": wandb.Image(fig_prior),
                 })
             else:
                 wandb.log({
@@ -385,7 +410,12 @@ class Engine():
                     "calo_layer_input": wandb.Image(calo_input),
                     "calo_layer_recon": wandb.Image(calo_recon),
                     "calo_layer_input_avg": wandb.Image(calo_input_avg),
-                    "calo_layer_recon_avg": wandb.Image(calo_recon_avg)     
+                    "calo_layer_recon_avg": wandb.Image(calo_recon_avg),
+                    # "layer_energy_correlation_GT": wandb.Image(fig_target_corr),
+                    # "sparsity_GT": wandb.Image(fig_gt_sparsity),
+                    # "sparsity_correlation_GT": wandb.Image(fig_gt_sparsity_corr),
+                    # "patch_corr_GT": wandb.Image(fig_gt_patch),
+                    # "voxel_corr_GT": wandb.Image(fig_gt),
                 })
 
     
