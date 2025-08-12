@@ -213,7 +213,7 @@ def callback(engine, epoch):
         engine._config.epoch_start = epoch + 1
         return True
     else:
-        logger.info("Continuing training in AE mode.")
+        logger.info("Continuing training in current mode.")
         return False
 
 def get_project_id(path):

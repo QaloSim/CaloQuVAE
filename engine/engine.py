@@ -11,8 +11,8 @@ import wandb
 # Plotting
 from utils.plots import vae_plots
 from utils.atlas_plots import plot_calorimeter_shower
-from utils.rbm_plots import plot_rbm_histogram, plot_rbm_params
-from utils.correlation_plotting import correlation_plots
+from utils.rbm_plots import plot_forward_output_v2, plot_rbm_histogram, plot_rbm_params
+# from utils.correlation_plotting import correlation_plots
 
 
 from collections import defaultdict
@@ -362,6 +362,7 @@ class Engine():
             if key != "ae":
                 rbm_hist = plot_rbm_histogram(self.RBM_energy_post, self.RBM_energy_prior)
                 rbm_params = plot_rbm_params(self)
+                rbm_floppy = plot_forward_output_v2(self)
             
                 wandb.log({
                     "overall_plots": wandb.Image(overall_fig),
@@ -375,6 +376,7 @@ class Engine():
                     "sparsity_layers": wandb.Image(fig_sparsity_layers),
                     "RBM histogram": wandb.Image(rbm_hist),
                     "RBM params": wandb.Image(rbm_params),
+                    "RBM floppy": wandb.Image(rbm_floppy),
                     "calo_layer_input": wandb.Image(calo_input),
                     "calo_layer_recon": wandb.Image(calo_recon),
                     "calo_layer_sampled": wandb.Image(calo_sampled),
