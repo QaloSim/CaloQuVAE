@@ -347,7 +347,8 @@ class RBM(ZephyrRBM):
 
     def update_params(self):
         for i in range(4):
-            self.bias_dict[str(i)] = self.opt["bias"][str(i)].step(self.grad["bias"][str(i)].detach())
+            self.bias_dict[str(i)] = self.opt["bias"][str(i)].step(self.grad["bias"][str(i)].detach() - 
+                                                                   self._config.rbm.gamma * self.bias_dict[str(i)])
 
         for i in range(3):
             for j in [0,1,2,3]:
