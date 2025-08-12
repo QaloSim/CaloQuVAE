@@ -347,12 +347,14 @@ class RBM(ZephyrRBM):
 
     def update_params(self):
         for i in range(4):
-            self.bias_dict[str(i)] = self.opt["bias"][str(i)].step(self.grad["bias"][str(i)].detach())
+            self.bias_dict[str(i)] = self.opt["bias"][str(i)].step(self.grad["bias"][str(i)].detach() - 
+                                                                   self._config.rbm.gamma * self.bias_dict[str(i)])
 
         for i in range(3):
             for j in [0,1,2,3]:
                 if j > i:
-                    self.weight_dict[str(i)+str(j)] = self.opt["weight"][str(i)+str(j)].step(self.grad["weight"][str(i)+str(j)].detach())
+                    self.weight_dict[str(i)+str(j)] = self.opt["weight"][str(i)+str(j)].step(self.grad["weight"][str(i)+str(j)].detach() - 
+                                                                                             self._config.rbm.gamma * self.weight_dict[str(i)+str(j)])
 
     def energy_exp_cond(self, p0, p1, p2, p3):
         # pull biases and weights into locals for fewer dict lookups
