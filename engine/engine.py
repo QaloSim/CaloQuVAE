@@ -245,7 +245,8 @@ class Engine():
                 _, shower_prior = self.model.decode(prior_samples, x_reduce, x0)
                 # Compute loss
                 loss_dict = self.model.loss(x_reduce, output)
-                loss_dict["loss"] = torch.stack([loss_dict[key] * self._config.model.loss_coeff[key]  for key in loss_dict.keys() if "loss" != key]).sum()
+                loss_dict["loss"] = torch.stack([loss_dict[key] * self._config.model.loss_coeff[key]  for key in self._config.model.loss_coeff if "loss" != key]).sum()
+                # loss_dict["loss"] = torch.stack([loss_dict[key] * self._config.model.loss_coeff[key]  for key in loss_dict.keys() if "loss" != key]).sum()
                 for key in list(loss_dict.keys()):
                     loss_dict['val_'+key] = loss_dict[key]
                     loss_dict.pop(key)

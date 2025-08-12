@@ -3,17 +3,18 @@ import matplotlib.pyplot as plt
 import torch
 import h5py
 def overall_plots(incident_energies, incident_energies_pos, incident_energies_fine, showers, showers_pos, showers_fine):
-    fig, ax = plt.subplots(3, 2, figsize=(10, 15))
+    fig, ax = plt.subplots(2, 3, figsize=(18, 10))
 
     # Plot total deposited energy
     showers_sum = torch.sum(showers, dim=1).numpy()
     showers_sum_pos = torch.sum(showers_pos, dim=1).numpy()
     showers_sum_fine = torch.sum(showers_fine, dim=1).numpy()
-    n_bins = 1000
+    n_bins = 100
 
     sum_hist, bin_edges = np.histogram(showers_sum, bins=n_bins, range=(min(showers_sum), max(showers_sum)))
     sum_hist_pos, _ = np.histogram(showers_sum_pos, bins=bin_edges)
     sum_hist_fine, _ = np.histogram(showers_sum_fine, bins=bin_edges)
+    # Top row: histograms
     ax[0, 0].stairs(sum_hist, bin_edges, label='Combined', color='blue', fill=True, alpha=0.5)
     ax[0, 0].stairs(sum_hist_pos, bin_edges, label='Positive', color='orange', fill=False, alpha=0.5)
     ax[0, 0].stairs(sum_hist_fine, bin_edges, label='Fine', color='green', fill=False, alpha=0.5)
@@ -22,13 +23,13 @@ def overall_plots(incident_energies, incident_energies_pos, incident_energies_fi
     ax[0, 0].set_ylabel('Counts')
     ax[0, 0].set_yscale('log')
     ax[0, 0].legend()
-    #plot differences on ax to the right
-    ax[0, 1].set_title('Difference in Total Deposited Energy')
-    ax[0, 1].scatter(bin_edges[:-1], sum_hist - sum_hist_pos, label='Combined - Positive', color='blue')
-    ax[0, 1].scatter(bin_edges[:-1], sum_hist - sum_hist_fine, label='Combined - Fine', color='green')
-    ax[0, 1].set_xlabel('Energy (MeV)')
-    ax[0, 1].set_ylabel('Difference in Counts')
-    ax[0, 1].legend()
+    # Bottom row: differences
+    ax[1, 0].set_title('Difference in Total Deposited Energy Bin Counts')
+    ax[1, 0].scatter(bin_edges[:-1], sum_hist - sum_hist_pos, label='Combined - Positive', color='blue', s=5)
+    ax[1, 0].scatter(bin_edges[:-1], sum_hist - sum_hist_fine, label='Combined - Fine', color='green', s=5)
+    ax[1, 0].set_xlabel('Energy (MeV)')
+    ax[1, 0].set_ylabel('Difference in Counts')
+    ax[1, 0].legend()
 
     # Plot sparsity
     sparsity = (torch.sum(showers==0, dim=1).numpy() / showers.shape[1])
@@ -38,18 +39,17 @@ def overall_plots(incident_energies, incident_energies_pos, incident_energies_fi
     sparsity_hist, bin_edges = np.histogram(sparsity, bins=n_bins, range=(0, 1))
     sparsity_hist_pos, _ = np.histogram(sparsity_pos, bins=bin_edges)
     sparsity_hist_fine, _ = np.histogram(sparsity_fine, bins=bin_edges)
-    ax[1, 0].stairs(sparsity_hist, bin_edges, label='Combined', color='blue', fill=True, alpha=0.5)
-    ax[1, 0].stairs(sparsity_hist_pos, bin_edges, label='Positive', color='orange', fill=False, alpha=0.5)
-    ax[1, 0].stairs(sparsity_hist_fine, bin_edges, label='Fine', color='green', fill=False, alpha=0.5)
-    ax[1, 0].set_title('Sparsity of Showers')
-    ax[1, 0].set_xlabel('Sparsity')
-    ax[1, 0].set_ylabel('Counts')
-    ax[1, 0].set_yscale('log')
-    ax[1, 0].legend()
-    #plot differences on ax to the right
-    ax[1, 1].set_title('Difference in Sparsity')
-    ax[1, 1].scatter(bin_edges[:-1], sparsity_hist - sparsity_hist_pos, label='Combined - Positive', color='blue')
-    ax[1, 1].scatter(bin_edges[:-1], sparsity_hist - sparsity_hist_fine, label='Combined - Fine', color='green')
+    ax[0, 1].stairs(sparsity_hist, bin_edges, label='Combined', color='blue', fill=True, alpha=0.5)
+    ax[0, 1].stairs(sparsity_hist_pos, bin_edges, label='Positive', color='orange', fill=False, alpha=0.5)
+    ax[0, 1].stairs(sparsity_hist_fine, bin_edges, label='Fine', color='green', fill=False, alpha=0.5)
+    ax[0, 1].set_title('Sparsity of Showers')
+    ax[0, 1].set_xlabel('Sparsity')
+    ax[0, 1].set_ylabel('Counts')
+    ax[0, 1].set_yscale('log')
+    ax[0, 1].legend()
+    ax[1, 1].set_title('Difference in Sparsity Bin Counts')
+    ax[1, 1].scatter(bin_edges[:-1], sparsity_hist - sparsity_hist_pos, label='Combined - Positive', color='blue', s=5)
+    ax[1, 1].scatter(bin_edges[:-1], sparsity_hist - sparsity_hist_fine, label='Combined - Fine', color='green', s=5)
     ax[1, 1].set_xlabel('Sparsity')
     ax[1, 1].set_ylabel('Difference in Counts')
     ax[1, 1].legend()
@@ -61,24 +61,22 @@ def overall_plots(incident_energies, incident_energies_pos, incident_energies_fi
     ratio_hist, bin_edges = np.histogram(ratio_sum, bins=n_bins, range=(0, max(ratio_sum)))
     ratio_hist_pos, _ = np.histogram(ratio_sum_pos, bins=bin_edges)
     ratio_hist_fine, _ = np.histogram(ratio_sum_fine, bins= bin_edges)
-    ax[2, 0].stairs(ratio_hist, bin_edges, label='Combined', color='blue', fill=True, alpha=0.5)
-    ax[2, 0].stairs(ratio_hist_pos, bin_edges, label='Positive', color='orange', fill=False, alpha=0.5)
-    ax[2, 0].stairs(ratio_hist_fine, bin_edges, label='Fine', color='green', fill=False, alpha=0.5)
-    ax[2, 0].set_title('Ratio of Total Deposited Energy to Incident Energy')
-    ax[2, 0].set_xlabel('Ratio')
-    ax[2, 0].set_ylabel('Counts')
-    ax[2, 0].set_yscale('log')
-    ax[2, 0].legend()
-    #plot differences on ax to the right
-    ax[2, 1].set_title('Difference in Ratio')
-    ax[2, 1].scatter(bin_edges[:-1], ratio_hist - ratio_hist_pos, label='Combined - Positive', color='blue')
-    ax[2, 1].scatter(bin_edges[:-1], ratio_hist - ratio_hist_fine, label='Combined - Fine', color='green')
-    ax[2, 1].set_xlabel('Ratio')
-    ax[2, 1].set_ylabel('Difference in Counts')
-    ax[2, 1].legend()
+    ax[0, 2].stairs(ratio_hist, bin_edges, label='Combined', color='blue', fill=True, alpha=0.5)
+    ax[0, 2].stairs(ratio_hist_pos, bin_edges, label='Positive', color='orange', fill=False, alpha=0.5)
+    ax[0, 2].stairs(ratio_hist_fine, bin_edges, label='Fine', color='green', fill=False, alpha=0.5)
+    ax[0, 2].set_title('Ratio of Total Deposited Energy to Incident Energy')
+    ax[0, 2].set_xlabel('Ratio')
+    ax[0, 2].set_ylabel('Counts')
+    ax[0, 2].set_yscale('log')
+    ax[0, 2].legend()
+    ax[1, 2].set_title('Difference in Ratio Bin Counts')
+    ax[1, 2].scatter(bin_edges[:-1], ratio_hist - ratio_hist_pos, label='Combined - Positive', color='blue', s=5)
+    ax[1, 2].scatter(bin_edges[:-1], ratio_hist - ratio_hist_fine, label='Combined - Fine', color='green', s=5)
+    ax[1, 2].set_xlabel('Ratio')
+    ax[1, 2].set_ylabel('Difference in Counts')
+    ax[1, 2].legend()
 
     fig.tight_layout()
-    plt.legend()
     plt.show()
 
 def load_showers_and_incident_energy(path, valid_layers):

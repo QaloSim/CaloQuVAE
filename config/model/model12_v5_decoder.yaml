@@ -11,4 +11,4 @@ loss_coeff:
   ae_loss: 1.0
   hit_loss: 1.0
   entropy: 0.01
-  pos_energy: 0.1
+  pos_energy: 0
