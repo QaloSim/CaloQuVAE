@@ -86,8 +86,10 @@ def plot_rbm_params(engine):
     # Row 2: Histograms of prior.weight_dict[key] for each of the 8 keys
     for col, key in enumerate(keys):
         ax = axes[2, col]
-        # w_vals = (engine.model.prior.weight_dict[key].sum(dim=1) / engine.model.prior.bias_dict[key[0]]).detach().cpu().numpy()
-        w_vals = (engine.model.prior._weight_mask_dict[key].sum(dim=1) * engine.model.prior.weight_dict[key].pow(2).mean(dim=1).sqrt() / engine.model.prior.bias_dict[key[0]]).abs().detach().cpu().numpy()
+        num = (engine.model.prior._weight_mask_dict[key].sum(dim=1) * engine.model.prior.weight_dict[key].pow(2)).mean(dim=1).sqrt().detach().cpu()
+        denom = engine.model.prior.bias_dict[key[0]].abs().detach().cpu()
+        w_vals = torch.where(denom> 1e-8, num / denom, torch.zeros_like(num)).numpy()
+        # w_vals = (engine.model.prior._weight_mask_dict[key].sum(dim=1) * engine.model.prior.weight_dict[key].pow(2).mean(dim=1).sqrt() / engine.model.prior.bias_dict[key[0]]).abs().detach().cpu().numpy()
         ratio = np.around((w_vals >= 1).sum()/w_vals.shape[0],6)
         med = np.around(np.median(w_vals),4)
         # print(med)

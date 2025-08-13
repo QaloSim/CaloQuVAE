@@ -9,12 +9,13 @@ config_path: "/raid/javier/Projects/CaloQuVAE/wandb/run-20250806_131957-6xvg0gm0
 
 device: gpu
 gpu_list:
-  - 3
+  - 2
 
 defaults:
   - data: CaloChallenge2_DGX
   - wandb: DGX
-  - model: model3_calochallenge
+  # - model: model3_calochallenge
+  - model: modelTrans_calochallenge
   - engine: engine1
   - rbm: zephyr
   - _self_
