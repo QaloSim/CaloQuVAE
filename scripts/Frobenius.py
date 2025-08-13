@@ -94,11 +94,13 @@ class CorrelationMetrics:
         """
         path = run_path.split('files')[0] + 'files/'
         os.makedirs(path, exist_ok=True)
+        path_to_plots = run_path.split('files')[0] + 'files/CorrPlots'
+        os.makedirs(path_to_plots, exist_ok=True)
 
         # saving figures
         for key, fig_list in self.plots.items():
             for idx, fig in fig_list:
-                fig.savefig(os.path.join(path, f"{key}_epoch{idx}.png"))
+                fig.savefig(os.path.join(path_to_plots, f"{key}_epoch{idx}.png"))
                 
         if hasattr(self, "frob_all"):
             for key, values in self.frob_all.items():
