@@ -1,6 +1,7 @@
 import matplotlib.pyplot as plt
 import numpy as np
 import torch
+import torch.nn as nn
 
 def plot_rbm_histogram(rbm_post, rbm_prior, rbm_prior_qpu=None):
     # Assuming rbm_post and rbm_prior are tensors with energy values
@@ -85,8 +86,10 @@ def plot_rbm_params(engine):
     # Row 2: Histograms of prior.weight_dict[key] for each of the 8 keys
     for col, key in enumerate(keys):
         ax = axes[2, col]
-        # w_vals = (engine.model.prior.weight_dict[key].sum(dim=1) / engine.model.prior.bias_dict[key[0]]).detach().cpu().numpy()
-        w_vals = (engine.model.prior._weight_mask_dict[key].sum(dim=1) * engine.model.prior.weight_dict[key].pow(2).mean(dim=1).sqrt() / engine.model.prior.bias_dict[key[0]]).abs().detach().cpu().numpy()
+        num = (engine.model.prior._weight_mask_dict[key].sum(dim=1) * engine.model.prior.weight_dict[key].pow(2)).mean(dim=1).sqrt().detach().cpu()
+        denom = engine.model.prior.bias_dict[key[0]].abs().detach().cpu()
+        w_vals = torch.where(denom> 1e-8, num / denom, torch.zeros_like(num)).numpy()
+        # w_vals = (engine.model.prior._weight_mask_dict[key].sum(dim=1) * engine.model.prior.weight_dict[key].pow(2).mean(dim=1).sqrt() / engine.model.prior.bias_dict[key[0]]).abs().detach().cpu().numpy()
         ratio = np.around((w_vals >= 1).sum()/w_vals.shape[0],6)
         med = np.around(np.median(w_vals),4)
         # print(med)
@@ -135,4 +138,176 @@ def plot_rbm_params(engine):
 
     # Add an overall title and display
     fig.suptitle("Grid of Histograms: Singular values, Weights, and Bias SVD", fontsize=20, y=1.02)
+    return fig
+
+def plot_forward_output_v2(self, i=0):
+
+    with torch.inference_mode():
+        fwd_output = self.model((self.showers_reduce[i,:].repeat(1000,1).to(self.device), self.incident_energy[i,0].repeat(1000,1).to(self.device)))
+        post_logits, post_samples = [fwd_output[1][j].detach().cpu() for j in range(len(fwd_output[1]))], [fwd_output[2][j].detach().cpu() for j in range(len(fwd_output[2]))]
+
+    hist_colors   = ['C0', 'C1', 'C2']
+    line_colors   = ['C3', 'C4', 'C5', 'C6']
+    combo_colors  = ['C7', 'C8']  # for the third‐row overlay plots
+
+    # Create a 3×4 grid of subplots
+    fig, axes = plt.subplots(4, 4, figsize=(16, 12))
+    fig.tight_layout(pad=4.0)
+
+    # -----------------------------
+    # ROW 0: Three Histograms + 1 Empty
+    # -----------------------------
+    for idx in range(3):
+        ax = axes[0, idx]
+        data = nn.Sigmoid()(post_logits[idx]).view(-1).numpy()
+        ax.hist(data, bins=50, log=True, color=hist_colors[idx], alpha=0.75)
+        ax.set_title(f"Histogram of Sigmoid(post_logits[{idx}])")
+        ax.grid(True, linestyle=':', alpha=0.5)
+
+    # Leave the last cell in row 0 empty
+    axes[0, 3].axis('off')
+    # -----------------------------
+    # ROW 1: Four Std‐Dev Line Plots (post_samples[idx].std)
+    # -----------------------------
+    for idx in range(4):
+        ax = axes[1, idx]
+        std_vals = (
+            post_samples[idx].std(dim=0).numpy()
+        )
+        ax.plot(std_vals, color=line_colors[idx], linewidth=1.5)
+        ax.set_title(f"Std‐dev of post_samples[{idx}]")
+        ax.set_xlabel("Feature Index")
+        ax.set_ylabel("Std Dev")
+        ax.grid(True, linestyle=':', alpha=0.5)
+    # -----------------------------
+    # ROW 2: Overlay of Mean√[p(1−p)] & Next Sample’s Std (for idx=0,1,2)
+    # -----------------------------
+    for idx in range(3):
+        ax = axes[2, idx]
+
+        # Compute: √[p * (1 − p)] averaged over batch for post_logits[idx]
+        p = nn.Sigmoid()(post_logits[idx])
+        mean_sqrt = (
+            (p * (1 - p)).sqrt().mean(dim=0).numpy()
+        )
+
+        # Compute: std‐dev of post_samples[idx+1] across axis=0
+        std_next = (
+            post_samples[idx + 1].std(dim=0).numpy()
+        )
+
+        ax.plot(mean_sqrt, color=combo_colors[0], linestyle='-', linewidth=1.5,
+                label='Mean √[p(1−p)]')
+        ax.plot(std_next, color=combo_colors[1], linestyle='--', linewidth=1.5,
+                label=f'Std of post_samples[{idx+1}]')
+        ax.set_title(f"Idx={idx} → Mean√p(1−p) & Std sample {idx+1}")
+        ax.set_xlabel("Feature Index")
+        ax.set_ylabel("Value")
+        ax.legend(loc='upper right', fontsize='small')
+        ax.grid(True, linestyle=':', alpha=0.5)
+
+    # Leave the last cell in row 2 empty
+    axes[2, 3].axis('off')
+
+    # -----------------------------
+    # ROW 3: Three Histograms + 1 Empty
+    # -----------------------------
+    for idx in range(3):
+        ax = axes[3, idx]
+        data = post_logits[idx].view(-1).numpy()
+        ax.hist(data, bins=50, log=True, color=hist_colors[idx], alpha=0.75)
+        ax.set_title(f"Histogram of raw post_logits[{idx}]")
+        ax.grid(True, linestyle=':', alpha=0.5)
+
+    # Leave the last cell in row 0 empty
+    axes[3, 3].axis('off')
+
+    return fig
+
+def plot_forward_output(self, i=0):
+
+    with torch.inference_mode():
+        x, x0 = next(iter(self.data_mgr.val_loader))
+        x = x.to(self.device)
+        x0 = x0.to(self.device)
+        x = self._reduce(x,x0)
+        fwd_output = self.model((x[i,:].repeat(1000,1), x0[i,0].repeat(1000,1)))
+        post_logits, post_samples = [fwd_output[1][j].detach().cpu() for j in range(len(fwd_output[1]))], [fwd_output[2][j].detach().cpu() for j in range(len(fwd_output[2]))]
+
+    hist_colors   = ['C0', 'C1', 'C2']
+    line_colors   = ['C3', 'C4', 'C5', 'C6']
+    combo_colors  = ['C7', 'C8']  # for the third‐row overlay plots
+
+    # Create a 3×4 grid of subplots
+    fig, axes = plt.subplots(4, 4, figsize=(16, 12))
+    fig.tight_layout(pad=4.0)
+
+    # -----------------------------
+    # ROW 0: Three Histograms + 1 Empty
+    # -----------------------------
+    for idx in range(3):
+        ax = axes[0, idx]
+        data = nn.Sigmoid()(post_logits[idx]).view(-1).numpy()
+        ax.hist(data, bins=50, log=True, color=hist_colors[idx], alpha=0.75)
+        ax.set_title(f"Histogram of Sigmoid(post_logits[{idx}])")
+        ax.grid(True, linestyle=':', alpha=0.5)
+
+    # Leave the last cell in row 0 empty
+    axes[0, 3].axis('off')
+    # -----------------------------
+    # ROW 1: Four Std‐Dev Line Plots (post_samples[idx].std)
+    # -----------------------------
+    for idx in range(4):
+        ax = axes[1, idx]
+        std_vals = (
+            post_samples[idx].std(dim=0).numpy()
+        )
+        ax.plot(std_vals, color=line_colors[idx], linewidth=1.5)
+        ax.set_title(f"Std‐dev of post_samples[{idx}]")
+        ax.set_xlabel("Feature Index")
+        ax.set_ylabel("Std Dev")
+        ax.grid(True, linestyle=':', alpha=0.5)
+    # -----------------------------
+    # ROW 2: Overlay of Mean√[p(1−p)] & Next Sample’s Std (for idx=0,1,2)
+    # -----------------------------
+    for idx in range(3):
+        ax = axes[2, idx]
+
+        # Compute: √[p * (1 − p)] averaged over batch for post_logits[idx]
+        p = nn.Sigmoid()(post_logits[idx])
+        mean_sqrt = (
+            (p * (1 - p)).sqrt().mean(dim=0).numpy()
+        )
+
+        # Compute: std‐dev of post_samples[idx+1] across axis=0
+        std_next = (
+            post_samples[idx + 1].std(dim=0).numpy()
+        )
+
+        ax.plot(mean_sqrt, color=combo_colors[0], linestyle='-', linewidth=1.5,
+                label='Mean √[p(1−p)]')
+        ax.plot(std_next, color=combo_colors[1], linestyle='--', linewidth=1.5,
+                label=f'Std of post_samples[{idx+1}]')
+        ax.set_title(f"Idx={idx} → Mean√p(1−p) & Std sample {idx+1}")
+        ax.set_xlabel("Feature Index")
+        ax.set_ylabel("Value")
+        ax.legend(loc='upper right', fontsize='small')
+        ax.grid(True, linestyle=':', alpha=0.5)
+
+    # Leave the last cell in row 2 empty
+    axes[2, 3].axis('off')
+
+    # -----------------------------
+    # ROW 3: Three Histograms + 1 Empty
+    # -----------------------------
+    for idx in range(3):
+        ax = axes[3, idx]
+        data = post_logits[idx].view(-1).numpy()
+        ax.hist(data, bins=50, log=True, color=hist_colors[idx], alpha=0.75)
+        ax.set_title(f"Histogram of raw post_logits[{idx}]")
+        ax.grid(True, linestyle=':', alpha=0.5)
+
+    # Leave the last cell in row 0 empty
+    axes[3, 3].axis('off')
+
     return fig
