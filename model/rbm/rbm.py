@@ -1,5 +1,6 @@
 import torch
 from model.rbm.zephyr import ZephyrRBM
+from torch.optim import Optimizer
 
 class RBM(ZephyrRBM):
     def __init__(self, cfg=None):
