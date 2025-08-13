@@ -5,7 +5,7 @@ partitions: 4
 method: "CD"
 bgs_steps: 3000
 lr: 0.1
-gamma: 0.007
+gamma: 0.0001
 w_std: 
   - 1.0
   - 1.0
