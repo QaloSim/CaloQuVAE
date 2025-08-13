@@ -12,6 +12,7 @@ outputs_sym
 modelsJT.md
 nbDGX.ipynb
 modelsDGX.md
+.vscode/
 
 # Byte-compiled / optimized / DLL files
 __pycache__/
