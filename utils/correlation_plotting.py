@@ -408,6 +408,8 @@ def correlation_plots(cfg, incident_energy, showers, showers_prior, epoch):
         layer_labels=[str(l) for l in relevant_layers],
         title="Prior Layer Sparsity Correlation"
     )
+    
+    frob_spar_layer = frobenius_distance(sparsity_corr_matrix_gt, sparsity_corr_matrix_prior)
 
     # Patch correlations and Frobenius metrics
     layer_labels = [str(l) for l in relevant_layers]
@@ -433,6 +435,7 @@ def correlation_plots(cfg, incident_energy, showers, showers_prior, epoch):
                 "frob_dist_energy_corr_layer": frob_dist_energy_corr,
                 "sparsity_frob_distance": sparsity_frob_distance,
                 "frob_sparsity_dists_layer": frob_sparsity_dists,
+                "frob_sparsity_combined_layer": frob_spar_layer,
                 "frob_patch_layer": frob_patch_layer
             })
     

@@ -72,6 +72,7 @@ class CorrelationMetrics:
             "layer_corr": results[-1]["frob_dist_energy_corr_layer"],
             "sparsity_voxel": results[-1]["sparsity_frob_distance"],
             "sparsity_layer": results[-1]["frob_sparsity_dists_layer"],
+            "layer_sparsity": results[-1]["frob_sparsity_combined_layer"],
             "patch_layer": results[-1]["frob_patch_layer"]
         }
         if not hasattr(self, "frob_all"):
@@ -86,30 +87,50 @@ class CorrelationMetrics:
 
         keys = list(self.plots.keys())
         for i, key in enumerate(keys):
-            self.plots[key].append((idx, results[i]))
+            self.plots[key].append((idx, results[i])) 
 
     def flush(self, run_path):
         """
-        Save the metrics to a file
+        Function to save the metrics and plots
+          - figures save as PNGs in CorrPlots/
+          - all Frobenius metrics save to a single npz file
         """
-        path = run_path.split('files')[0] + 'files/'
-        os.makedirs(path, exist_ok=True)
-        path_to_plots = run_path.split('files')[0] + 'files/CorrPlots'
-        os.makedirs(path_to_plots, exist_ok=True)
+        base = run_path.split('files')[0] + 'files/'
+        os.makedirs(base, exist_ok=True)
+        plots_dir = os.path.join(base, 'CorrPlots')
+        os.makedirs(plots_dir, exist_ok=True)
 
-        # saving figures
+        # saving the figures
         for key, fig_list in self.plots.items():
             for idx, fig in fig_list:
-                fig.savefig(os.path.join(path_to_plots, f"{key}_epoch{idx}.png"))
-                
-        if hasattr(self, "frob_all"):
-            for key, values in self.frob_all.items():
-                epochs, vals = zip(*values)
-                np.savez(os.path.join(path, f"{key}_FrobeniusScores.npz"),
-                         epochs=np.array(epochs),
-                         frobenius=np.array(vals))
-                
+                fig.savefig(os.path.join(plots_dir, f"{key}_epoch{idx}.png"))
+
+        # save all Frobenius metrics into one npz
+        if hasattr(self, "frob_all") and self.frob_all:
+            # collect and sort epochs
+            epochs_sorted = np.array(sorted(set(self.epoch_list)))
+
+            pack = {"epochs": epochs_sorted}
+
+            for key, items in self.frob_all.items():
+                # items is a list of (epoch, value)
+                by_epoch = dict(items)
+                vals_aligned = [by_epoch[e] for e in epochs_sorted if e in by_epoch]
+                pack[key] = stack_or_object(vals_aligned)
+
+            out_path = os.path.join(base, "Frobenius_All.npz")
+            np.savez(out_path, **pack)
+
         logger.info("Frobenius and correlation metrics flushed and saved.")
+
+def stack_or_object(vals):
+    """
+    Will try to stack a list of arrays/scalars and if shapes differ it will return an object array
+    """
+    try:
+        return np.stack(vals, axis=0)  # (n_epochs, ...)
+    except Exception:
+        return np.array(vals, dtype=object)
 
 # def create_filenames_dict(config):
 #     pattern = r'\d+.pth$'
