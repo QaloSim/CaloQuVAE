@@ -9,7 +9,7 @@ config_path: "/fast_scratch_1/caloqvae/lzhu/wandb/run-20250724_225612-0yue43m2/f
 
 device: gpu
 gpu_list:
-  - 3
+  - 2
 
 defaults:
   - data: AtlasReg035

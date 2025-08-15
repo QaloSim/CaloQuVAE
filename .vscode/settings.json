@@ -1,1 +1,8 @@
-{}
+{
+	// Make Explorer follow the active editor and highlight it in the file tree
+	"explorer.autoReveal": true,
+	// Ensure no files are excluded from auto-reveal
+	"explorer.autoRevealExclude": {},
+	// If a file is already open in a tab, focus that tab instead of opening a new one
+	"workbench.editor.revealIfOpen": true
+}
