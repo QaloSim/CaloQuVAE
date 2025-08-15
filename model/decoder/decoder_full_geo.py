@@ -27,9 +27,9 @@ class DecoderFullGeo(nn.Module):
 
         self.input_shapes = [
             (1, 1, 1),
-            (self.z, self.r, self.phi),
-            (self.z, self.r, self.phi),
-            (self.z, self.r, self.phi),
+            (self.z, self.phi, self.r),
+            (self.z, self.phi, self.r),
+            (self.z, self.phi, self.r),
         ]
         
         self._create_hierarchy_networks()
@@ -40,7 +40,7 @@ class DecoderFullGeo(nn.Module):
         self.subdecoders = nn.ModuleList()
         for i in range(self.n_latent_hierarchy_lvls):
             if i == 0:
-                subdecoder = FirstSubDecoder(self._config, first_subdecoder=True)
+                subdecoder = FirstSubDecoder(self._config)
             else:
                 subdecoder = SubDecoder(self._config, last_subdecoder=(i == self.n_latent_hierarchy_lvls - 1))
             self.subdecoders.append(subdecoder)
@@ -53,8 +53,14 @@ class DecoderFullGeo(nn.Module):
         for i in range(self.n_latent_hierarchy_lvls-1):
             skip_connection = nn.Sequential(
                 nn.ConvTranspose3d(self._config.rbm.latent_nodes_per_p * (2+i), 64, (3, 5, 7), (1, 1, 1), padding=0),
-                nn.ConvTranspose3d(64, 32, (3, 4, 6), (1, 1, 1), padding=0),
-                nn.ConvTranspose3d(32, 1, (3, 3, 7), (1, 1, 1), padding=0),
+                nn.BatchNorm3d(64),
+                nn.PReLU(64, 0.02),
+                # upscales to (64, 3, 5, 7)
+                nn.ConvTranspose3d(64, 32, (3, 5, 7), (1, 1, 2), padding=0),
+                nn.BatchNorm3d(32),
+                nn.PReLU(32, 0.02),
+                # upscales to (32, 5, 8, 12)
+                nn.ConvTranspose3d(32, 1, (3, 6, 6), (1, 1, 1), padding=0),
             ) #outputs (1, 7, 14, 24)
             self.skip_connections.append(skip_connection)
         
@@ -72,12 +78,13 @@ class DecoderFullGeo(nn.Module):
 
         for lvl in range(self.n_latent_hierarchy_lvls):
             curr_subdecoder = self.subdecoders[lvl]
-            x0_broadcasted = x0_reshaped.expand(x.shape[0], *self.input_shapes[lvl])
+            x0_broadcasted = x0_reshaped.expand(x.shape[0], 1, *self.input_shapes[lvl])
 
             decoder_input = torch.cat((x, x0_broadcasted), dim=1)  # Concatenate along the channel dimension
+            # print(decoder_input.shape)
             
             if lvl < self.n_latent_hierarchy_lvls - 1:
-                output = curr_subdecoder(decoder_input)
+                output = curr_subdecoder(decoder_input, x0)
                 if prev_output is not None:
                     output += prev_output  # add/refine the previous subdecoder output
                 prev_output = output
@@ -86,12 +93,13 @@ class DecoderFullGeo(nn.Module):
                 # Apply skip connection
                 enc_z = self.skip_connections[lvl](enc_z)
                 partition_idx_start -= self._config.rbm.latent_nodes_per_p  # start index for the current RBM partition, moves one partition back every level
+                # print(output.shape, enc_z.shape)
                 x = torch.cat((output, enc_z), dim=1)  # concatenate the output of the current subdecoder and the skip connection output
 
             else:  # last level
-                output_hits, output_activations = curr_subdecoder(decoder_input)
-                output_hits = output_hits.reshape(output_hits.shape[0], self.z*self.r*self.phi)
-                output_activations = output_activations.reshape(output_activations.shape[0], self.z*self.r*self.phi)
+                output_hits, output_activations = curr_subdecoder(decoder_input, x0)
+                output_hits = output_hits.reshape(output_hits.shape[0], self.z*self.phi*self.r)
+                output_activations = output_activations.reshape(output_activations.shape[0], self.z*self.phi*self.r)
                 return output_hits, output_activations
 
 
@@ -102,10 +110,9 @@ class FirstSubDecoder(nn.Module):
         super(FirstSubDecoder, self).__init__()
         self._config = cfg
         self.n_latent_nodes = self._config.rbm.latent_nodes_per_p * self._config.rbm.partitions
-        self.shower_size = (self._config.data.z, self._config.data.r, self._config.data.phi)
+        self.shower_size = (self._config.data.z, self._config.data.phi, self._config.data.r)
 
         self._layers1 = nn.Sequential(
-            nn.Unflatten(1, (self.n_latent_nodes+1, 1, 1, 1)),
             PeriodicConvTranspose3d(self.n_latent_nodes+1, 512, (3, 3, 3), stride=(1, 1, 1), padding=0),
             nn.BatchNorm3d(512),
             nn.PReLU(512, 0.02),
@@ -131,20 +138,30 @@ class FirstSubDecoder(nn.Module):
             nn.SiLU(),
             LinearAttention(32, cylindrical=False),
             # upscales to (32, 7, 16, 24)
-            nn.ConvTranspose3d(32, 1, (1, 1, 1), stride=(1, 1, 1), padding=0),
             CropLayer(),
-            nn.Conv3d(1, 1, (1, 1, 1), stride=(1, 1, 1), padding=0),
-            nn.SiLU(),
         )
-
+        self._layers2_hits = nn.Sequential(
+            # layer for hits
+            nn.ConvTranspose3d(129, 64, (3, 3, 5), stride=(1, 2, 3), padding=(1, 0, 0)),
+            nn.BatchNorm3d(64),
+            nn.PReLU(64, 0.02),
+            # upscales to  (64, 7, 15, 23)
+            nn.ConvTranspose3d(64, 32, (3, 2, 2), stride=(1, 1, 1), padding=(1, 0, 0)),
+            nn.BatchNorm3d(32),
+            nn.PReLU(32, 0.02),
+            # upscales to (32, 7, 16, 24)
+            nn.PReLU(1, 1.0),
+            CropLayer(),
+        )
 
 
     def forward(self,x, x0):
         x = self._layers1(x)
         d1, d2, d3 = x.shape[-3], x.shape[-2], x.shape[-1]
         xx0 = torch.cat((x, x0.unsqueeze(2).unsqueeze(3).unsqueeze(4).repeat(1, 1, d1, d2, d3)), dim=1)  # Concatenate the incident energy to the output of the first layer
-        x1 = self._layers2(xx0).reshape(xx0.shape[0], self.shower_size[0], self.shower_size[1], self.shower_size[2])
-        return x1
+        x1 = self._layers2(xx0).reshape(xx0.shape[0], 32, self.shower_size[0], self.shower_size[1], self.shower_size[2])
+        x2 = self._layers2_hits(xx0).reshape(xx0.shape[0], 32, self.shower_size[0], self.shower_size[1], self.shower_size[2])
+        return x1 * x2
 
         
 
@@ -158,31 +175,7 @@ class SubDecoder(nn.Module):
         self.first_subdecoder = first_subdecoder
         self.last_subdecoder = last_subdecoder
 
-        if self.first_subdecoder:
-            self._first_subdecoder_layers = nn.Sequential(
-                nn.Unflatten(1, (self.n_latent_nodes+1, 1, 1, 1)),
-                PeriodicConvTranspose3d(self.n_latent_nodes+1, 512, (3, 3, 3), stride=(1, 1, 1), padding=0),
-                nn.BatchNorm3d(512),
-                nn.PReLU(512, 0.02),
-                # upscales to (512, 3, 3, 3)
-                PeriodicConvTranspose3d(512, 128, kernel_size=(3, 3, 3), stride=(2, 2, 2), padding=0),
-                nn.BatchNorm3d(128),
-                nn.PReLU(128, 0.02),
-                # upscales to (128, 7, 7, 7)
-                PeriodicConvTranspose3d(128, 64, (1, 3, 5), stride=(1, 2, 3), padding=0),
-                nn.GroupNorm(1, 64),
-                nn.SiLU(),
-                LinearAttention(64, cylindrical=False),
-                # upscales to (64, 7, 15, 23)
-                PeriodicConvTranspose3d(64, 32, (1, 2, 2), stride=(1, 1, 1), padding=0),
-                nn.GroupNorm(1, 32),
-                nn.SiLU(),
-                LinearAttention(32, cylindrical=False),
-                # upscales to (32, 7, 16, 24)
-                CropLayer(),  # Crop to (32, 7, 14, 24)
-                nn.SiLU(),
-            )
-        elif self.last_subdecoder:
+        if self.last_subdecoder:
             self._subdecoder_layers = nn.Sequential(
                 # maintains same shape throughout
                 nn.ConvTranspose3d(34, 32, (3, 3, 3), stride=(1, 1, 1), padding=(1, 1, 1)),
@@ -241,7 +234,7 @@ class SubDecoder(nn.Module):
                 nn.SiLU(),
                 LinearAttention(32, cylindrical=False),
             )
-    def forward(self, x):
+    def forward(self, x, x0):
         if self.first_subdecoder:
             x = self._first_subdecoder_layers(x)
         elif self.last_subdecoder:
