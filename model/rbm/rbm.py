@@ -18,33 +18,33 @@ class RBM(ZephyrRBM):
         """
         return self._model_name
     
-    # def initOpt(self):
-    #     """Initialize optimizer for RBM parameters."""
-    #     self.opt = {"bias": {}, "weight":{}}
-        
-    #     for i in range(3):
-    #         for j in [0,1,2,3]:
-    #             if j > i:
-    #                 self.opt["weight"][str(i)+str(j)] = AdamOpt(self.weight_dict[str(i)+str(j)], self._config.rbm.lr)
-                    
-    #     for i in range(4):
-    #         self.opt["bias"][str(i)] = AdamOpt(self.bias_dict[str(i)], self._config.rbm.lr)
-
     def initOpt(self):
-        """Register all RBM params into a single optimizer (Adam)."""
-        # Do NOT detach or reassign these tensors later; keep references stable
-        params = []
-        # weights
+        """Initialize optimizer for RBM parameters."""
+        self.opt = {"bias": {}, "weight":{}}
+        
         for i in range(3):
             for j in [0,1,2,3]:
                 if j > i:
-                    params.append(self.weight_dict[f"{i}{j}"])
-        # biases
+                    self.opt["weight"][str(i)+str(j)] = AdamOpt(self.weight_dict[str(i)+str(j)], self._config.rbm.lr)
+                    
         for i in range(4):
-            params.append(self.bias_dict[f"{i}"])
+            self.opt["bias"][str(i)] = AdamOpt(self.bias_dict[str(i)], self._config.rbm.lr)
 
-        # weight decay uses cfg.rbm.gamma; lr uses cfg.rbm.lr
-        self.opt = AdamOpt(params, a=self._config.rbm.lr, weight_decay=self._config.rbm.gamma)
+    # def initOpt(self):
+    #     """Register all RBM params into a single optimizer (Adam)."""
+    #     # Do NOT detach or reassign these tensors later; keep references stable
+    #     params = []
+    #     # weights
+    #     for i in range(3):
+    #         for j in [0,1,2,3]:
+    #             if j > i:
+    #                 params.append(self.weight_dict[f"{i}{j}"])
+    #     # biases
+    #     for i in range(4):
+    #         params.append(self.bias_dict[f"{i}"])
+
+    #     # weight decay uses cfg.rbm.gamma; lr uses cfg.rbm.lr
+    #     self.opt = AdamOpt(params, a=self._config.rbm.lr, weight_decay=self._config.rbm.gamma)
     
     def _p_state(self, weights_ax, weights_bx, weights_cx,
                  pa_state, pb_state, pc_state, bias_x) -> torch.Tensor:
@@ -361,34 +361,34 @@ class RBM(ZephyrRBM):
                 if j > i:
                     self.weight_dict[str(i)+str(j)] = self.weight_dict[str(i)+str(j)] + self._config.rbm.lr * self.grad["weight"][str(i)+str(j)]
 
-    # def update_params(self):
-    #     for i in range(4):
-    #         self.bias_dict[str(i)] = self.opt["bias"][str(i)].step(self.grad["bias"][str(i)].detach() - 
-    #                                                                self._config.rbm.gamma * self.bias_dict[str(i)])
-
-    #     for i in range(3):
-    #         for j in [0,1,2,3]:
-    #             if j > i:
-    #                 self.weight_dict[str(i)+str(j)] = self.opt["weight"][str(i)+str(j)].step(self.grad["weight"][str(i)+str(j)].detach() - 
-    #                                                                                          self._config.rbm.gamma * self.weight_dict[str(i)+str(j)])
     def update_params(self):
-        """Set grads from self.grad and take a single optimizer step."""
-        # Bias grads
         for i in range(4):
-            key = f"{i}"
-            # assign manual grads; detach to avoid autograd graph
-            self.bias_dict[key].grad = self.grad["bias"][key].detach()
+            self.bias_dict[str(i)] = self.opt["bias"][str(i)].step(self.grad["bias"][str(i)].detach() - 
+                                                                   self._config.rbm.gamma * self.bias_dict[str(i)])
 
-        # Weight grads
         for i in range(3):
             for j in [0,1,2,3]:
                 if j > i:
-                    key = f"{i}{j}"
-                    self.weight_dict[key].grad = self.grad["weight"][key].detach()
+                    self.weight_dict[str(i)+str(j)] = self.opt["weight"][str(i)+str(j)].step(self.grad["weight"][str(i)+str(j)].detach() - 
+                                                                                             self._config.rbm.gamma * self.weight_dict[str(i)+str(j)])
+    # def update_params(self):
+    #     """Set grads from self.grad and take a single optimizer step."""
+    #     # Bias grads
+    #     for i in range(4):
+    #         key = f"{i}"
+    #         # assign manual grads; detach to avoid autograd graph
+    #         self.bias_dict[key].grad = self.grad["bias"][key].detach()
 
-        # One step for all params; weight decay handled inside optimizer
-        self.opt.step()
-        self.opt.zero_grad()
+    #     # Weight grads
+    #     for i in range(3):
+    #         for j in [0,1,2,3]:
+    #             if j > i:
+    #                 key = f"{i}{j}"
+    #                 self.weight_dict[key].grad = self.grad["weight"][key].detach()
+
+    #     # One step for all params; weight decay handled inside optimizer
+    #     self.opt.step()
+    #     self.opt.zero_grad()
 
     def energy_exp_cond(self, p0, p1, p2, p3):
         # pull biases and weights into locals for fewer dict lookups
@@ -432,77 +432,77 @@ class RBM(ZephyrRBM):
 
         return batch_energy
 
-# class AdamOpt():
-#     def __init__(self, theta, a=1e-3):
-#         self.theta = theta.detach()
-#         self.m = torch.zeros_like(theta)
-#         self.v = torch.zeros_like(theta)
-#         self.b1 = 0.9
-#         self.b2 = 0.999
-#         self.a = a
-#         self.eps = 1e-6
-#         self.t = 0
+class AdamOpt():
+    def __init__(self, theta, a=1e-3):
+        self.theta = theta.detach()
+        self.m = torch.zeros_like(theta)
+        self.v = torch.zeros_like(theta)
+        self.b1 = 0.9
+        self.b2 = 0.999
+        self.a = a
+        self.eps = 1e-6
+        self.t = 0
 
-#     def step(self, grad):
-#         with torch.no_grad():
-#             self.t += 1
-#             self.m = self.b1 * self.m + (1 - self.b1) * grad
-#             self.v = self.b2 * self.v + (1 - self.b2) * grad ** 2
+    def step(self, grad):
+        with torch.no_grad():
+            self.t += 1
+            self.m = self.b1 * self.m + (1 - self.b1) * grad
+            self.v = self.b2 * self.v + (1 - self.b2) * grad ** 2
 
-#             m_hat = self.m / (1 - self.b1 ** self.t)
-#             v_hat = self.v / (1 - self.b2 ** self.t)
+            m_hat = self.m / (1 - self.b1 ** self.t)
+            v_hat = self.v / (1 - self.b2 ** self.t)
 
-#             delta = m_hat / (torch.sqrt(v_hat) + self.eps)
-#             # delta = torch.clamp(delta, -5, 5)
+            delta = m_hat / (torch.sqrt(v_hat) + self.eps)
+            # delta = torch.clamp(delta, -5, 5)
 
-#             self.theta = self.theta + delta * self.a
-#         return self.theta
+            self.theta = self.theta + delta * self.a
+        return self.theta
     
-class AdamOpt(Optimizer):
-    def __init__(self, params, a=1e-3, b1=0.9, b2=0.999, eps=1e-8, weight_decay=0.0):
-        defaults = dict(lr=a, betas=(b1, b2), eps=eps, weight_decay=weight_decay)
-        super().__init__(params, defaults)
+# class AdamOpt(Optimizer):
+#     def __init__(self, params, a=1e-3, b1=0.9, b2=0.999, eps=1e-8, weight_decay=0.0):
+#         defaults = dict(lr=a, betas=(b1, b2), eps=eps, weight_decay=weight_decay)
+#         super().__init__(params, defaults)
 
-    @torch.no_grad()
-    def step(self, closure=None):
-        loss = None
-        if closure is not None:
-            with torch.enable_grad():
-                loss = closure()
+#     @torch.no_grad()
+#     def step(self, closure=None):
+#         loss = None
+#         if closure is not None:
+#             with torch.enable_grad():
+#                 loss = closure()
 
-        for group in self.param_groups:
-            lr = group["lr"]
-            beta1, beta2 = group["betas"]
-            eps = group["eps"]
-            wd = group["weight_decay"]
+#         for group in self.param_groups:
+#             lr = group["lr"]
+#             beta1, beta2 = group["betas"]
+#             eps = group["eps"]
+#             wd = group["weight_decay"]
 
-            for p in group["params"]:
-                if p.grad is None:
-                    continue
-                grad = p.grad
+#             for p in group["params"]:
+#                 if p.grad is None:
+#                     continue
+#                 grad = p.grad
 
-                # decoupled weight decay (AdamW-style)
-                if wd != 0.0:
-                    p.add_(p, alpha=-lr * wd)
+#                 # decoupled weight decay (AdamW-style)
+#                 if wd != 0.0:
+#                     p.add_(p, alpha=-lr * wd)
 
-                state = self.state[p]
-                if len(state) == 0:
-                    state["step"] = 0
-                    state["exp_avg"] = torch.zeros_like(p)
-                    state["exp_avg_sq"] = torch.zeros_like(p)
+#                 state = self.state[p]
+#                 if len(state) == 0:
+#                     state["step"] = 0
+#                     state["exp_avg"] = torch.zeros_like(p)
+#                     state["exp_avg_sq"] = torch.zeros_like(p)
 
-                exp_avg = state["exp_avg"]
-                exp_avg_sq = state["exp_avg_sq"]
-                state["step"] += 1
+#                 exp_avg = state["exp_avg"]
+#                 exp_avg_sq = state["exp_avg_sq"]
+#                 state["step"] += 1
 
-                exp_avg.mul_(beta1).add_(grad, alpha=1 - beta1)
-                exp_avg_sq.mul_(beta2).addcmul_(grad, grad, value=1 - beta2)
+#                 exp_avg.mul_(beta1).add_(grad, alpha=1 - beta1)
+#                 exp_avg_sq.mul_(beta2).addcmul_(grad, grad, value=1 - beta2)
 
-                bias_correction1 = 1 - beta1 ** state["step"]
-                bias_correction2 = 1 - beta2 ** state["step"]
-                step_size = lr * (bias_correction2 ** 0.5) / bias_correction1
+#                 bias_correction1 = 1 - beta1 ** state["step"]
+#                 bias_correction2 = 1 - beta2 ** state["step"]
+#                 step_size = lr * (bias_correction2 ** 0.5) / bias_correction1
 
-                denom = exp_avg_sq.sqrt().add_(eps)
-                p.addcdiv_(exp_avg, denom, value=-step_size)
+#                 denom = exp_avg_sq.sqrt().add_(eps)
+#                 p.addcdiv_(exp_avg, denom, value=-step_size)
 
-        return loss
+#         return loss
