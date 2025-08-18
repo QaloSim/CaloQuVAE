@@ -17,7 +17,7 @@ from model.decoder.decoder_hier_geo import DecoderHierarchyGeometry
 from model.decoder.decoder_full_geo import DecoderFullGeo
 from model.decoder.decoderhierarchy0 import DecoderHierarchy0, DecoderHierarchyv3
 from model.decoder.decoderhierarchytf import DecoderHierarchyTF, DecoderHierarchyTFv2
-from model.decoder.decoder_ATLAS_new import DecoderATLASNew
+from model.decoder.decoder_ATLAS_new import DecoderATLASNew, DecoderFullGeoATLASNew
 from model.rbm.rbm import RBM
 
 #logging module with handmade settings.
@@ -74,7 +74,8 @@ class AutoEncoderBase(nn.Module):
             return DecoderFullGeo(self._config)
         elif self._config.model.decoder == "decoderatlasnew":
             return DecoderATLASNew(self._config)
-
+        elif self._config.model.decoder == "decoderfullgeoatlasnew":
+            return DecoderFullGeoATLASNew(self._config)
         elif self._config.model.decoder == "decoderhierachytfv2":
             return DecoderHierarchyTFv2(self._config)
 
