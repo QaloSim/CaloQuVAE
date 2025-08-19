@@ -1,5 +1,5 @@
 save_state: 1
-load_state: 1
+load_state: 0
 save_hists: 0
 save_partition: 1
 freeze_vae: 1
