@@ -1,5 +1,6 @@
 import torch
 from model.rbm.zephyr import ZephyrRBM
+from torch.optim import Optimizer
 
 class RBM(ZephyrRBM):
     def __init__(self, cfg=None):
@@ -25,10 +26,10 @@ class RBM(ZephyrRBM):
         for i in range(3):
             for j in [0,1,2,3]:
                 if j > i:
-                    self.opt["weight"][str(i)+str(j)] = AdamOpt(self.weight_dict[str(i)+str(j)], self._config.rbm.lr)
+                    self.opt["weight"][str(i)+str(j)] = AdamOpt(self.weight_dict[str(i)+str(j)], self._config.rbm.lr, self._config.rbm.gamma)
                     
         for i in range(4):
-            self.opt["bias"][str(i)] = AdamOpt(self.bias_dict[str(i)], self._config.rbm.lr)
+            self.opt["bias"][str(i)] = AdamOpt(self.bias_dict[str(i)], self._config.rbm.lr, self._config.rbm.gamma)
 
     # def initOpt(self):
     #     """Register all RBM params into a single optimizer (Adam)."""
@@ -363,14 +364,13 @@ class RBM(ZephyrRBM):
 
     def update_params(self):
         for i in range(4):
-            self.bias_dict[str(i)] = self.opt["bias"][str(i)].step(self.grad["bias"][str(i)].detach() - 
-                                                                   self._config.rbm.gamma * self.bias_dict[str(i)])
+            self.bias_dict[str(i)] = self.opt["bias"][str(i)].step(self.grad["bias"][str(i)].detach())
 
         for i in range(3):
             for j in [0,1,2,3]:
                 if j > i:
-                    self.weight_dict[str(i)+str(j)] = self.opt["weight"][str(i)+str(j)].step(self.grad["weight"][str(i)+str(j)].detach() - 
-                                                                                             self._config.rbm.gamma * self.weight_dict[str(i)+str(j)])
+                    self.weight_dict[str(i)+str(j)] = self.opt["weight"][str(i)+str(j)].step(self.grad["weight"][str(i)+str(j)].detach())
+
     # def update_params(self):
     #     """Set grads from self.grad and take a single optimizer step."""
     #     # Bias grads
@@ -433,7 +433,7 @@ class RBM(ZephyrRBM):
         return batch_energy
 
 class AdamOpt():
-    def __init__(self, theta, a=1e-3):
+    def __init__(self, theta, a=1e-3, gamma=0.0):
         self.theta = theta.detach()
         self.m = torch.zeros_like(theta)
         self.v = torch.zeros_like(theta)
@@ -442,6 +442,7 @@ class AdamOpt():
         self.a = a
         self.eps = 1e-6
         self.t = 0
+        self.gamma = gamma  # weight decay
 
     def step(self, grad):
         with torch.no_grad():
@@ -455,7 +456,7 @@ class AdamOpt():
             delta = m_hat / (torch.sqrt(v_hat) + self.eps)
             # delta = torch.clamp(delta, -5, 5)
 
-            self.theta = self.theta + delta * self.a
+            self.theta = self.theta * (1-self.gamma) + delta * self.a
         return self.theta
     
 # class AdamOpt(Optimizer):
