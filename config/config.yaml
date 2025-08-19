@@ -9,7 +9,7 @@ config_path: "/fast_scratch_1/caloqvae/jtoledo/wandb/run-20250813_233227-z4hoj71
 
 device: gpu
 gpu_list:
-  - 0
+  - 1
 
 defaults:
   - data: CaloChallenge2

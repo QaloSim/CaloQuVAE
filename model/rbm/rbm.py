@@ -25,11 +25,11 @@ class RBM(ZephyrRBM):
         for i in range(3):
             for j in [0,1,2,3]:
                 if j > i:
-                    self.opt["weight"][str(i)+str(j)] = AdamOpt(self._weight_mask_dict[str(i)+str(j)], self._config.rbm.lr)
+                    self.opt["weight"][str(i)+str(j)] = AdamOpt(self._weight_mask_dict[str(i)+str(j)], self._config.rbm.lr, self._config.rbm.gamma)
                     
         for i in range(4):
-            self.opt["bias"][str(i)] = AdamOpt(self.bias_dict[str(i)], self._config.rbm.lr)
-    
+            self.opt["bias"][str(i)] = AdamOpt(self.bias_dict[str(i)], self._config.rbm.lr, self._config.rbm.gamma)
+
     def _p_state(self, weights_ax, weights_bx, weights_cx,
                  pa_state, pb_state, pc_state, bias_x) -> torch.Tensor:
         """partition_state()
@@ -347,14 +347,12 @@ class RBM(ZephyrRBM):
 
     def update_params(self):
         for i in range(4):
-            self.bias_dict[str(i)] = self.opt["bias"][str(i)].step(self.grad["bias"][str(i)].detach() - 
-                                                                   self._config.rbm.gamma * self.bias_dict[str(i)])
+            self.bias_dict[str(i)] = self.opt["bias"][str(i)].step(self.grad["bias"][str(i)].detach())
 
         for i in range(3):
             for j in [0,1,2,3]:
                 if j > i:
-                    self.weight_dict[str(i)+str(j)] = self.opt["weight"][str(i)+str(j)].step(self.grad["weight"][str(i)+str(j)].detach() - 
-                                                                                             self._config.rbm.gamma * self.weight_dict[str(i)+str(j)])
+                    self.weight_dict[str(i)+str(j)] = self.opt["weight"][str(i)+str(j)].step(self.grad["weight"][str(i)+str(j)].detach())
 
     def energy_exp_cond(self, p0, p1, p2, p3):
         # pull biases and weights into locals for fewer dict lookups
@@ -399,7 +397,7 @@ class RBM(ZephyrRBM):
         return batch_energy
 
 class AdamOpt():
-    def __init__(self, theta, a=1e-3):
+    def __init__(self, theta, a=1e-3, gamma=0.0):
         self.theta = theta.detach()
         self.m = torch.zeros_like(theta)
         self.v = torch.zeros_like(theta)
@@ -408,6 +406,7 @@ class AdamOpt():
         self.a = a
         self.eps = 1e-6
         self.t = 0
+        self.gamma = gamma
 
     def step(self, grad):
         with torch.no_grad():
@@ -421,5 +420,5 @@ class AdamOpt():
             delta = m_hat / (torch.sqrt(v_hat) + self.eps)
             # delta = torch.clamp(delta, -5, 5)
 
-            self.theta = self.theta + delta * self.a
+            self.theta = self.theta * (1 - self.gamma) + delta * self.a
         return self.theta
