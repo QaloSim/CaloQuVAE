@@ -39,9 +39,11 @@ class DecoderHierarchy0CA(nn.Module):
             self.subdecs.append(nn.Conv3d(latent_inp, recon_out, kernel_size=1, stride=1, padding=0))
 
     def _create_cross_attention(self):
-        self.crossAtt = nn.ModuleList([])
-        for i in range(len(self._config.model.decoder_output)-1):
-            self.crossAtt.append(CrossAtt(self._config))
+        # self.crossAtt = nn.ModuleList([])
+        self.crossAtt = CrossAtt(self._config)
+        self.attn_scale = [nn.Parameter(torch.tensor(0.1)) for _ in range(len(self._config.model.decoder_output)-1)]
+        # for i in range(len(self._config.model.decoder_output)-1):
+            # self.crossAtt.append(CrossAtt(self._config))
 
     def forward(self, x, x0):
         x_lat = x
@@ -61,7 +63,7 @@ class DecoderHierarchy0CA(nn.Module):
                 enc_z = self.subdecs[lvl](enc_z).view(enc_z.size(0), -1)
                 xz = torch.cat((x_lat, z), dim=1)
                 # x = enc_z + xz
-                x = self.crossAtt[lvl](enc_z, xz)
+                x = xz + self.attn_scale[lvl] * self.crossAtt(enc_z, xz)
         return self.x1, self.x2
     
 ########################################

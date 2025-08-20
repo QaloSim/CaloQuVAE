@@ -8,14 +8,14 @@ decoder: decoderhierachy0ca
 
 decoder_input:
   - 1208
-  - 2648
-  - 2648
-  - 2648
+  - 1928
+  - 1928
+  - 1928
 
 decoder_output:
-  - 1440
-  - 1440
-  - 1440
+  - 720
+  - 720
+  - 720
   - 6480
 
 # decoder_input:

@@ -25,8 +25,8 @@ class RBM(ZephyrRBM):
         for i in range(3):
             for j in [0,1,2,3]:
                 if j > i:
-                    self.opt["weight"][str(i)+str(j)] = AdamOpt(self._weight_mask_dict[str(i)+str(j)], self._config.rbm.lr, self._config.rbm.gamma)
-                    
+                    self.opt["weight"][str(i)+str(j)] = AdamOpt(self.weight_dict[str(i)+str(j)], self._config.rbm.lr, self._config.rbm.gamma)
+
         for i in range(4):
             self.opt["bias"][str(i)] = AdamOpt(self.bias_dict[str(i)], self._config.rbm.lr, self._config.rbm.gamma)
 
