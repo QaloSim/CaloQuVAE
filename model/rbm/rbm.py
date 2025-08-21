@@ -1,5 +1,6 @@
 import torch
 from model.rbm.zephyr import ZephyrRBM
+from torch.optim import Adam
 
 class RBM(ZephyrRBM):
     def __init__(self, cfg=None):
@@ -25,11 +26,11 @@ class RBM(ZephyrRBM):
         for i in range(3):
             for j in [0,1,2,3]:
                 if j > i:
-                    self.opt["weight"][str(i)+str(j)] = AdamOpt(self._weight_mask_dict[str(i)+str(j)], self._config.rbm.lr)
+                    self.opt["weight"][str(i)+str(j)] = AdamOpt(self._weight_dict[str(i)+str(j)], self._config.rbm.lr)
                     
         for i in range(4):
             self.opt["bias"][str(i)] = AdamOpt(self.bias_dict[str(i)], self._config.rbm.lr)
-    
+                
     def _p_state(self, weights_ax, weights_bx, weights_cx,
                  pa_state, pb_state, pc_state, bias_x) -> torch.Tensor:
         """partition_state()
@@ -336,6 +337,16 @@ class RBM(ZephyrRBM):
                 if j > i:
                     self.grad["weight"][str(i)+str(j)] = (vh_data_cov[n_nodes_p*i:n_nodes_p*(i+1),n_nodes_p*j:n_nodes_p*(j+1)] - vh_gen_cov[n_nodes_p*i:n_nodes_p*(i+1),n_nodes_p*j:n_nodes_p*(j+1)]) * self._weight_mask_dict[str(i)+str(j)]
 
+
+    def calculate_mock_gradient(self):
+        """Creates a deterministic mock gradient for testing."""
+        self.grad = {"bias": {}, "weight": {}}
+        for key, param in self.bias_dict.items():
+            self.grad["bias"][key] = torch.ones_like(param) * 0.1
+        for key, param in self.weight_dict.items():
+            self.grad["weight"][key] = torch.ones_like(param) * -0.05
+
+
     def update_params_SGD(self):
         for i in range(4):
             self.bias_dict[str(i)] = self.bias_dict[str(i)] + self._config.rbm.lr * self.grad["bias"][str(i)]
@@ -406,7 +417,7 @@ class AdamOpt():
         self.b1 = 0.9
         self.b2 = 0.999
         self.a = a
-        self.eps = 1e-6
+        self.eps = 1e-8
         self.t = 0
 
     def step(self, grad):
