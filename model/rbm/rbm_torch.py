@@ -5,7 +5,6 @@ from torch.optim import Adam
 class RBMtorch(RBM):
     def __init__(self, cfg=None):
         super(RBMtorch, self).__init__(cfg)
-        self.initOpt_torch()
 
     @property
     def weight_dict(self):
@@ -20,7 +19,7 @@ class RBMtorch(RBM):
         return masked_weight_dict
 
 
-    def initOpt_torch(self):
+    def initOpt(self):
         params_to_optimize = list(self._weight_dict.values()) + list(self.bias_dict.values())
 
         self.opt = Adam(
@@ -28,7 +27,7 @@ class RBMtorch(RBM):
             lr=self._config.rbm.lr, 
         )
     
-    def update_params_torch(self):
+    def update_params(self):
         self.opt.zero_grad()
 
         with torch.no_grad():

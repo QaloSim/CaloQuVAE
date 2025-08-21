@@ -19,6 +19,7 @@ from model.decoder.decoderhierarchy0 import DecoderHierarchy0, DecoderHierarchyv
 from model.decoder.decoderhierarchytf import DecoderHierarchyTF, DecoderHierarchyTFv2
 from model.decoder.decoder_ATLAS_new import DecoderATLASNew, DecoderFullGeoATLASNew
 from model.rbm.rbm import RBM
+from model.rbm.rbm_torch import RBMtorch
 
 #logging module with handmade settings.
 from CaloQuVAE import logging
@@ -81,7 +82,7 @@ class AutoEncoderBase(nn.Module):
 
     def _create_prior(self):
         logger.debug("::_create_prior")
-        return RBM(self._config)
+        return RBMtorch(self._config)
     
     def create_networks(self):
         logger.debug("Creating Network Structures")
@@ -171,7 +172,7 @@ class AutoEncoderBase(nn.Module):
         entropy = torch.mean(torch.sum(entropy, dim=1), dim=0)
 
         # Compute positive phase (energy expval under posterior variables) 
-        pos_energy = self.prior.energy_exp_cond(post_samples[0],post_samples[1],post_samples[2],post_samples[3]).mean()
+        pos_energy = self.prior.energy_exp_cond(post_samples[0].detach(),post_samples[1].detach(),post_samples[2].detach(),post_samples[3].detach()).mean()
 
         # Compute gradient computation of the logZ term
         p0_state, p1_state, p2_state, p3_state \

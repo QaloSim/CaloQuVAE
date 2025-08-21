@@ -1,6 +1,5 @@
 import torch
 from model.rbm.zephyr import ZephyrRBM
-from torch.optim import Adam
 
 class RBM(ZephyrRBM):
     def __init__(self, cfg=None):
@@ -30,7 +29,7 @@ class RBM(ZephyrRBM):
                     
         for i in range(4):
             self.opt["bias"][str(i)] = AdamOpt(self.bias_dict[str(i)], self._config.rbm.lr)
-                
+
     def _p_state(self, weights_ax, weights_bx, weights_cx,
                  pa_state, pb_state, pc_state, bias_x) -> torch.Tensor:
         """partition_state()

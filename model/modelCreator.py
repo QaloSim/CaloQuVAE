@@ -50,7 +50,7 @@ class ModelCreator():
         self._model=model
     
         
-    def save_state(self, cfg_string='test'):
+    def save_state(self, cfg_string='test', vae_opt=None, rbm_opt=None):
         # Use wandb.run.dir if available, else fallback to local directory
         if wandb.run is not None and self._config.wandb.mode != "disabled" and self._config.load_state == 0:
             save_dir = wandb.run.dir
@@ -76,6 +76,12 @@ class ModelCreator():
 
         torch.save(state_dict, path)
 
+        if vae_opt is not None:
+            torch.save(vae_opt.state_dict(), os.path.join(save_dir, f"{cfg_string}_opt_model.pth"))
+        if rbm_opt is not None:
+            torch.save(rbm_opt.state_dict(), os.path.join(save_dir, f"{cfg_string}_opt_rbm.pth"))
+
+
         config_path = os.path.join(save_dir, f"{cfg_string}_config.yaml")
         self._config.run_path = path
         self._config.config_path = config_path
@@ -96,8 +102,8 @@ class ModelCreator():
         torch.save(self._model.prior._weight_dict, pathW)
         torch.save(self._model.prior._bias_dict, pathB)
         torch.save(encoded_data_energy, pathE)
-        
-    def load_state(self, run_path, device):
+
+    def load_state(self, run_path, device, vae_opt=None, rbm_opt=None):
         logger.info("Loading state")
         model_loc = run_path
         
@@ -113,6 +119,21 @@ class ModelCreator():
                 if module in local_module_keys:
                     print("Loading weights for module = ", module)
                     getattr(self._model, module).load_state_dict(checkpoint[module])
+
+        base_dir = os.path.dirname(run_path)
+        cfg_string = os.path.splitext(os.path.basename(run_path))[0]
+
+        opt_vae_path = os.path.join(base_dir, f"{cfg_string}_opt_model.pth")
+        opt_rbm_path   = os.path.join(base_dir, f"{cfg_string}_opt_rbm.pth")
+
+        if vae_opt is not None and os.path.exists(opt_vae_path):
+            vae_opt.load_state_dict(torch.load(opt_vae_path, map_location=device))
+            logger.info("Loaded VAE optimizer state")
+
+        if rbm_opt is not None and os.path.exists(opt_rbm_path):
+            rbm_opt.load_state_dict(torch.load(opt_rbm_path, map_location=device))
+            logger.info("Loaded RBM optimizer state")
+
                     
     def load_RBM_state(self, run_path, device):
         logger.info("Loading RBM state")
