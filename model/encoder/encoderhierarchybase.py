@@ -85,6 +85,26 @@ class HierarchicalEncoder(nn.Module):
                        self.binary((x.log() * torch.tensor(10).exp()).int(),log_bits)), 1)
         return torch.cat((x.repeat(1,reps), torch.zeros(x.shape[0],residual).to(x.device, x.dtype)), 1)
     
+class HierarchicalEncoderHidden(HierarchicalEncoder):
+    def __init__(self, cfg):
+        super(HierarchicalEncoderHidden, self).__init__(cfg)
+        self.smoothing_dist_mod = GumbelMod()
+        self._config = cfg
+
+        self.n_latent_hierarchy_lvls=self._config.rbm.partitions - self._config.model.hidden_layer
+
+        self.n_latent_nodes=self._config.rbm.latent_nodes_per_p
+
+        self._networks=nn.ModuleList([])
+        
+        for lvl in range(self.n_latent_hierarchy_lvls-1):
+            network=self._create_hierarchy_network(level=lvl)
+            self._networks.append(network)
+
+
+####################Encoder blocks
+##################################
+    
 
 class EncoderBlockPBH3Dv3Reg(nn.Module):
     def __init__(self, cfg=None):

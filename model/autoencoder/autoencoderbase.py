@@ -10,14 +10,14 @@ import torch
 import torch.nn as nn
 from torch.nn.functional import binary_cross_entropy_with_logits
 from model.gumbel import GumbelMod
-from model.encoder.encoderhierarchybase import HierarchicalEncoder
+from model.encoder.encoderhierarchybase import HierarchicalEncoder, HierarchicalEncoderHidden
 from model.decoder.decoder import Decoder
 from model.decoder.decoderhierarchybase import DecoderHierarchyBase, DecoderHierarchyBaseV2, DecoderHierarchyBaseV3, DecoderHierarchyBaseV4
 from model.decoder.decoder_hier_geo import DecoderHierarchyGeometry
-from model.decoder.decoderhierarchy0 import DecoderHierarchy0, DecoderHierarchyv3
+from model.decoder.decoderhierarchy0 import DecoderHierarchy0, DecoderHierarchy0Hidden, DecoderHierarchyv3
 from model.decoder.decoderhierarchy0ca import DecoderHierarchy0CA
 from model.decoder.decoderhierarchytf import DecoderHierarchyTF, DecoderHierarchyTFv2
-from model.rbm.rbm import RBM
+from model.rbm.rbm import RBM, RBM_Hidden
 
 #logging module with handmade settings.
 from CaloQuVAE import logging
@@ -75,7 +75,7 @@ class AutoEncoderBase(nn.Module):
     def _create_prior(self):
         logger.debug("::_create_prior")
         return RBM(self._config)
-    
+
     def create_networks(self):
         logger.debug("Creating Network Structures")
         self.encoder=self._create_encoder()
@@ -114,8 +114,6 @@ class AutoEncoderBase(nn.Module):
     def decode(self, post_samples, x, x0, beta=5, act_fct_slope=0.02):
         
         output_hits, output_activations = self.decoder(torch.cat(post_samples,1), x0)
-
-        # beta = torch.tensor(self._config.model.output_smoothing_fct, dtype=torch.float, device=output_hits.device, requires_grad=False)
         
         if self.training:
             output_activations = self._activation_fct(act_fct_slope)(output_activations) * torch.where(x > 0, 1., 0.)
@@ -183,7 +181,59 @@ class AutoEncoderBase(nn.Module):
                 logger.info("{0}: {1}".format(key, par.shape))
             else:
                 logger.debug("{0}: {1}".format(key, par))
+
+class AutoEncoderHidden(AutoEncoderBase):
+    def __init__(self, cfg):
+        super(AutoEncoderHidden,self).__init__(cfg)
+
+    def _create_encoder(self):
+        logger.debug("::_create_encoder")
+        if self._config.model.encoder == "hierarchicalencoderhidden":
+            return HierarchicalEncoderHidden(self._config)
         
+    def _create_prior(self):
+        logger.debug("::_create_prior")
+        return RBM_Hidden(self._config)
+    
+    def _create_decoder(self):
+        logger.debug("::_create_decoder")
+        if self._config.model.decoder == "decoderhierachy0hidden":
+            return DecoderHierarchy0Hidden(self._config)
+        
+    def kl_divergence(self, post_logits, post_samples, is_training=True):
+        """Overrides kl_divergence in GumBolt.py
+
+        :param post_logits (list) : List of f(logit_i|x, e) for each hierarchy
+                                    layer i. Each element is a tensor of size
+                                    (batch_size * n_nodes_per_hierarchy_layer)
+        :param post_zetas (list) : List of q(zeta_i|x, e) for each hierarchy
+                                   layer i. Each element is a tensor of size
+                                   (batch_size * n_nodes_per_hierarchy_layer)
+        """
+        # Concatenate all hierarchy levels
+        # logits_q_z = torch.cat(post_logits, 1)
+        # post_zetas = torch.cat(post_samples, 1)
+
+        # Compute cross-entropy b/w post_logits and post_samples
+        entropy = - self._bce_loss(torch.cat(post_logits, 1), torch.cat(post_samples, 1)[:,self._config.rbm.latent_nodes_per_p:])
+        entropy = torch.mean(torch.sum(entropy, dim=1), dim=0)
+
+        # Compute positive phase (energy expval under posterior variables) 
+        p3 = self.prior.sigmoid_C_k(self.prior.weight_dict['03'],   self.prior.weight_dict['13'],   self.prior.weight_dict['23'], 
+                              post_samples[0],post_samples[1],post_samples[2], self.prior.bias_dict['3'])
+        pos_energy = self.prior.energy_exp_cond(post_samples[0],post_samples[1],post_samples[2], p3).mean()
+
+        # Compute gradient computation of the logZ term
+        p0_state, p1_state, p2_state, p3_state \
+            = self.prior.block_gibbs_sampling_cond(post_samples[0].detach(),post_samples[1].detach(),post_samples[2].detach())
+        
+        # neg_energy = - self.energy_exp(p0_state, p1_state, p2_state, p3_state)
+        neg_energy = - self.prior.energy_exp_cond(p0_state, p1_state, p2_state, p3_state).mean()
+
+        # Estimate of the kl-divergence
+        kl_loss = entropy + pos_energy + neg_energy
+        return kl_loss, entropy, pos_energy, neg_energy
+
 if __name__=="__main__":
     logger.info("Running autoencoderbase.py directly") 
     logger.info("Success")
