@@ -5,6 +5,8 @@ from torch.optim import Adam
 class RBMtorch(RBM):
     def __init__(self, cfg=None):
         super(RBMtorch, self).__init__(cfg)
+        print("RBMtorch initialized")
+        self.initOpt()
 
     @property
     def weight_dict(self):
@@ -15,8 +17,16 @@ class RBMtorch(RBM):
         """
         masked_weight_dict = {}
         for key in self._weight_dict.keys():
-            masked_weight_dict[key] = self._weight_dict[key] * self._weight_mask_dict[key]
+            masked_weight_dict[key] = (self._weight_dict[key] * self._weight_mask_dict[key]).clone().detach()
         return masked_weight_dict
+
+    @property
+    def bias_dict(self):
+        out = {}
+        for k in self._bias_dict.keys():
+            out[k] = self._bias_dict[k].clone().detach()
+        return out
+
 
 
     def initOpt(self):

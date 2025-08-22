@@ -172,7 +172,7 @@ class AutoEncoderBase(nn.Module):
         entropy = torch.mean(torch.sum(entropy, dim=1), dim=0)
 
         # Compute positive phase (energy expval under posterior variables) 
-        pos_energy = self.prior.energy_exp_cond(post_samples[0].detach(),post_samples[1].detach(),post_samples[2].detach(),post_samples[3].detach()).mean()
+        pos_energy = self.prior.energy_exp_cond(post_samples[0].detach(),post_samples[1],post_samples[2],post_samples[3]).mean()
 
         # Compute gradient computation of the logZ term
         p0_state, p1_state, p2_state, p3_state \
