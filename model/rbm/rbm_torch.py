@@ -35,7 +35,7 @@ class RBMtorch(RBM):
         self.opt = Adam(
             params_to_optimize, 
             lr=self._config.rbm.lr,
-            weight_decay=self._config.rbm.weight_decay
+            weight_decay=self._config.rbm.gamma
         )
     
     def update_params(self):
