@@ -1,5 +1,5 @@
 _target_: engine.engine.Engine
-learning_rate: 0.0001
+learning_rate: 0.001
 
 n_batches_log_train: 10
 n_batches_log_val: 1
@@ -13,4 +13,4 @@ slope_act_fct_start: 0.05
 slope_act_fct_end: 0.
 
 # train_vae_separate: 1
-training_mode: vae
+training_mode: ae

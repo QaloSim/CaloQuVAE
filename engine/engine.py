@@ -182,6 +182,7 @@ class Engine():
             loss_dict = self.model.loss(x, output)
             loss_dict["loss"] = torch.stack([loss_dict[key] * self._config.model.loss_coeff[key]  for key in loss_dict.keys() if "loss" != key]).sum()
             self.model.prior.gradient_rbm_centered(output[2])
+            # self.model.prior.update_params()
             self.model.prior.update_params()
 
             if (i % log_batch_idx) == 0:
@@ -244,7 +245,8 @@ class Engine():
                 _, shower_prior = self.model.decode(prior_samples, x_reduce, x0)
                 # Compute loss
                 loss_dict = self.model.loss(x_reduce, output)
-                loss_dict["loss"] = torch.stack([loss_dict[key] * self._config.model.loss_coeff[key]  for key in loss_dict.keys() if "loss" != key]).sum()
+                loss_dict["loss"] = torch.stack([loss_dict[key] * self._config.model.loss_coeff[key]  for key in self._config.model.loss_coeff if "loss" != key]).sum()
+                # loss_dict["loss"] = torch.stack([loss_dict[key] * self._config.model.loss_coeff[key]  for key in loss_dict.keys() if "loss" != key]).sum()
                 for key in list(loss_dict.keys()):
                     loss_dict['val_'+key] = loss_dict[key]
                     loss_dict.pop(key)
@@ -428,12 +430,12 @@ class Engine():
 
     def _save_model(self, name="blank"):
         config_string = "_".join(str(i) for i in [self._config.model.model_name,f'{name}'])
-        config_path = self._model_creator.save_state(config_string)
+        config_path = self._model_creator.save_state(config_string, vae_opt=self.optimiser, rbm_opt=self.model.prior.opt)
         return config_path
     
     def load_best_model(self, epoch):
         best_config = OmegaConf.load(self.best_config_path)
-        self._model_creator.load_state(best_config.run_path, self.device)
+        self._model_creator.load_state(best_config.run_path, self.device, vae_opt=self.optimiser, rbm_opt=self.model.prior.opt)
         self._config.epoch_start = epoch + 1
     
     def _reduce(self, in_data, true_energy, R=1e-7):

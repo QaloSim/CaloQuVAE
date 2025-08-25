@@ -33,10 +33,10 @@ def layer_plots(cfg, incident_energies, target_showers, recon_showers, sampled_s
 
     num_rows = int(np.ceil(len(cfg.data.relevantLayers) / 4.0))
 
-    energy_sum_layer_fig, energy_sum_layer_ax = plt.subplots(num_rows, 4, figsize=(15, 3*num_rows))
-    incidence_ratio_layer_fig, incidence_ratio_layer_ax = plt.subplots(num_rows, 4, figsize=(15, 3*num_rows))
-    target_recon_ratio_layer_fig, target_recon_ratio_layer_ax = plt.subplots(num_rows, 4, figsize=(15, 3*num_rows))
-    sparsity_layer_fig, sparsity_layer_ax = plt.subplots(num_rows, 4, figsize=(15, 3*num_rows))
+    energy_sum_layer_fig, energy_sum_layer_ax = plt.subplots(num_rows, 4, figsize=(15, 3*num_rows), constrained_layout=True)
+    incidence_ratio_layer_fig, incidence_ratio_layer_ax = plt.subplots(num_rows, 4, figsize=(15, 3*num_rows), constrained_layout=True)
+    target_recon_ratio_layer_fig, target_recon_ratio_layer_ax = plt.subplots(num_rows, 4, figsize=(15, 3*num_rows), constrained_layout=True)
+    sparsity_layer_fig, sparsity_layer_ax = plt.subplots(num_rows, 4, figsize=(15, 3*num_rows), constrained_layout=True)
 
     for i, layer_num in enumerate(cfg.data.relevantLayers):
         row = i // 4

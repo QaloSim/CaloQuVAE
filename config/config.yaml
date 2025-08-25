@@ -12,13 +12,13 @@ gpu_list:
   - 0
 
 defaults:
-  - data: CaloChallenge2
+  - data: AtlasReg035
   - wandb: ML2
   - model: model3_hidden_calochallenge
   - engine: engine1_hidden
   - rbm: zephyr
   - _self_
 
-n_epochs: 250
-epoch_freeze: 200
+n_epochs: 350
+epoch_freeze: 250
 epoch_start: 0
