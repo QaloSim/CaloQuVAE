@@ -6,7 +6,7 @@ class RBMtorch(RBM):
     def __init__(self, cfg=None):
         super(RBMtorch, self).__init__(cfg)
         print("RBMtorch initialized")
-        self.initOpt()
+        # self.initOpt()
 
     @property
     def weight_dict(self):
@@ -34,7 +34,8 @@ class RBMtorch(RBM):
 
         self.opt = Adam(
             params_to_optimize, 
-            lr=self._config.rbm.lr, 
+            lr=self._config.rbm.lr,
+            weight_decay=self._config.rbm.weight_decay
         )
     
     def update_params(self):
