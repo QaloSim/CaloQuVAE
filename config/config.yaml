@@ -1,21 +1,21 @@
 save_state: 1
-load_state: 0
+load_state: 1
 save_hists: 0
 save_partition: 1
 freeze_vae: 1
 
 run_path: ""
-config_path: "/fast_scratch_1/caloqvae/lzhu/wandb/run-20250724_225612-0yue43m2/files/ae_separate_best_config.yaml"
+config_path: "/fast_scratch_1/caloqvae/jtoledo/wandb/run-20250821_230537-pp65hpwu/files/autoencoderhidden_9_config.yaml"
 
 device: gpu
 gpu_list:
-  - 2
+  - 0
 
 defaults:
   - data: AtlasReg035
   - wandb: ML2
-  - model: model12_v5_decoder
-  - engine: engine1
+  - model: model3_hidden_calochallenge
+  - engine: engine1_hidden
   - rbm: zephyr
   - _self_
 
