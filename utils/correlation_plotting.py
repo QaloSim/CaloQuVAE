@@ -354,7 +354,7 @@ def latent_correlation_plots(post_samples, prior_samples, latent_nodes_per_p, pa
     C_post  = compute_voxelwise_correlation_matrix(post_samples)
     C_prior = compute_voxelwise_correlation_matrix(prior_samples)
     # getting frobenius metric:
-    frob_all = frobenius_distance(C_post, C_prior)
+    frob_all = frobenius_distance(C_post, C_prior[:C_post.shape[1], :C_post.shape[1]])  # in case prior has more nodes
 
     # plotting full matrices with all nodes and partitions
     fig_post  = plot_correlation_matrix(C_post,  title=f"{title_prefix} Posterior Correlation (Encoder)", label="Node")
@@ -490,7 +490,8 @@ def plot_all_cross_pairs_grid(cross_corrs, partitions, vmax=0.25,
     """
     Plots a grid of the correlations between nodes in different partitions
     """
-    pairs = [(0,1), (0,2), (0,3), (1,2), (1,3), (2,3)]
+    # pairs = [(0,1), (0,2), (0,3), (1,2), (1,3), (2,3)]
+    pairs = list(cross_corrs.keys())
     fig, axes = plt.subplots(2, 3, figsize=(15, 9), dpi=120, constrained_layout=True)
     axes = axes.flatten()
 
@@ -625,7 +626,8 @@ def correlation_plots(cfg, incident_energy, showers, showers_prior, epoch, post_
     
     # Latent plots
     latent_results = {}
-    parts = cfg.rbm.partitions
+    # parts = cfg.rbm.partitions - cfg.rbm.hidden_layer
+    parts = cfg.rbm.partitions - cfg.model.hidden_layer
     nodes_per_p = cfg.rbm.latent_nodes_per_p
     
     fig_lat_post, fig_lat_prior, fig_lat_groups, latent_results = latent_correlation_plots(
