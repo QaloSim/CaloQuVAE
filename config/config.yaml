@@ -5,20 +5,20 @@ save_partition: 1
 freeze_vae: 1
 
 run_path: ""
-config_path: "/raid/javier/Projects/CaloQuVAE/wandb/run-20250812_200214-vf2ntrah/files/autoencoderbase_249_config.yaml"
+config_path: "/fast_scratch_1/caloqvae/jtoledo/wandb/run-20250821_230537-pp65hpwu/files/autoencoderhidden_9_config.yaml"
 
 device: gpu
 gpu_list:
-  - 3
+  - 4
 
 defaults:
-  - data: CaloChallenge2_DGX
-  - wandb: DGX
-  - model: model3_calochallenge
-  - engine: engine1
+  - data: CaloChallenge2
+  - wandb: ML2
+  - model: model3_hidden_calochallenge
+  - engine: engine1_hidden
   - rbm: zephyr
   - _self_
 
-n_epochs: 250
-epoch_freeze: 200
+n_epochs: 350
+epoch_freeze: 250
 epoch_start: 0

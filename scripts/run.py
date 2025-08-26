@@ -46,8 +46,9 @@ def main(cfg=None):
         cfg = engine._config
         os.environ["WANDB_DIR"] = cfg.config_path.split("wandb")[0]
         iden = get_project_id(cfg.run_path)
-        wandb.init(tags = [cfg.data.dataset_name], project=cfg.wandb.project, entity=cfg.wandb.entity, config=OmegaConf.to_container(cfg, resolve=True), mode=mode,
-                resume='allow', id=iden)
+        # wandb.init(tags = [cfg.data.dataset_name], project=cfg.wandb.project, entity=cfg.wandb.entity, config=OmegaConf.to_container(cfg, resolve=True), mode=mode,
+        #         resume='allow', id=iden)
+        wandb.init(tags = [cfg.data.dataset_name], project=cfg.wandb.project, entity=cfg.wandb.entity, config=OmegaConf.to_container(cfg, resolve=True), mode=mode)
         # Log metrics with wandb
         wandb.watch(engine.model)
     else:
@@ -227,12 +228,14 @@ def load_model_instance(cfg, adjust_epoch_start=True):
     config = OmegaConf.load(cfg.config_path)
     if adjust_epoch_start:
         # Adjust the epoch start based on the run_path
-        config.epoch_start = int(config.run_path.split("_")[-1].split(".")[0]) + 1
+        if config.run_path.split("_")[-1].split(".")[0].isdigit():
+            config.epoch_start = int(config.run_path.split("_")[-1].split(".")[0])
+        else:
+            config.epoch_start = cfg.epoch_start
     config.gpu_list = cfg.gpu_list
     config.load_state = cfg.load_state
     self = setup_model(config)
-    self._model_creator.load_state(config.run_path, self.device)
-    self.model.prior.initOpt()
+    self._model_creator.load_state(config.run_path, self.device, vae_opt=self.optimiser, rbm_opt=self.model.prior.opt)
     return self
 
 if __name__=="__main__":

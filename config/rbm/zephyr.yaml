@@ -19,3 +19,4 @@ b_std:
   - 1.0
   - 1.0
 optimize_partition: 0
+hidden_layer: 1

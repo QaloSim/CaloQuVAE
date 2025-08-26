@@ -31,6 +31,8 @@ class HierarchicalEncoder(nn.Module):
 
         if self._config.model.encoderblock == "AtlasReg":
             return EncoderBlockPBH3Dv3Reg(self._config)
+        elif self._config.model.encoderblock == "AtlasNew":
+            return EncoderBlockATLASNew(self._config)
         elif self._config.model.encoderblock == "CaloChallenge2":
             return EncoderBlockPBH3Dv3(self._config)
 
@@ -84,6 +86,27 @@ class HierarchicalEncoder(nn.Module):
                        self.binary((x.sqrt() * torch.sqrt(torch.tensor(10))).int(),sqrt_bits), 
                        self.binary((x.log() * torch.tensor(10).exp()).int(),log_bits)), 1)
         return torch.cat((x.repeat(1,reps), torch.zeros(x.shape[0],residual).to(x.device, x.dtype)), 1)
+    
+class HierarchicalEncoderHidden(HierarchicalEncoder):
+    def __init__(self, cfg):
+        super(HierarchicalEncoderHidden, self).__init__(cfg)
+        self.smoothing_dist_mod = GumbelMod()
+        self._config = cfg
+
+        # self.n_latent_hierarchy_lvls=self._config.rbm.partitions - self._config.model.hidden_layer
+        self.n_latent_hierarchy_lvls=self._config.rbm.partitions - self._config.rbm.hidden_layer
+
+        self.n_latent_nodes=self._config.rbm.latent_nodes_per_p
+
+        self._networks=nn.ModuleList([])
+        
+        for lvl in range(self.n_latent_hierarchy_lvls-1):
+            network=self._create_hierarchy_network(level=lvl)
+            self._networks.append(network)
+
+
+####################Encoder blocks
+##################################
     
 
 class EncoderBlockPBH3Dv3Reg(nn.Module):
@@ -220,3 +243,33 @@ class PeriodicConv3d(nn.Module):
         # Apply convolution
         x = self.conv(x)
         return x
+
+class EncoderBlockATLASNew(EncoderBlockPBH3Dv3Reg):
+    def __init__(self, cfg=None):
+        super(EncoderBlockATLASNew, self).__init__(cfg)
+        self._config = cfg
+        self.n_latent_nodes = self._config.rbm.latent_nodes_per_p
+        self.z = self._config.data.z #5
+        self.r = self._config.data.r #14
+        self.phi = self._config.data.phi #24
+        
+        self.seq1 = nn.Sequential(
+    
+                PeriodicConv3d(1, 32, (1,3,3), (1,1,2), 1),
+                nn.BatchNorm3d(32),
+                nn.PReLU(32, 0.02),
+    
+                PeriodicConv3d(32, 128, (2,2,3), (1,2,2), 1),
+                nn.BatchNorm3d(128),
+                nn.PReLU(128, 0.02),
+                )
+
+        self.seq2 = nn.Sequential(
+                        PeriodicConv3d(129, 256, (3,3,3), (1,2,1), 0),
+                        nn.BatchNorm3d(256),
+                        nn.PReLU(256, 0.02),
+
+                        PeriodicConv3d(256, self.n_latent_nodes, (2,3,3), (2,2,2), 0),
+                        nn.PReLU(self.n_latent_nodes, 1.0),
+                        nn.Flatten(),
+                        )
