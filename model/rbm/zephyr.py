@@ -115,24 +115,61 @@ class ZephyrRBM(nn.Module):
         """
         self.load_coordinates()
         
-        if self._config.rbm.optimize_partition:
-            # Partition ALL qubits first
-            full_partitions = {str(i): [] for i in range(self._n_partitions)}
-            qubit_to_partition_map = {}
-            for q_coord in self.coordinated_graph.nodes:
-                partition_id = str((2 * q_coord[0] + q_coord[1] + 2 * q_coord[4] + q_coord[3]) % 4)
-                qubit_idx = self.coordinates_to_idx(q_coord, self.m, self.t)
-                full_partitions[partition_id].append(qubit_idx)
-                qubit_to_partition_map[qubit_idx] = partition_id
-                
-            # Perform naive truncation
-            selected_qubits = {p_id: q_list[:self._nodes_per_partition] for p_id, q_list in full_partitions.items()}
-            discarded_qubits = {p_id: q_list[self._nodes_per_partition:] for p_id, q_list in full_partitions.items()}
+        # Partition ALL qubits first based on their coordinates.
+        # This is the common starting point for both the optimized and non-optimized cases.
+        full_partitions = {str(i): [] for i in range(self._n_partitions)}
+        for q_coord in self.coordinated_graph.nodes:
+            partition_id = str((2 * q_coord[0] + q_coord[1] + 2 * q_coord[4] + q_coord[3]) % 4)
+            qubit_idx = self.coordinates_to_idx(q_coord, self.m, self.t)
+            full_partitions[partition_id].append(qubit_idx)
+        
+        selected_qubits = {}
+        discarded_qubits = {}
+            
+        try:
+            # Build a graph of the active hardware to get 2D positions
+            node_list = getattr(self._qpu_sampler, 'nodelist', self.nodelist)
+            edge_list = getattr(self._qpu_sampler, 'edgelist', self.edgelist)
+            G_all = dnx.zephyr_graph(self.m, self.t, node_list=node_list, edge_list=edge_list)
+            pos = dnx.zephyr_layout(G_all)
 
+            # Chip center (use bbox midpoint to be robust to holes)
+            xs, ys = zip(*[pos[n] for n in G_all.nodes])
+            cx = 0.5 * (min(xs) + max(xs))
+            cy = 0.5 * (min(ys) + max(ys))
+
+            def dist2(n):
+                x, y = pos[n]
+                return (x - cx) ** 2 + (y - cy) ** 2
+
+            # For each partition, pick the qubits closest to the chip's center
+            for p_id, q_list in full_partitions.items():
+                if len(q_list) <= self._nodes_per_partition:
+                    selected_qubits[p_id] = list(q_list)
+                    discarded_qubits[p_id] = []
+                else:
+                    centered = sorted(q_list, key=dist2)  # uses layout-based distance
+                    selected_qubits[p_id] = centered[:self._nodes_per_partition]
+                    discarded_qubits[p_id] = centered[self._nodes_per_partition:]
+
+        except Exception as _e:
+            # Fallback: pure "middle slice" by index in each partition's list
+            logger.warn(f"Could not use chip layout for qubit selection. Falling back to index-based selection. Error: {_e}")
+            for p_id, q_list in full_partitions.items():
+                k = min(self._nodes_per_partition, len(q_list))
+                start = max(0, (len(q_list) - k) // 2)
+                end = start + k
+                selected_qubits[p_id] = q_list[start:end]
+                discarded_qubits[p_id] = q_list[:start] + q_list[end:]
+        
+        # --- Conditional Optimization ---
+        # If optimization is enabled, perform the iterative refinement to maximize connectivity.
+        # Otherwise, we just use the centrally-located qubits selected above.
+        if self._config.rbm.optimize_partition:
             # For faster lookups, create a single set of all selected qubits
             selected_set = set(q for q_list in selected_qubits.values() for q in q_list)
 
-            logger.info("Starting iterative refinement...")
+            logger.info("Starting iterative refinement to maximize connectivity...")
             for i in range(max_iterations):
                 # Calculate realized connectivity for all selected nodes
                 realized_connectivity = {}
@@ -142,26 +179,18 @@ class ZephyrRBM(nn.Module):
                     realized_connectivity[qubit] = neighbors_in_set
                     current_total_edges += neighbors_in_set
                 
-                # Divide by 2 as each edge is counted twice
-                current_total_edges /= 2
+                current_total_edges /= 2 # Divide by 2 as each edge is counted twice
                 logger.info(f"Iteration {i+1}/{max_iterations} | Current Edges: {current_total_edges:.0f}")
 
                 best_swap = {'gain': 0, 'out_qubit': None, 'in_qubit': None, 'partition': None}
 
                 # Find the best possible swap
                 for p_id in selected_qubits.keys():
-                    # Find the weakest links in the current partition
                     for out_qubit in selected_qubits[p_id]:
-                        # Find the best replacement from the discarded pool of the same partition
                         for in_qubit in discarded_qubits[p_id]:
-                            
-                            # Calculate connectivity loss from removing `out_qubit`
+                            # Calculate connectivity loss and gain
                             loss = realized_connectivity[out_qubit]
-                            
-                            # Calculate connectivity gain from adding `in_qubit`
-                            # This is how many neighbors `in_qubit` has in the *current* set
                             gain = sum(1 for neighbor in self._qpu_sampler.adjacency[in_qubit] if neighbor in selected_set)
-                            
                             net_gain = gain - loss
                             
                             if net_gain > best_swap['gain']:
@@ -172,40 +201,25 @@ class ZephyrRBM(nn.Module):
                                     'partition': p_id
                                 })
                 
-                #  Perform the swap if beneficial
-                if best_swap['gain'] > 2:
-                    p_id = best_swap['partition']
-                    out_q = best_swap['out_qubit']
-                    in_q = best_swap['in_qubit']
+                # Perform the swap if it's beneficial
+                if best_swap['gain'] > 2: # Using a threshold to ensure meaningful improvement
+                    p_id, out_q, in_q = best_swap['partition'], best_swap['out_qubit'], best_swap['in_qubit']
                     
-                    # Perform the swap in all our tracking variables
+                    # Update tracking variables
                     selected_qubits[p_id].remove(out_q)
                     selected_qubits[p_id].append(in_q)
-                    
                     discarded_qubits[p_id].remove(in_q)
                     discarded_qubits[p_id].append(out_q)
-                    
                     selected_set.remove(out_q)
                     selected_set.add(in_q)
                     
                     logger.info(f"  > Swapped {out_q} for {in_q} in partition {p_id} for a net gain of {best_swap['gain']} edges.")
                 else:
-                    logger.info("No further improvement found. Stopping.")
+                    logger.info("No further improvement found. Stopping optimization.")
                     break
-            self.idx_dict = {p_id: sorted(q_list) for p_id, q_list in selected_qubits.items()}
-        else:
-            idx_dict = {}
-            for partition in range(self._n_partitions):
-                idx_dict[str(partition)] = []
-
-            for q in self.coordinated_graph.nodes:
-                _idx = (2*q[0]+q[1] + 2*q[4]+q[3])%4
-                idx_dict[str(_idx)].append(self.coordinates_to_idx(q, self.m,self.t))
-
-            for partition, idxs in idx_dict.items():
-                idx_dict[partition] = idx_dict[partition][:self._nodes_per_partition]
-
-            self.idx_dict = idx_dict
+        
+        # Final assignment of the selected qubit indices.
+        self.idx_dict = {p_id: sorted(q_list) for p_id, q_list in selected_qubits.items()}
 
     def gen_weight_mask_dict(self):
         """Generate the weight mask for each partition-pair
