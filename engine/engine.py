@@ -540,6 +540,73 @@ class EngineHidden(Engine):
             
             # Log average loss after loop
             return self.aggr_loss(data_loader, epoch)
+        
+    def evaluate_ae(self, data_loader, epoch):
+            log_batch_idx = max(len(data_loader) // self._config.engine.n_batches_log_val, 1)
+            self.model.eval()
+            self.total_loss_dict = {}
+            with torch.no_grad():
+                bs = [batch[0].shape[0] for batch in data_loader]
+                ar_size = np.sum(bs)
+                ar_input_size = self._config.data.z * self._config.data.r * self._config.data.phi
+                ar_latent_size = self._config.rbm.latent_nodes_per_p
+
+                # Initialize tensors for storing evaluation data
+                self.incident_energy = torch.zeros((ar_size, 1), dtype=torch.float32)
+                self.showers = torch.zeros((ar_size, ar_input_size), dtype=torch.float32)
+                self.showers_reduce = torch.zeros((ar_size, ar_input_size), dtype=torch.float32)
+                self.showers_recon = torch.zeros((ar_size, ar_input_size), dtype=torch.float32)
+                self.showers_reduce_recon = torch.zeros((ar_size, ar_input_size), dtype=torch.float32)
+                
+                # **Difference**: Initialize tensors to match the 3-component latent output of EngineHidden's model
+                self.post_samples = torch.zeros((ar_size, ar_latent_size * 3), dtype=torch.float32)
+                self.post_logits = torch.zeros((ar_size, ar_latent_size * 2), dtype=torch.float32)
+
+                # Initialize tensors for "prior" plots (using reconstructions in AE mode)
+                self.showers_prior = torch.zeros((ar_size, ar_input_size), dtype=torch.float32)
+                self.showers_reduce_prior = torch.zeros((ar_size, ar_input_size), dtype=torch.float32)
+                # **Difference**: Match the dimensions of post_samples
+                self.prior_samples = torch.zeros((ar_size, ar_latent_size * 3), dtype=torch.float32)
+                
+                # RBM energy tensors are not needed for AE evaluation
+
+                for i, (x, x0) in enumerate(data_loader):
+                    x = x.to(self.device)
+                    x0 = x0.to(self.device)
+                    x_reduce = self._reduce(x, x0)
+                    
+                    # Forward pass
+                    output = self.model((x_reduce, x0))
+                    
+                    # Compute and format loss
+                    loss_dict = self.model.loss(x_reduce, output)
+                    loss_dict["loss"] = torch.stack([loss_dict[key] * self._config.model.loss_coeff[key] for key in loss_dict.keys() if "loss" != key]).sum()
+                    for key in list(loss_dict.keys()):
+                        loss_dict['val_' + key] = loss_dict[key]
+                        loss_dict.pop(key)
+                    
+                    # Aggregate loss
+                    self.aggr_loss(data_loader, epoch, loss_dict)
+
+                    # Store results
+                    idx1, idx2 = int(np.sum(bs[:i])), int(np.sum(bs[:i + 1]))
+                    self.incident_energy[idx1:idx2, :] = x0.cpu()
+                    self.showers[idx1:idx2, :] = x.cpu()
+                    self.showers_reduce[idx1:idx2, :] = x_reduce.cpu()
+                    self.showers_recon[idx1:idx2, :] = self._reduceinv(output[3], x0).cpu()
+                    self.showers_reduce_recon[idx1:idx2, :] = output[3].cpu()
+                    
+                    # **Difference**: Concatenate the 3 latent sample tensors from output[2]
+                    self.post_samples[idx1:idx2, :] = torch.cat(output[2], dim=1).cpu()
+                    self.post_logits[idx1:idx2, :] = torch.cat(output[1], dim=1).cpu()
+
+                    # Use reconstruction as "prior" for plotting purposes
+                    self.prior_samples[idx1:idx2, :] = torch.cat(output[2], dim=1).cpu()
+                    self.showers_prior[idx1:idx2, :] = self._reduceinv(output[3], x0).cpu()
+                    self.showers_reduce_prior[idx1:idx2, :] = output[3].cpu()
+
+                # Log average loss after iterating through all batches
+                return self.aggr_loss(data_loader, epoch)        
 
     def generate_plots(self, epoch, key):
         if self._config.wandb.mode != "disabled": # Only log if wandb is enabled

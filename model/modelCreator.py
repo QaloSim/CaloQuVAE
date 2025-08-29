@@ -21,13 +21,14 @@ import torch.nn as nn
 #import defined models
 from model.dummymodel import MLP
 from model.autoencoder.autoencoderbase import AutoEncoderBase, AutoEncoderHidden
-from model.autoencoder.ae_separate import AutoEncoderSeparate
+from model.autoencoder.ae_separate import AutoEncoderSeparate, AutoEncoderSeparateHidden
 
 _MODEL_DICT={
     "mlp": MLP,
     "autoencoderbase": AutoEncoderBase,
     "autoencoderhidden": AutoEncoderHidden,
-    "ae_separate": AutoEncoderSeparate
+    "ae_separate": AutoEncoderSeparate,
+    "ae_hidden": AutoEncoderSeparateHidden
 }
 
 class ModelCreator():

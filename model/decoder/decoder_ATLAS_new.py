@@ -113,7 +113,7 @@ class DecoderFullGeoATLASNew(DecoderFullGeo):
         self.skip_connections = nn.ModuleList()
         for i in range(self.n_latent_hierarchy_lvls-1):
             skip_connection = nn.Sequential(
-                nn.ConvTranspose3d(self._config.rbm.latent_nodes_per_p * (2+i), 64, (3, 5, 7), (1, 1, 1), padding=0),
+                nn.ConvTranspose3d(self.p_size * (2+i), 64, (3, 5, 7), (1, 1, 1), padding=0),
                 nn.BatchNorm3d(64),
                 nn.PReLU(64, 0.02),
                 # upscales to (64, 3, 5, 7)
@@ -131,7 +131,6 @@ class DecoderFullGeoATLASNew(DecoderFullGeo):
 class FirstSubDecoderATLASNew(FirstSubDecoder):
     def __init__(self, cfg):
         super(FirstSubDecoderATLASNew, self).__init__(cfg)
-        self.n_latent_nodes = self._config.rbm.latent_nodes_per_p * self._config.rbm.partitions
         self.shower_size = (self._config.data.z, self._config.data.phi, self._config.data.r)
 
         self._layers1 = nn.Sequential(
@@ -150,29 +149,34 @@ class FirstSubDecoderATLASNew(FirstSubDecoder):
         )
         self._layers2 = nn.Sequential(
             # layer for activations
-            nn.ConvTranspose3d(129, 64, (3, 3, 5), stride=(1, 2, 3), padding=(1, 0, 0)),
+            nn.ConvTranspose3d(129, 64, (3, 5, 5), stride=(1, 1, 2), padding=(1, 0, 0)),
             nn.GroupNorm(1, 64),
             nn.SiLU(),
             LinearAttention(64, cylindrical=False),
-            # upscales to  (64, 5, 15, 23)
-            nn.ConvTranspose3d(64, 32, (3, 2, 2), stride=(1, 1, 1), padding=(1, 0, 0)),
+            # upscales to  (64, 5, 11, 17)
+            nn.ConvTranspose3d(64, 64, (3, 3, 5), stride=(1, 1, 1), padding=(1, 0, 0)),
+            nn.GroupNorm(1, 64),
+            nn.SiLU(),
+            LinearAttention(64, cylindrical=False),
+            # upscales to (64, 5, 13, 21)
+
+            nn.ConvTranspose3d(64, 32, (3, 2, 4), stride=(1, 1, 1), padding=(1, 0, 0)),
             nn.GroupNorm(1, 32),
             nn.SiLU(),
             LinearAttention(32, cylindrical=False),
-            # upscales to (32, 5, 16, 24)
-            CropLayer(),
         )
         self._layers2_hits = nn.Sequential(
             # layer for hits
-            nn.ConvTranspose3d(129, 64, (3, 3, 5), stride=(1, 2, 3), padding=(1, 0, 0)),
+            nn.ConvTranspose3d(129, 64, (3, 5, 5), stride=(1, 1, 2), padding=(1, 0, 0)),
             nn.BatchNorm3d(64),
             nn.PReLU(64, 0.02),
             # upscales to  (64, 5, 15, 23)
-            nn.ConvTranspose3d(64, 32, (3, 2, 2), stride=(1, 1, 1), padding=(1, 0, 0)),
+            nn.ConvTranspose3d(64, 64, (3, 3, 5), stride=(1, 1, 1), padding=(1, 0, 0)),
+            nn.BatchNorm3d(64),
+            nn.PReLU(64, 0.02),
+            # upscales to (64, 5, 11, 17)
+            nn.ConvTranspose3d(64, 32, (3, 2, 4), stride=(1, 1, 1), padding=(1, 0, 0)),
             nn.BatchNorm3d(32),
-            nn.PReLU(32, 0.02),
-            # upscales to (32, 5, 16, 24)
-            nn.PReLU(1, 1.0),
-            CropLayer(),
+            nn.PReLU(32, 1.0),
         )
 

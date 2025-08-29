@@ -17,9 +17,15 @@ class DecoderFullGeo(nn.Module):
         """
         super(DecoderFullGeo, self).__init__()
         self._config = cfg
+        if hasattr(self._config.model, 'hidden_layer') and self._config.model.hidden_layer:
+            print("Using hidden layer in decoder")
+            self.n_latent_nodes = self._config.rbm.latent_nodes_per_p * (self._config.rbm.partitions - 1)
+            self.p_size = int(self._config.rbm.latent_nodes_per_p * 3/4)
+        else:
+            self.n_latent_nodes = self._config.rbm.latent_nodes_per_p * self._config.rbm.partitions
+            self.p_size = self._config.rbm.latent_nodes_per_p
 
         self.n_latent_hierarchy_lvls = self._config.rbm.partitions
-        self.n_latent_nodes = self._config.rbm.latent_nodes_per_p * self._config.rbm.partitions
 
         self.z = self._config.data.z
         self.r = self._config.data.r
@@ -32,8 +38,11 @@ class DecoderFullGeo(nn.Module):
             (self.z, self.phi, self.r),
         ]
         
+
         self._create_hierarchy_networks()
         self._create_skip_connections()
+
+
 
 
     def _create_hierarchy_networks(self):
@@ -52,7 +61,7 @@ class DecoderFullGeo(nn.Module):
         self.skip_connections = nn.ModuleList()
         for i in range(self.n_latent_hierarchy_lvls-1):
             skip_connection = nn.Sequential(
-                nn.ConvTranspose3d(self._config.rbm.latent_nodes_per_p * (2+i), 64, (3, 5, 7), (1, 1, 1), padding=0),
+                nn.ConvTranspose3d(self.p_size * (2+i), 64, (3, 5, 7), (1, 1, 1), padding=0),
                 nn.BatchNorm3d(64),
                 nn.PReLU(64, 0.02),
                 # upscales to (64, 3, 5, 7)
@@ -72,8 +81,8 @@ class DecoderFullGeo(nn.Module):
         x0_reshaped = x0.view(x0.shape[0], 1, 1, 1, 1)
         x = x.view(x.shape[0], self.n_latent_nodes, 1, 1, 1)  # Reshape x to match the input shape of the first subdecoder
         prev_output = None
-        partition_idx_start = (self.n_latent_hierarchy_lvls-1) * self._config.rbm.latent_nodes_per_p  # start index for the z3 RBM partition
-        partition_idx_end = partition_idx_start + self._config.rbm.latent_nodes_per_p  # end index for the z3 RBM partition
+        partition_idx_start = (self.n_latent_hierarchy_lvls-1) * self.p_size  # start index for the z3 RBM partition
+        partition_idx_end = partition_idx_start + self.p_size # end index for the z3 RBM partition
 
 
         for lvl in range(self.n_latent_hierarchy_lvls):
@@ -88,11 +97,11 @@ class DecoderFullGeo(nn.Module):
                 if prev_output is not None:
                     output += prev_output  # add/refine the previous subdecoder output
                 prev_output = output
-                enc_z = torch.cat((x_lat[:, 0:self._config.rbm.latent_nodes_per_p], x_lat[:, partition_idx_start:partition_idx_end]), dim=1)  # concatenate the incident energy and the latent nodes of the current RBM partition
-                enc_z = torch.unflatten(enc_z, 1, (self._config.rbm.latent_nodes_per_p*(2+lvl), 1, 1, 1))
+                enc_z = torch.cat((x_lat[:, 0:self.p_size], x_lat[:, partition_idx_start:partition_idx_end]), dim=1)  # concatenate the incident energy and the latent nodes of the current RBM partition
+                enc_z = torch.unflatten(enc_z, 1, (self.p_size*(2+lvl), 1, 1, 1))
                 # Apply skip connection
                 enc_z = self.skip_connections[lvl](enc_z)
-                partition_idx_start -= self._config.rbm.latent_nodes_per_p  # start index for the current RBM partition, moves one partition back every level
+                partition_idx_start -= self.p_size  # start index for the current RBM partition, moves one partition back every level
                 # print(output.shape, enc_z.shape)
                 x = torch.cat((output, enc_z), dim=1)  # concatenate the output of the current subdecoder and the skip connection output
 
@@ -109,7 +118,11 @@ class FirstSubDecoder(nn.Module):
     def __init__(self, cfg):
         super(FirstSubDecoder, self).__init__()
         self._config = cfg
-        self.n_latent_nodes = self._config.rbm.latent_nodes_per_p * self._config.rbm.partitions
+        if hasattr(self._config.model, 'hidden_layer') and self._config.model.hidden_layer:
+            self.n_latent_nodes = self._config.rbm.latent_nodes_per_p * (self._config.rbm.partitions - 1)
+        else:
+            self.n_latent_nodes = self._config.rbm.latent_nodes_per_p * self._config.rbm.partitions
+        print(self.n_latent_nodes, "first subdecoder")
         self.shower_size = (self._config.data.z, self._config.data.phi, self._config.data.r)
 
         self._layers1 = nn.Sequential(

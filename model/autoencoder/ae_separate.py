@@ -19,7 +19,7 @@ from torch.distributions import Bernoulli
 from CaloQuVAE import logging
 logger = logging.getLogger(__name__)
 
-from model.autoencoder.autoencoderbase import AutoEncoderBase
+from model.autoencoder.autoencoderbase import AutoEncoderBase, AutoEncoderHidden
 
 
 class AutoEncoderSeparate(AutoEncoderBase):
@@ -90,3 +90,16 @@ class AutoEncoderSeparate(AutoEncoderBase):
             "pos_energy": pos_energy,
         }
 
+
+class AutoEncoderSeparateHidden(AutoEncoderSeparate):
+    def __init__(self, cfg):
+        super(AutoEncoderSeparateHidden, self).__init__(cfg)
+
+    def pos_energy(self, post_samples):
+        """
+        Compute positive phase (energy expval under posterior variables)
+        """
+        p3 = self.prior.sigmoid_C_k(self.prior.weight_dict['03'],   self.prior.weight_dict['13'],   self.prior.weight_dict['23'], 
+                              post_samples[0],post_samples[1],post_samples[2], self.prior.bias_dict['3'])
+        pos_energy = self.prior.energy_exp_cond(post_samples[0],post_samples[1],post_samples[2], p3).mean()
+        return pos_energy

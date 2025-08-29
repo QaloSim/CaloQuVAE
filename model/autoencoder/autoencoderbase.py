@@ -49,6 +49,8 @@ class AutoEncoderBase(nn.Module):
         logger.debug("::_create_encoder")
         if self._config.model.encoder == "hierachicalencoder":
             return HierarchicalEncoder(self._config)
+        elif self._config.model.encoder == "hierarchicalencoderhidden":
+            return HierarchicalEncoderHidden(self._config)
 
     def _create_decoder(self):
         logger.debug("::_create_decoder")
@@ -90,8 +92,8 @@ class AutoEncoderBase(nn.Module):
     def create_networks(self):
         logger.debug("Creating Network Structures")
         self.encoder=self._create_encoder()
-        self.decoder=self._create_decoder()
         self.prior=self._create_prior()
+        self.decoder=self._create_decoder()
         # self.stater = self._create_stat()
         
         # self._qpu_sampler = self.prior._qpu_sampler
@@ -204,12 +206,16 @@ class AutoEncoderHidden(AutoEncoderBase):
         
     def _create_prior(self):
         logger.debug("::_create_prior")
-        return RBM_Hidden(self._config)
+        return RBMtorch(self._config)
     
     def _create_decoder(self):
         logger.debug("::_create_decoder")
         if self._config.model.decoder == "decoderhierachy0hidden":
             return DecoderHierarchy0Hidden(self._config)
+        elif self._config.model.decoder == "decoderfullgeoatlasnew":
+            return DecoderFullGeoATLASNew(self._config)
+
+        
         
     def kl_divergence(self, post_logits, post_samples, is_training=True):
         """Overrides kl_divergence in GumBolt.py
