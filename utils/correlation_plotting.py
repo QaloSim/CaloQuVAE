@@ -626,8 +626,12 @@ def correlation_plots(cfg, incident_energy, showers, showers_prior, epoch, post_
     
     # Latent plots
     latent_results = {}
+    if "hidden_layer" in cfg.rbm:
+        parts = cfg.rbm.partitions - cfg.rbm.hidden_layer
+    else:
+        parts = cfg.rbm.partitions
     # parts = cfg.rbm.partitions - cfg.rbm.hidden_layer
-    parts = cfg.rbm.partitions - cfg.model.hidden_layer
+    
     nodes_per_p = cfg.rbm.latent_nodes_per_p
     
     fig_lat_post, fig_lat_prior, fig_lat_groups, latent_results = latent_correlation_plots(

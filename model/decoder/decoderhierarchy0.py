@@ -112,8 +112,8 @@ class DecoderHierarchy0Hidden(DecoderHierarchy0):
         super(DecoderHierarchy0Hidden, self).__init__(cfg)
 
     def _create_hierarchy_network(self):
-        # self.latent_nodes = self._config.rbm.latent_nodes_per_p * (self._config.rbm.partitions - self._config.model.hidden_layer)
-        self.latent_nodes = self._config.rbm.latent_nodes_per_p * (self._config.rbm.partitions - self._config.rbm.hidden_layer)
+        self.latent_nodes = self._config.rbm.latent_nodes_per_p * (self._config.rbm.partitions - self._config.model.hidden_layer)
+        # self.latent_nodes = self._config.rbm.latent_nodes_per_p * (self._config.rbm.partitions - self._config.rbm.hidden_layer)
         self.hierarchical_lvls = self._config.rbm.partitions
 
         inp_layers = self._config.model.decoder_input

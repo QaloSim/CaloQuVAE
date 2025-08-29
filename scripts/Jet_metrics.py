@@ -102,7 +102,7 @@ def save_plot(HEPMetric_output, run_path):
     # Plot kpd_recon and kpd_sample on ax2
     ax2.errorbar(en_list, kpd_recon, yerr=kpd_recon_err, color='blue', label='KPD Recon')
     ax2.errorbar(en_list, kpd_sample, yerr=kpd_sample_err, color='green', label='KPD Sample')
-    ax2.axhline(0.2, color='red', linestyle=':', linewidth=2, label='y=0.2')
+    # ax2.axhline(0.2, color='red', linestyle=':', linewidth=2, label='y=0.2')
     ax2.set_xlabel('Epoch Number')
     ax2.set_ylabel('KPD Values')
     ax2.set_title('KPD Recon vs KPD Sample')
