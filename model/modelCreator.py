@@ -79,7 +79,7 @@ class ModelCreator():
 
         if vae_opt is not None:
             torch.save(vae_opt.state_dict(), os.path.join(save_dir, f"{cfg_string}_opt_model.pth"))
-        if rbm_opt is not None:
+        if rbm_opt is not None and hasattr(rbm_opt, "state_dict"):
             torch.save(rbm_opt.state_dict(), os.path.join(save_dir, f"{cfg_string}_opt_rbm.pth"))
 
 

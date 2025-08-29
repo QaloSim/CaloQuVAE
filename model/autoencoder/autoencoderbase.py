@@ -204,8 +204,8 @@ class AutoEncoderHidden(AutoEncoderBase):
         
     def _create_prior(self):
         logger.debug("::_create_prior")
-        # return RBM_Hidden(self._config)
-        return RBM_Hiddentorch(self._config)
+        return RBM_Hidden(self._config)
+        # return RBM_Hiddentorch(self._config)
     
     def _create_decoder(self):
         logger.debug("::_create_decoder")

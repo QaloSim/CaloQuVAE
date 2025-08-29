@@ -124,7 +124,7 @@ class Engine():
             output = self.model((x, x0), self.beta, self.slope)
             # Compute loss
             loss_dict = self.model.loss(x, output)
-            loss_dict["loss"] = torch.stack([loss_dict[key] * self._config.model.loss_coeff[key]  for key in loss_dict.keys() if "loss" != key]).sum()
+            loss_dict["loss"] = torch.stack([loss_dict[key] * self._config.model.loss_coeff[key]  for key in self._config.model.loss_coeff.keys() if "loss" != key]).sum()
             self.model.prior.gradient_rbm_centered(output[2])
             # self.model.prior.gradient_rbm_stan(output[2])
             self.model.prior.update_params()
@@ -154,7 +154,7 @@ class Engine():
             output = self.model((x, x0), self.beta, self.slope)
             # Compute loss
             loss_dict = self.model.loss(x, output)
-            loss_dict["loss"] = torch.stack([loss_dict[key] * self._config.model.loss_coeff[key]  for key in loss_dict.keys() if "loss" != key]).sum()
+            loss_dict["loss"] = torch.stack([loss_dict[key] * self._config.model.loss_coeff[key]  for key in self._config.model.loss_coeff.keys() if "loss" != key]).sum()
             
             # Backward pass and optimization
             self.optimiser.zero_grad()
@@ -180,7 +180,7 @@ class Engine():
             output = self.model((x, x0), self.beta, self.slope)
             # Compute loss
             loss_dict = self.model.loss(x, output)
-            loss_dict["loss"] = torch.stack([loss_dict[key] * self._config.model.loss_coeff[key]  for key in loss_dict.keys() if "loss" != key]).sum()
+            loss_dict["loss"] = torch.stack([loss_dict[key] * self._config.model.loss_coeff[key]  for key in self._config.model.loss_coeff.keys() if "loss" != key]).sum()
             self.model.prior.gradient_rbm_centered(output[2])
             # self.model.prior.update_params()
             self.model.prior.update_params()
@@ -304,7 +304,7 @@ class Engine():
                 output = self.model((x_reduce, x0))
                 # Compute loss
                 loss_dict = self.model.loss(x_reduce, output)
-                loss_dict["loss"] = torch.stack([loss_dict[key] * self._config.model.loss_coeff[key]  for key in loss_dict.keys() if "loss" != key]).sum()
+                loss_dict["loss"] = torch.stack([loss_dict[key] * self._config.model.loss_coeff[key]  for key in self._config.model.loss_coeff.keys() if "loss" != key]).sum()
                 for key in list(loss_dict.keys()):
                     loss_dict['val_'+key] = loss_dict[key]
                     loss_dict.pop(key)
