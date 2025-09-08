@@ -5,7 +5,7 @@ save_partition: 1
 freeze_vae: 1
 
 run_path: ""
-config_path: /raid/javier/Projects/CaloQuVAE/wandb/run-20250812_134040-5u25xxd7/files/autoencoderbase_249_config.yaml
+config_path: /raid/javier/Projects/CaloQuVAE/wandb/run-20250826_172842-6pi2z606/files/autoencoderhidden_209_config.yaml
 
 device: gpu
 gpu_list:
