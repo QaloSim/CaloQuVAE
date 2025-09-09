@@ -128,6 +128,7 @@ class Engine():
             self.model.prior.gradient_rbm_centered(output[2])
             # self.model.prior.gradient_rbm_stan(output[2])
             self.model.prior.update_params()
+            # self.model.prior.update_params_SGD()
             
             # Backward pass and optimization
             self.optimiser.zero_grad()
@@ -182,8 +183,8 @@ class Engine():
             loss_dict = self.model.loss(x, output)
             loss_dict["loss"] = torch.stack([loss_dict[key] * self._config.model.loss_coeff[key]  for key in self._config.model.loss_coeff.keys() if "loss" != key]).sum()
             self.model.prior.gradient_rbm_centered(output[2])
-            # self.model.prior.update_params()
             self.model.prior.update_params()
+            # self.model.prior.update_params_SGD()
 
             if (i % log_batch_idx) == 0:
                     logger.info('Epoch: {} [{}/{} ({:.0f}%)]\t beta: {:.3f}, slope: {:.3f} \t Batch Loss: {:.4f}'.format(epoch,
