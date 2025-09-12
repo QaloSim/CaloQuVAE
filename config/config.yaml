@@ -12,12 +12,12 @@ config_path: /fast_scratch_1/caloqvae/jtoledo/wandb/run-20250825_231749-qtzezvdq
 
 device: gpu
 gpu_list:
-  - 1
+  - 4
 
 defaults:
-  - data: CaloChallenge2
+  - data: AtlasReg000New
   - wandb: ML2
-  - model: model3_calochallenge
+  - model: model_ATLASNew_fullgeo
   - engine: engine1
   - rbm: zephyr
   - _self_

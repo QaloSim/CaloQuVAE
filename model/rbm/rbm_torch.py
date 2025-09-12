@@ -2,10 +2,13 @@ import torch
 from model.rbm.rbm import RBM, RBM_Hidden
 from torch.optim import Adam
 
+from CaloQuVAE import logging
+logger = logging.getLogger(__name__)
+
 class RBMtorch(RBM):
     def __init__(self, cfg=None):
         super(RBMtorch, self).__init__(cfg)
-        print("RBMtorch initialized")
+        logger.info("RBMtorch initialized")
         # self.initOpt()
 
     @property

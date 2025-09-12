@@ -232,7 +232,7 @@ class ZephyrRBM(nn.Module):
 
     def load_coordinates(self):
         try:
-            self._qpu_sampler = DWaveSampler(solver={'topology__type': 'zephyr', 'chip_id':'Advantage2_system1.5'})
+            self._qpu_sampler = DWaveSampler(solver={'topology__type': 'zephyr', 'chip_id':'Advantage2_system1.6'})
             self.m, self.t = self._qpu_sampler.properties['topology']['shape']
             graph = dnx.zephyr_graph(m=self.m, t=self.t,
                                 node_list=self._qpu_sampler.nodelist, edge_list=self._qpu_sampler.edgelist)
