@@ -63,6 +63,11 @@ class ZephyrRBM(nn.Module):
             for key in itertools.combinations(range(self._n_partitions), 2):
                 str_key = ''.join([str(key[i]) for i in range(len(key))])
                 self._weight_mask_dict[str_key] = nn.Parameter(torch.ones(self._nodes_per_partition, self._nodes_per_partition), requires_grad=False)
+        if hasattr(self._config.rbm, 'no_weights') and self._config.rbm.no_weights:
+            for key in itertools.combinations(range(self._n_partitions), 2):
+                str_key = ''.join([str(key[i]) for i in range(len(key))])
+                self._weight_mask_dict[str_key] = nn.Parameter(torch.zeros(self._nodes_per_partition, self._nodes_per_partition), requires_grad=False)
+            logger.info("RBM is configured to have no weights.")
         else:
             for key in itertools.combinations(range(self._n_partitions), 2):
                 str_key = ''.join([str(key[i]) for i in range(len(key))])

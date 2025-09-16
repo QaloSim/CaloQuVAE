@@ -16,7 +16,7 @@ np.random.seed(32)
 import hydra
 from hydra.utils import instantiate
 
-from omegaconf import OmegaConf
+from omegaconf import OmegaConf, open_dict
 
 # PyTorch imports
 from torch import device
@@ -209,7 +209,8 @@ def callback(engine, epoch):
     """
     logger.info(f"Callback function executed at epoch {epoch}.")
     if engine._config.freeze_vae and epoch + 1 >= engine._config.epoch_freeze:
-        # engine.load_best_model(epoch)
+        if engine._config.engine.training_mode=="ae":
+            engine.load_best_model(epoch)
         engine._config.engine.training_mode = "rbm"
         engine._config.epoch_start = epoch + 1
         return True
@@ -234,6 +235,9 @@ def load_model_instance(cfg, adjust_epoch_start=True):
             config.epoch_start = cfg.epoch_start
     config.gpu_list = cfg.gpu_list
     config.load_state = cfg.load_state
+    if hasattr(cfg.rbm, "no_weights"):
+        with open_dict(config):
+            config.rbm.no_weights = cfg.rbm.no_weights
     self = setup_model(config)
     self._model_creator.load_state(config.run_path, self.device, vae_opt=self.optimiser, rbm_opt=self.model.prior.opt)
     return self

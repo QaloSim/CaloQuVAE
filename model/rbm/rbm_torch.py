@@ -1,5 +1,5 @@
 import torch
-from model.rbm.rbm import RBM
+from model.rbm.rbm import RBM, RBM_Hidden
 from torch.optim import Adam
 
 class RBMtorch(RBM):
