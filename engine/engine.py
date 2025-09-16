@@ -334,6 +334,39 @@ class Engine():
             
             # Log average loss after loop
             return self.aggr_loss(data_loader, epoch)
+
+
+    def evaluate_trivial(self):
+        self.evaluate_vae(self.data_mgr.val_loader, 0)
+        # create naive samples
+        p_size = self._config.rbm.latent_nodes_per_p
+        probs = torch.sigmoid(self.post_logits).mean(dim=0).cpu()
+        num_samples = self.post_logits.shape[0]
+        expanded_probs = probs.expand(num_samples, -1)
+        naive_samples = torch.bernoulli(expanded_probs)
+        p0_slice = self.post_samples[:,:p_size]
+        naive_samples = torch.cat((p0_slice, naive_samples), dim=1)
+
+        # set up storage of naive showers
+        batch_size = self.data_mgr.val_loader.batch_size
+
+        bs = [batch[0].shape[0] for batch in self.data_mgr.val_loader]
+        ar_input_size = self._config.data.z * self._config.data.r * self._config.data.phi
+
+
+        # decode naive samples
+        self.model.eval()
+        for i, (x, x0) in enumerate(self.data_mgr.val_loader):
+            idx1, idx2 = int(np.sum(bs[:i])), int(np.sum(bs[:i+1]))
+            x_reduce = self._reduce(x, x0)
+            naive_sample = naive_samples[i*batch_size:(i+1)*batch_size,:]
+            split_samples = torch.split(naive_sample, p_size, dim=1)
+            self.model.to(torch.device("cpu"))
+
+            _, shower_naive = self.model.decode(split_samples, x_reduce, x0)
+            self.showers_prior[i*batch_size:(i+1)*batch_size,:] = self._reduceinv(shower_naive, x0).detach().cpu()
+            print(f"Processed batch {i+1}")
+
     
     def generate_plots(self, epoch, key):
         if self._config.wandb.mode != "disabled": # Only log if wandb is enabled
