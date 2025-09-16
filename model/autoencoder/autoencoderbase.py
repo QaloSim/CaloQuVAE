@@ -20,7 +20,7 @@ from model.decoder.decoderhierarchy0ca import DecoderHierarchy0CA
 from model.decoder.decoderhierarchytf import DecoderHierarchyTF, DecoderHierarchyTFv2
 from model.decoder.decoder_ATLAS_new import DecoderATLASNew, DecoderFullGeoATLASNew
 from model.rbm.rbm import RBM, RBM_Hidden
-from model.rbm.rbm_torch import RBMtorch
+from model.rbm.rbm_torch import RBMtorch, RBM_Hiddentorch
 
 #logging module with handmade settings.
 from CaloQuVAE import logging
@@ -152,9 +152,10 @@ class AutoEncoderBase(nn.Module):
                         reduction='none')
         # weight= (1+input_data).pow(self._config.model.bce_weights_power)
         hit_loss = torch.mean(torch.sum(hit_loss, dim=1), dim=0)
+        l_dist = torch.pow(torch.cat(post_logits,1) - torch.cat(self.logit_distance(post_samples, post_logits),1),2).mean()
 
         return {"ae_loss":ae_loss, "kl_loss":kl_loss, "hit_loss":hit_loss,
-                "entropy":entropy, "pos_energy":pos_energy, "neg_energy":neg_energy}
+                "entropy":entropy, "pos_energy":pos_energy, "neg_energy":neg_energy, "logit_distance":l_dist}
     
     def kl_divergence(self, post_logits, post_samples, is_training=True):
         """Overrides kl_divergence in GumBolt.py
@@ -187,6 +188,52 @@ class AutoEncoderBase(nn.Module):
         # Estimate of the kl-divergence
         kl_loss = entropy + pos_energy + neg_energy
         return kl_loss, entropy, pos_energy, neg_energy
+    
+    def logit_distance(self, post_samples, post_logits):
+        p0 = post_samples[0]
+        p1 = post_logits[0]
+        p2 = post_logits[1]
+        p3 = post_logits[2]
+
+        W01 = self.prior.weight_dict['01']
+        W02 = self.prior.weight_dict['02']
+        W03 = self.prior.weight_dict['03']
+
+        W12 = self.prior.weight_dict['12']
+        W13 = self.prior.weight_dict['13']
+        W23 = self.prior.weight_dict['23']
+        # precompute the needed transposes only once
+        W12_T = W12.T
+        W13_T = W13.T
+        W23_T = W23.T
+
+        b1 = self.prior.bias_dict['1']
+        b2 = self.prior.bias_dict['2']
+        b3 = self.prior.bias_dict['3']
+
+        p3_ans = self.logit_mcmc(W03,   W13,   W23,   p0, torch.sigmoid(p1), torch.sigmoid(p2), b3)
+        p2_ans = self.logit_mcmc(W02,   W12, W23_T,   p0, torch.sigmoid(p1), torch.sigmoid(p3), b2)
+        p1_ans = self.logit_mcmc(W01, W12_T, W13_T,   p0, torch.sigmoid(p2), torch.sigmoid(p3), b1)
+
+        return p1_ans, p2_ans, p3_ans
+        return torch.pow(torch.cat(post_logits,1) - torch.cat([p1_ans, p2_ans, p3_ans],1),2).mean()
+
+    def logit_mcmc(self, weights_ax, weights_bx, weights_cx,
+                 pa_state, pb_state, pc_state, bias_x) -> torch.Tensor:
+        """partition_state()
+
+        :param weights_a (torch.Tensor) : (n_nodes_a, n_nodes_x)
+        :param weights_b (torch.Tensor) : (n_nodes_b, n_nodes_x)
+        :param weights_c (torch.Tensor) : (n_nodes_c, n_nodes_x)
+        :param pa_state (torch.Tensor) : (batch_size, n_nodes_a)
+        :param pb_state (torch.Tensor) : (batch_size, n_nodes_b)
+        :param pc_state (torch.Tensor) : (batch_size, n_nodes_c)
+        :param bias_x (torch.Tensor) : (n_nodes_x)
+        """
+        p_activations = (torch.matmul(pa_state, weights_ax) +
+                            torch.matmul(pb_state, weights_bx) +
+                            torch.matmul(pc_state, weights_cx) + bias_x)
+        return p_activations.detach()
 
     def print_model_info(self):
         for key,par in self.__dict__.items():
@@ -206,7 +253,8 @@ class AutoEncoderHidden(AutoEncoderBase):
         
     def _create_prior(self):
         logger.debug("::_create_prior")
-        return RBMtorch(self._config)
+        # return RBM_Hidden(self._config)
+        return RBM_Hiddentorch(self._config)
     
     def _create_decoder(self):
         logger.debug("::_create_decoder")

@@ -113,6 +113,7 @@ class DecoderHierarchy0Hidden(DecoderHierarchy0):
 
     def _create_hierarchy_network(self):
         self.latent_nodes = self._config.rbm.latent_nodes_per_p * (self._config.rbm.partitions - self._config.model.hidden_layer)
+        # self.latent_nodes = self._config.rbm.latent_nodes_per_p * (self._config.rbm.partitions - self._config.rbm.hidden_layer)
         self.hierarchical_lvls = self._config.rbm.partitions
 
         inp_layers = self._config.model.decoder_input
@@ -122,6 +123,28 @@ class DecoderHierarchy0Hidden(DecoderHierarchy0):
         for i in range(len(inp_layers)):
             # self.moduleLayers.append(Decoder(self._config, inp_layers[i], out_layers[i]))   
             self.moduleLayers.append(DecoderLinAtt(self._config, inp_layers[i], out_layers[i]))   
+
+    def forward(self, x, x0):
+        x_lat = x
+        self.x1, self.x2 = torch.tensor([]).to(x.device), torch.tensor([]).to(x.device) # store hits and activation tensors
+        for lvl in range(len(self.moduleLayers)):
+            cur_net = self.moduleLayers[lvl]
+            output_hits, output_activations = cur_net(x, x0)
+            z = output_hits * output_activations
+            if lvl == len(self.moduleLayers) - 1:
+                self.x1 = output_hits
+                self.x2 = output_activations
+            else:
+                # partition_ind_start = (len(self.moduleLayers) - 1 - lvl) * self._config.rbm.latent_nodes_per_p
+                # partition_ind_end = (len(self.moduleLayers) - lvl) * self._config.rbm.latent_nodes_per_p
+                partition_ind_start = (lvl+1) * self._config.rbm.latent_nodes_per_p
+                partition_ind_end = (lvl+2) * self._config.rbm.latent_nodes_per_p
+                enc_z = torch.cat((x[:,0:self._config.rbm.latent_nodes_per_p], x[:,partition_ind_start:partition_ind_end]), dim=1)
+                enc_z = torch.unflatten(enc_z, 1, (2 * self._config.rbm.latent_nodes_per_p, 1, 1, 1))
+                enc_z = self.subdecs[lvl](enc_z).view(enc_z.size(0), -1)
+                xz = torch.cat((x_lat, z), dim=1)
+                x = enc_z + xz
+        return self.x1, self.x2
 
 ###############Decoder Class#######################
 ###################################################

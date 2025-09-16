@@ -94,6 +94,7 @@ class HierarchicalEncoderHidden(HierarchicalEncoder):
         self._config = cfg
 
         self.n_latent_hierarchy_lvls=self._config.rbm.partitions - self._config.model.hidden_layer
+        # self.n_latent_hierarchy_lvls=self._config.rbm.partitions - self._config.rbm.hidden_layer
 
         self.n_latent_nodes=self._config.rbm.latent_nodes_per_p
 

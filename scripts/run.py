@@ -113,21 +113,20 @@ def setup_model(config=None):
     #add device instance to engine namespace
     engine.device=dev    
     #instantiate and register optimisation algorithm
-    engine.optimiser = torch.optim.Adam(model.parameters(),
+    params = list(model.encoder.parameters()) + list(model.decoder.parameters())
+    params = [p for p in params if p.requires_grad]
+    engine.optimiser = torch.optim.Adam(params,
                                         lr=config.engine.learning_rate)
     model.prior.initOpt()
     #add the model instance to the engine namespace
     engine.model = model
     # add the modelCreator instance to engine namespace
     engine.model_creator = modelCreator
-    # if 'discriminator' in engine._config.engine.keys() and engine._config.engine.discriminator:
-    #     engine.critic.to(dev)
-    #     engine.critic_2.to(dev)
     
-    for name, param in engine.model.named_parameters():
-        if 'prior' in name:
-            param.requires_grad = False
-        print(name, param.requires_grad)
+    # for name, param in engine.model.named_parameters():
+    #     if 'prior' in name:
+    #         param.requires_grad = False
+    #     print(name, param.requires_grad)
     
     return engine
 
@@ -168,7 +167,7 @@ def run(engine, _callback=lambda _: False):
 
     if engine._config.engine.training_mode == "rbm":
         logger.info("Training RBM")
-        freeze_vae(engine)
+        # freeze_vae(engine)
         for epoch in range(engine._config.epoch_start, engine._config.n_epochs):
 
             engine.fit_rbm(epoch)
