@@ -183,29 +183,29 @@ def stack_or_object(vals):
     except Exception:
         return np.array(vals, dtype=object)
 
-# def create_filenames_dict(config):
-#     pattern = r'\d+.pth$'
-#     prefix = config.run_path.split('files')[0] + 'files/'
-#     _fn = list(np.sort(os.listdir(prefix)))
-#     modelnames = [prefix + word for word in _fn if re.search(pattern, word)]
-#     confignames = [re.sub(r'\.pth$', '_config.yaml', name) for name in modelnames]
+def create_filenames_dict(config):
+    pattern = r'\d+.pth$'
+    prefix = config.run_path.split('files')[0] + 'files/'
+    _fn = list(np.sort(os.listdir(prefix)))
+    modelnames = [prefix + word for word in _fn if re.search(pattern, word)]
+    confignames = [re.sub(r'\.pth$', '_config.yaml', name) for name in modelnames]
 
-#     idx = [int(name.split('_')[-1].split('.')[0]) for name in modelnames]
-#     filenames = {idx[i]: [modelnames[i], confignames[i]] for i in range(len(modelnames))}
-#     return filenames
+    idx = [int(name.split('_')[-1].split('.')[0]) for name in modelnames]
+    filenames = {idx[i]: [modelnames[i], confignames[i]] for i in range(len(modelnames))}
+    return filenames
 
-# def load_engine(filename, config1):
-#     """
-#     Load the engine instance from the config file
-#     """
-#     model_name, config_name = filename
-#     logger.info(f"Processing model: {model_name} \n config: {config_name}")
-#     config_loaded = OmegaConf.load(config_name)
-#     config_loaded.gpu_list = config1.gpu_list
-#     config_loaded.load_state = 1
-#     self = setup_model(config_loaded)
-#     self._model_creator.load_state(config_loaded.run_path, self.device)
-#     return self
+def load_engine(filename, config1):
+    """
+    Load the engine instance from the config file
+    """
+    model_name, config_name = filename
+    logger.info(f"Processing model: {model_name} \n config: {config_name}")
+    config_loaded = OmegaConf.load(config_name)
+    config_loaded.gpu_list = config1.gpu_list
+    config_loaded.load_state = 1
+    self = setup_model(config_loaded)
+    self._model_creator.load_state(config_loaded.run_path, self.device)
+    return self
 
 # if __name__ == "__main__":
 #     logger.info("Starting main executable.")

@@ -8,6 +8,9 @@ from scripts.run import get_project_id, setup_model
 from utils.HighLevelFeatures import HighLevelFeatures as HLF
 from utils.HighLevelFeatsAtlasReg import HighLevelFeatures_ATLAS_regular as HLF2
 import jetnet
+import hydra
+from hydra.utils import instantiate
+from hydra import initialize, compose
 
 from CaloQuVAE import logging
 logger = logging.getLogger(__name__)
@@ -22,8 +25,9 @@ class HepMetrics:
         self.if_Atlas = "Atlas" in dataset_name
         binning_path = engine._config.data.binning_path
         if self.if_Atlas:
-            self.hlf = HLF2('electron', filename=binning_path)
-            self.ref_hlf = HLF2('electron', filename=binning_path)
+            relevantLayers = engine._config.data.relevantLayers
+            self.hlf = HLF2('electron', filename=binning_path, relevantLayers=relevantLayers)
+            self.ref_hlf = HLF2('electron', filename=binning_path, relevantLayers=relevantLayers)
         else:
             self.hlf = HLF('electron', filename=binning_path)
             self.ref_hlf = HLF('electron', filename=binning_path)
@@ -204,18 +208,31 @@ def get_fpd_kpd_metrics(test_data, gen_data, syn_bool, hlf, ref_hlf, if_Atlas=Fa
 def get_reference_point():
     hydra.core.global_hydra.GlobalHydra.instance().clear()
     initialize(version_base=None, config_path="../config")
-    cfg1 = compose(config_name="config.yaml")
-    cfg2 = compose(config_name="test_config.yaml")
-    wandb.init(tags = [cfg1.data.dataset_name], project=cfg1.wandb.project, entity=cfg1.wandb.entity, config=OmegaConf.to_container(cfg1, resolve=True), mode='disabled')
-    wandb.init(tags = [cfg2.data.dataset_name], project=cfg2.wandb.project, entity=cfg2.wandb.entity, config=OmegaConf.to_container(cfg2, resolve=True), mode='disabled')
-    engine1 = setup_model(cfg1)
-    engine2 = setup_model(cfg2)
-    engine1.evaluate_vae(engine1.data_mgr.test_loader, 0)
+    cfg = compose(config_name="config.yaml")
+    wandb.init(tags = [cfg.data.dataset_name], project=cfg.wandb.project, entity=cfg.wandb.entity, config=OmegaConf.to_container(cfg, resolve=True), mode='disabled')
+    engine1 = setup_model(cfg)
+    engine2 = setup_model(cfg)
+    engine1.evaluate_vae(engine1.data_mgr.val_loader, 0)
     engine2.evaluate_vae(engine2.data_mgr.test_loader, 0)
+    
+    # Get the lengths of both shower arrays
+    len1 = len(engine1.showers)
+    len2 = len(engine2.showers)
+    
+    # Determine the minimum length and truncate if necessary
+    min_length = min(len1, len2)
+    logger.info(f"Truncating showers to minimum length: {min_length} (original lengths: {len1}, {len2})")
+    
     hlf = HLF2('electron', filename=engine1._config.data.binning_path)
     hlf.Einc = engine1.incident_energy
     ref_hlf = HLF2('electron', filename=engine1._config.data.binning_path)
-    ref_metrics = get_fpd_kpd_metrics(np.array(engine2.showers), np.array(engine1.showers), False, hlf, ref_hlf, if_Atlas=True)
+    
+    # Use truncated arrays for metric calculation
+    ref_metrics = get_fpd_kpd_metrics(
+        np.array(engine2.showers[:min_length]), 
+        np.array(engine1.showers[:min_length]), 
+        False, hlf, ref_hlf, if_Atlas=True
+    )
     return ref_metrics
 
 if __name__=="__main__":

@@ -222,118 +222,118 @@ class HighLevelFeatures_ATLAS_regular:
         plt.show()
         return fig
 
-#     def CalculateFeatures(self, data):
-#         """
-#         Calculates the layer-wise statistics of a given event, including the center and width of energy distribution in r and phi.
+    def CalculateFeatures(self, data):
+        """
+        Calculates the layer-wise statistics of a given event, including the center and width of energy distribution in r and phi.
 
-#         Also calculates the total energy in each layer and total energy in the event.
+        Also calculates the total energy in each layer and total energy in the event.
 
-#         Parameters:
-#         - event_data: A torch tensor or numpy array of energy depositions for N showers.
+        Parameters:
+        - event_data: A torch tensor or numpy array of energy depositions for N showers.
 
-#         Updates:
-#         - self.E_tot: Total energy in the event.
-#         - self.E_layers: A dictionary where keys are layer numbers and values are lists of total energy in each layer.
-#         - self.r: A dictionary for the center of energy in r.
-#         - self.phi: A dictionary for the center of energy in phi.
-#         - self.width_r: A dictionary for the width of energy in r.
-#         - self.width_phi: A dictionary for the width of energy in phi.
-#         """
-#         self.E_tot = []
-#         self.E_layers = {layer: [] for layer in self.relevantLayers}
-#         self.EC_rs = {layer: [] for layer in self.relevantLayers}
-#         self.EC_phis = {layer: [] for layer in self.relevantLayers}
-#         self.width_rs = {layer: [] for layer in self.relevantLayers}
-#         self.width_phis = {layer: [] for layer in self.relevantLayers}
+        Updates:
+        - self.E_tot: Total energy in the event.
+        - self.E_layers: A dictionary where keys are layer numbers and values are lists of total energy in each layer.
+        - self.r: A dictionary for the center of energy in r.
+        - self.phi: A dictionary for the center of energy in phi.
+        - self.width_r: A dictionary for the width of energy in r.
+        - self.width_phi: A dictionary for the width of energy in phi.
+        """
+        self.E_tot = []
+        self.E_layers = {layer: [] for layer in self.relevantLayers}
+        self.EC_rs = {layer: [] for layer in self.relevantLayers}
+        self.EC_phis = {layer: [] for layer in self.relevantLayers}
+        self.width_rs = {layer: [] for layer in self.relevantLayers}
+        self.width_phis = {layer: [] for layer in self.relevantLayers}
 
-#         for event in data:
-#             stats = self.calculate_energy_centers(event)
-#             self.E_tot.append(stats['total_energy'])
-#             for layer in self.relevantLayers:
-#                 self.E_layers[layer].append(stats[layer]['total_layer_energy'])
-#                 self.EC_rs[layer].append(stats[layer]['r_center'])
-#                 self.EC_phis[layer].append(stats[layer]['phi_center'])
-#                 self.width_rs[layer].append(stats[layer]['r_width'])
-#                 self.width_phis[layer].append(stats[layer]['phi_width'])
-#         self.E_tot = np.array(self.E_tot)
-#         for layer in self.relevantLayers:
-#             self.E_layers[layer] = np.array(self.E_layers[layer])
-#             self.EC_rs[layer] = np.array(self.EC_rs[layer])
-#             self.EC_phis[layer] = np.array(self.EC_phis[layer])
-#             self.width_rs[layer] = np.array(self.width_rs[layer])
-#             self.width_phis[layer] = np.array(self.width_phis[layer])
+        for event in data:
+            stats = self.calculate_energy_centers(event)
+            self.E_tot.append(stats['total_energy'])
+            for layer in self.relevantLayers:
+                self.E_layers[layer].append(stats[layer]['total_layer_energy'])
+                self.EC_rs[layer].append(stats[layer]['r_center'])
+                self.EC_phis[layer].append(stats[layer]['phi_center'])
+                self.width_rs[layer].append(stats[layer]['r_width'])
+                self.width_phis[layer].append(stats[layer]['phi_width'])
+        self.E_tot = np.array(self.E_tot)
+        for layer in self.relevantLayers:
+            self.E_layers[layer] = np.array(self.E_layers[layer])
+            self.EC_rs[layer] = np.array(self.EC_rs[layer])
+            self.EC_phis[layer] = np.array(self.EC_phis[layer])
+            self.width_rs[layer] = np.array(self.width_rs[layer])
+            self.width_phis[layer] = np.array(self.width_phis[layer])
 
 
-#     def calculate_energy_centers(self, event_data):
-#         """
-#         Calculates the layer-wise statistics of a given event, including the center and width of energy distribution in r and phi.
+    def calculate_energy_centers(self, event_data):
+        """
+        Calculates the layer-wise statistics of a given event, including the center and width of energy distribution in r and phi.
 
-#         Also calculates the total energy in each layer and total energy in the event.
+        Also calculates the total energy in each layer and total energy in the event.
 
-#         Parameters:
-#         - event_data: A 1D torch tensor or numpy array of energy depositions for one shower.
+        Parameters:
+        - event_data: A 1D torch tensor or numpy array of energy depositions for one shower.
 
-#         Returns:
-#         - A dictionary where keys are layer numbers and values are dicts
-#           containing the calculated {'r_center', 'phi_center'}.
-#         """
-#         if isinstance(event_data, np.ndarray):
-#             event_data = torch.from_numpy(event_data)
+        Returns:
+        - A dictionary where keys are layer numbers and values are dicts
+          containing the calculated {'r_center', 'phi_center'}.
+        """
+        if isinstance(event_data, np.ndarray):
+            event_data = torch.from_numpy(event_data)
 
-#         layer_stats = {}
+        layer_stats = {}
 
-#         for i, layer_num in enumerate(self.relevantLayers):
-#             layer_str = str(layer_num)
+        for i, layer_num in enumerate(self.relevantLayers):
+            layer_str = str(layer_num)
 
-#             # 1. Slice the 1D vector to get energies for the current layer
-#             voxels_per_layer = 14*24
-#             start_index = i * voxels_per_layer
-#             end_index = (i + 1) * voxels_per_layer
-#             layer_energies = event_data[start_index:end_index] # This is I_ia in the formula
+            # 1. Slice the 1D vector to get energies for the current layer
+            voxels_per_layer = 14*24
+            start_index = i * voxels_per_layer
+            end_index = (i + 1) * voxels_per_layer
+            layer_energies = event_data[start_index:end_index] # This is I_ia in the formula
 
-#             # 2. Get the total energy in the layer (the denominator)
-#             total_layer_energy = torch.sum(layer_energies)
+            # 2. Get the total energy in the layer (the denominator)
+            total_layer_energy = torch.sum(layer_energies)
 
-#             # Avoid division by zero if a layer has no energy
-#             if total_layer_energy <= 0:
-#                 layer_stats[layer_num] = {
-#                     'total_layer_energy': 0,
-#                     'r_center': 0, 
-#                     'phi_center': 0,
-#                     'r_width': 0,
-#                     'phi_width': 0
-#                 }
-#                 continue
+            # Avoid division by zero if a layer has no energy
+            if total_layer_energy <= 0:
+                layer_stats[layer_num] = {
+                    'total_layer_energy': 0,
+                    'r_center': 0, 
+                    'phi_center': 0,
+                    'r_width': 0,
+                    'phi_width': 0
+                }
+                continue
 
-#             # 3. Get the pre-calculated voxel locations (l_a in the formula)
-#             r_locs = self.r_centers[layer_str]
-#             phi_locs = self.phi_locations[layer_str]
+            # 3. Get the pre-calculated voxel locations (l_a in the formula)
+            r_locs = self.r_centers[layer_str]
+            phi_locs = self.phi_locations[layer_str]
 
-#             # 4. Calculate the weighted sum for r (the numerator)
-#             weighted_sum_r = torch.sum(r_locs * layer_energies)
+            # 4. Calculate the weighted sum for r (the numerator)
+            weighted_sum_r = torch.sum(r_locs * layer_energies)
 
-#             # 5. Calculate the weighted sum for phi
-#             weighted_sum_phi = torch.sum(phi_locs * layer_energies)
+            # 5. Calculate the weighted sum for phi
+            weighted_sum_phi = torch.sum(phi_locs * layer_energies)
             
-#             # 6. Compute the final center of energy values
-#             center_of_energy_r = weighted_sum_r / total_layer_energy
-#             center_of_energy_phi = weighted_sum_phi / total_layer_energy
+            # 6. Compute the final center of energy values
+            center_of_energy_r = weighted_sum_r / total_layer_energy
+            center_of_energy_phi = weighted_sum_phi / total_layer_energy
 
-#             # 7. Calculate widths
-#             width_energy_r = torch.sqrt(torch.sum((r_locs - center_of_energy_r) ** 2 * layer_energies) / total_layer_energy)
-#             width_energy_phi = torch.sqrt(torch.sum((phi_locs - center_of_energy_phi) ** 2 * layer_energies) / total_layer_energy)
+            # 7. Calculate widths
+            width_energy_r = torch.sqrt(torch.sum((r_locs - center_of_energy_r) ** 2 * layer_energies) / total_layer_energy)
+            width_energy_phi = torch.sqrt(torch.sum((phi_locs - center_of_energy_phi) ** 2 * layer_energies) / total_layer_energy)
 
-#             layer_stats[layer_num] = {
-#                 'total_layer_energy': total_layer_energy.item(),
-#                 'r_center': center_of_energy_r.item(),
-#                 'phi_center': center_of_energy_phi.item(),
-#                 'r_width': width_energy_r.item(),
-#                 'phi_width': width_energy_phi.item()
-#             }
-#         total_energy = sum(stat['total_layer_energy'] for stat in layer_stats.values())
-#         layer_stats['total_energy'] = total_energy
+            layer_stats[layer_num] = {
+                'total_layer_energy': total_layer_energy.item(),
+                'r_center': center_of_energy_r.item(),
+                'phi_center': center_of_energy_phi.item(),
+                'r_width': width_energy_r.item(),
+                'phi_width': width_energy_phi.item()
+            }
+        total_energy = sum(stat['total_layer_energy'] for stat in layer_stats.values())
+        layer_stats['total_energy'] = total_energy
 
-#         return layer_stats
+        return layer_stats
     
 #     def energy_center_histograms(self, sample_sets, num_bins=50, filename_prefix=None):
 #         """
@@ -402,15 +402,15 @@ class HighLevelFeatures_ATLAS_regular:
 #         plt.close(fig_phi)
 
 
-#     def GetEtot(self):
-#         return self.E_tot
-#     def GetElayers(self):
-#         return self.E_layers
-#     def GetECrs(self):
-#         return self.EC_rs
-#     def GetECphis(self):
-#         return self.EC_phis
-#     def GetWidthrs(self):
-#         return self.width_rs
-#     def GetWidthphis(self):
-#         return self.width_phis
+    def GetEtot(self):
+        return self.E_tot
+    def GetElayers(self):
+        return self.E_layers
+    def GetECrs(self):
+        return self.EC_rs
+    def GetECphis(self):
+        return self.EC_phis
+    def GetWidthrs(self):
+        return self.width_rs
+    def GetWidthphis(self):
+        return self.width_phis
