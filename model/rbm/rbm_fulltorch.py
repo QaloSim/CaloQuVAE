@@ -205,14 +205,14 @@ class RBMTorchFull(RBM):
         # trainable values.
         out = {}
         for i, k in enumerate(self._weight_keys):
-            out[k] = (self._weight_params[i] * self._weight_masks[i])
+            out[k] = (self._weight_params[i] * self._weight_masks[i]).detach().clone()
         return out
 
     @property
     def bias_dict(self):
         out = {}
         for i, k in enumerate(self._bias_keys):
-            out[k] = self._bias_params[i]
+            out[k] = self._bias_params[i].detach().clone()
         return out
 
     def initOpt(self):

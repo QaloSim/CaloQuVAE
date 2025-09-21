@@ -125,8 +125,12 @@ class Engine():
             # Compute loss
             loss_dict = self.model.loss(x, output)
             loss_dict["loss"] = torch.stack([loss_dict[key] * self._config.model.loss_coeff[key]  for key in loss_dict.keys() if "loss" != key]).sum()
-            self.model.prior.gradient_rbm_centered(output[2])
-            self.model.prior.update_params()
+
+            if hasattr(self.model.prior, "step_on_batch") and callable(getattr(self.model.prior, "step_on_batch")):
+                self.model.prior.step_on_batch([sample.detach() for sample in output[2]])
+            else:
+                self.model.prior.gradient_rbm_centered(output[2])
+                self.model.prior.update_params()
             # self.model.prior.update_params_SGD()
 
             # Backward pass and optimization
@@ -181,13 +185,14 @@ class Engine():
             # Compute loss
             loss_dict = self.model.loss(x, output)
             loss_dict["loss"] = torch.stack([loss_dict[key] * self._config.model.loss_coeff[key]  for key in loss_dict.keys() if "loss" != key]).sum()
-            if hasattr(self._config.rbm, "no_weights") and self._config.rbm.no_weights:
-                self.model.prior.gradient_rbm(output[2])
+            if hasattr(self.model.prior, "step_on_batch") and callable(getattr(self.model.prior, "step_on_batch")):
+                self.model.prior.step_on_batch([sample.detach() for sample in output[2]])
             else:
-                self.model.prior.gradient_rbm_centered(output[2])
-            # self.model.prior.update_params()
-            self.model.prior.update_params()
-            # self.model.prior.update_params_SGD()
+                if hasattr(self._config.rbm, "no_weights") and self._config.rbm.no_weights:
+                    self.model.prior.gradient_rbm(output[2])
+                else:
+                    self.model.prior.gradient_rbm_centered(output[2])
+                self.model.prior.update_params()
 
             if (i % log_batch_idx) == 0:
                     logger.info('Epoch: {} [{}/{} ({:.0f}%)]\t beta: {:.3f}, slope: {:.3f} \t Batch Loss: {:.4f}'.format(epoch,
