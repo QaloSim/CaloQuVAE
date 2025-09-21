@@ -9,7 +9,7 @@ class RBM(ZephyrRBM):
         self._chain = False
         self.p_zetas_pcd_chains = torch.tensor([])
         self._n_batches = 1
-        self.initOpt()
+        # self.initOpt()
 
     def type(self):
         """String identifier for current model.
