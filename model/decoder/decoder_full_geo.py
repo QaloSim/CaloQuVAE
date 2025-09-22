@@ -77,6 +77,7 @@ class DecoderFullGeo(nn.Module):
 
 
         for lvl in range(self.n_latent_hierarchy_lvls):
+            # print(lvl)
             curr_subdecoder = self.subdecoders[lvl]
             x0_broadcasted = x0_reshaped.expand(x.shape[0], 1, *self.input_shapes[lvl])
 

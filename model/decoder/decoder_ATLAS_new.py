@@ -131,7 +131,7 @@ class DecoderFullGeoATLASNew(DecoderFullGeo):
 class FirstSubDecoderATLASNew(FirstSubDecoder):
     def __init__(self, cfg):
         super(FirstSubDecoderATLASNew, self).__init__(cfg)
-        self.n_latent_nodes = self._config.rbm.latent_nodes_per_p * self._config.rbm.partitions
+        self.n_latent_nodes = self._config.rbm.latent_nodes_per_p * (self._config.rbm.partitions -  self._config.rbm.hidden_layer)
         self.shower_size = (self._config.data.z, self._config.data.phi, self._config.data.r)
 
         self._layers1 = nn.Sequential(
@@ -176,3 +176,50 @@ class FirstSubDecoderATLASNew(FirstSubDecoder):
             CropLayer(),
         )
 
+class DecoderFullGeoATLASNewHidden(DecoderFullGeo):
+    def __init__(self, cfg):
+        super(DecoderFullGeoATLASNewHidden, self).__init__(cfg)
+        self._config = cfg
+
+        self.n_latent_hierarchy_lvls = self._config.rbm.partitions - self._config.rbm.hidden_layer
+        self.n_latent_nodes = self._config.rbm.latent_nodes_per_p * (self._config.rbm.partitions - self._config.rbm.hidden_layer)
+
+        self.z = self._config.data.z
+        self.r = self._config.data.r
+        self.phi = self._config.data.phi
+
+        self.input_shapes = [
+            (1, 1, 1),
+            (self.z, self.phi, self.r),
+            (self.z, self.phi, self.r),
+            (self.z, self.phi, self.r),
+        ]
+        
+        self._create_hierarchy_networks()
+        self._create_skip_connections()
+        
+
+    def _create_hierarchy_networks(self):
+        self.subdecoders = nn.ModuleList()
+        for i in range(self.n_latent_hierarchy_lvls):
+            if i == 0:
+                subdecoder = FirstSubDecoderATLASNew(self._config)
+            else:
+                subdecoder = SubDecoder(self._config, last_subdecoder=(i == self.n_latent_hierarchy_lvls - 1))
+            self.subdecoders.append(subdecoder)
+    
+    def _create_skip_connections(self):
+        self.skip_connections = nn.ModuleList()
+        for i in range(self.n_latent_hierarchy_lvls-1):
+            skip_connection = nn.Sequential(
+                nn.ConvTranspose3d(self._config.rbm.latent_nodes_per_p * (2+i), 64, (3, 5, 7), (1, 1, 1), padding=0),
+                nn.BatchNorm3d(64),
+                nn.PReLU(64, 0.02),
+                # upscales to (64, 3, 5, 7)
+                nn.ConvTranspose3d(64, 32, (3, 5, 7), (1, 1, 2), padding=0),
+                nn.BatchNorm3d(32),
+                nn.PReLU(32, 0.02),
+                # upscales to (32, 5, 8, 12)
+                nn.ConvTranspose3d(32, 1, (3, 6, 6), (1, 1, 1), padding=(1, 0, 0)),
+            ) #outputs (1, 5, 14, 24)
+            self.skip_connections.append(skip_connection)

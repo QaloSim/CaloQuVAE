@@ -46,9 +46,9 @@ def main(cfg=None):
         cfg = engine._config
         os.environ["WANDB_DIR"] = cfg.config_path.split("wandb")[0]
         iden = get_project_id(cfg.run_path)
-        # wandb.init(tags = [cfg.data.dataset_name], project=cfg.wandb.project, entity=cfg.wandb.entity, config=OmegaConf.to_container(cfg, resolve=True), mode=mode,
-        #         resume='allow', id=iden)
-        wandb.init(tags = [cfg.data.dataset_name], project=cfg.wandb.project, entity=cfg.wandb.entity, config=OmegaConf.to_container(cfg, resolve=True), mode=mode)
+        wandb.init(tags = [cfg.data.dataset_name], project=cfg.wandb.project, entity=cfg.wandb.entity, config=OmegaConf.to_container(cfg, resolve=True), mode=mode,
+                resume='allow', id=iden)
+        # wandb.init(tags = [cfg.data.dataset_name], project=cfg.wandb.project, entity=cfg.wandb.entity, config=OmegaConf.to_container(cfg, resolve=True), mode=mode)
         # Log metrics with wandb
         wandb.watch(engine.model)
     else:

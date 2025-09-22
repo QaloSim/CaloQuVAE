@@ -12,5 +12,4 @@ beta_gumbel_epoch_end: 150
 slope_act_fct_start: 0.05
 slope_act_fct_end: 0.
 
-# train_vae_separate: 1
-training_mode: vae
+training_mode: ae

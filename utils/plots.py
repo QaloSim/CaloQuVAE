@@ -1,6 +1,7 @@
 import numpy as np
 import matplotlib.pyplot as plt
 import torch
+import itertools
 
 def plot_histograms(ax, target, recon, sampled, xlabel, ylabel, title, bins=30, log_scale=True):
     max_value = max(target.max(), recon.max(), sampled.max())
@@ -238,3 +239,82 @@ def vae_plots(cfg, incident_energies, target_showers, recon_showers, sampled_sho
     energy_sum_layer_fig, incidence_ratio_layer_fig, target_recon_ratio_layer_fig, sparsity_layer_fig = layer_plots(cfg, incident_energies, target_showers, recon_showers, sampled_showers)
 
     return overall_fig, fig_energy_sum, fig_incidence_ratio, fig_target_recon_ratio, fig_sparsity, energy_sum_layer_fig, incidence_ratio_layer_fig, target_recon_ratio_layer_fig, sparsity_layer_fig
+
+def corr_plots(cfg, post_logits, post_samples, prior_samples):
+    p_size = cfg.rbm.latent_nodes_per_p
+    p_0 = post_samples[:, :p_size].cpu()
+    post_probs = torch.sigmoid(post_logits)
+    post_probs = torch.cat([p_0, post_probs], dim=1)
+    post_correlations = torch.corrcoef(post_probs.cpu().T).cpu().numpy()
+    # 0 out diagonal
+    np.fill_diagonal(post_correlations, 0)
+    # 0 out first p_size x p_size block
+    post_correlations[:p_size, :p_size] = 0
+    post_correlations = np.nan_to_num(post_correlations, nan=0.0)
+
+    post_fig = plt.figure(figsize=(8,8))
+    plt.imshow(post_correlations, cmap='seismic', vmin=-1, vmax=1, interpolation="none")
+    plt.colorbar()
+    plt.gca().invert_yaxis()
+    plt.title('Posterior Correlation Matrix')
+
+    prior_correlations = torch.corrcoef(prior_samples.cpu().T).cpu().numpy()
+    # 0 out diagonal
+    np.fill_diagonal(prior_correlations, 0)
+    prior_correlations = np.nan_to_num(prior_correlations, nan=0.0)
+    # 0 out first p_size x p_size block
+    prior_correlations[:p_size, :p_size] = 0
+
+    prior_fig = plt.figure(figsize=(8,8))
+    plt.imshow(prior_correlations, cmap='seismic', vmin=-1, vmax=1, interpolation="none")
+    plt.colorbar()
+    plt.gca().invert_yaxis()
+    plt.title('Prior Correlation Matrix')
+
+    # posterior partition to partition correlations
+    post_partition_dict = {
+        0: post_probs[:, :p_size].cpu(),
+        1: post_probs[:, p_size:2*p_size].cpu(),
+        2: post_probs[:, 2*p_size:3*p_size].cpu(),
+        3: post_probs[:, 3*p_size:4*p_size].cpu()
+    }
+    post_partition_fig, post_partition_ax = plt.subplots(2, 3, figsize=(12, 8))
+    post_partition_ax = post_partition_ax.flatten()
+
+    for idx, (i, j) in enumerate(itertools.combinations(range(4), 2)):
+        corr_ij = np.corrcoef(
+            post_partition_dict[i].numpy().T,
+            post_partition_dict[j].numpy().T
+        )[0:p_size, p_size:]
+        corr_ij = np.nan_to_num(corr_ij, nan=0.0)
+
+        ax = post_partition_ax[idx]
+        im = ax.imshow(corr_ij, cmap='seismic', vmin=-1, vmax=1, interpolation="none")
+        ax.set_title(f'Posterior Corr: Partition {i} vs {j}')
+        plt.colorbar(im, ax=ax)
+        ax.invert_yaxis()
+    post_partition_fig.tight_layout()
+
+    #prior partition to partition correlations
+    prior_partition_dict = {
+        0: prior_samples[:, :p_size].cpu(),
+        1: prior_samples[:, p_size:2*p_size].cpu(),
+        2: prior_samples[:, 2*p_size:3*p_size].cpu(),
+        3: prior_samples[:, 3*p_size:4*p_size].cpu()
+    }
+    prior_partition_fig, prior_partition_ax = plt.subplots(2, 3, figsize=(12, 8))
+    prior_partition_ax = prior_partition_ax.flatten() 
+    for idx, (i, j) in enumerate(itertools.combinations(range(4), 2)):
+        corr_ij = np.corrcoef(
+            prior_partition_dict[i].numpy().T,
+            prior_partition_dict[j].numpy().T
+        )[0:p_size, p_size:]
+        corr_ij = np.nan_to_num(corr_ij, nan=0.0)
+
+        ax = prior_partition_ax[idx]
+        im = ax.imshow(corr_ij, cmap='seismic', vmin=-1, vmax=1, interpolation="none")
+        ax.set_title(f'Prior Corr: Partition {i} vs {j}')
+        plt.colorbar(im, ax=ax)
+        ax.invert_yaxis()
+    prior_partition_fig.tight_layout()
+    return post_fig, prior_fig, post_partition_fig, prior_partition_fig

@@ -5,20 +5,17 @@ save_partition: 1
 freeze_vae: 1
 
 run_path: ""
-# config_path: "/fast_scratch_1/caloqvae/jtoledo/wandb/run-20250821_230537-pp65hpwu/files/autoencoderhidden_9_config.yaml"
-# config_path: "/fast_scratch_1/caloqvae/jtoledo/wandb/run-20250825_185123-cysb33l7/files/autoencoderhidden_9_config.yaml"
-config_path: /fast_scratch_1/caloqvae/jtoledo/wandb/run-20250825_231749-qtzezvdq/files/autoencoderhidden_189_config.yaml
-# config_path: /fast_scratch_1/caloqvae/jtoledo/wandb/run-20250819_203111-u88m8d6w/files/autoencoderbase_249_config.yaml
+config_path: /home/jtoledo/CaloQuVAE/outputs_sym/run-20250917_234352-86h8x8db/files/autoencoderbase_349_config.yaml
 
 device: gpu
 gpu_list:
-  - 4
+  - 1
 
 defaults:
   - data: AtlasReg000New
   - wandb: ML2
-  - model: model_ATLASNew_fullgeo
-  - engine: engine1
+  - model: model_hidden_ATLASNew_fullgeo
+  - engine: engine1_hidden
   - rbm: zephyr
   - _self_
 

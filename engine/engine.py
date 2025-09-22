@@ -9,7 +9,7 @@ import numpy as np
 import wandb
 
 # Plotting
-from utils.plots import vae_plots
+from utils.plots import vae_plots, corr_plots
 from utils.atlas_plots import plot_calorimeter_shower
 from utils.rbm_plots import plot_forward_output_v2, plot_rbm_histogram, plot_rbm_params, plot_forward_output_hidden
 # from utils.correlation_plotting import correlation_plots
@@ -360,6 +360,8 @@ class Engine():
             overall_fig, fig_energy_sum, fig_incidence_ratio, fig_target_recon_ratio, fig_sparsity, fig_sum_layers, fig_incidence_layers, fig_ratio_layers, fig_sparsity_layers = vae_plots(self._config,
                 self.incident_energy, self.showers, self.showers_recon, self.showers_prior)
             
+            post_corr, prior_corr, post_partition, prior_partition = corr_plots(self._config, self.post_logits, self.post_samples, self.prior_samples)
+            
             if key != "ae":
                 rbm_hist = plot_rbm_histogram(self.RBM_energy_post, self.RBM_energy_prior)
                 rbm_params = plot_rbm_params(self)
@@ -384,6 +386,10 @@ class Engine():
                     "calo_layer_input_avg": wandb.Image(calo_input_avg),
                     "calo_layer_recon_avg": wandb.Image(calo_recon_avg),
                     "calo_layer_sampled_avg": wandb.Image(calo_sampled_avg),
+                    "post_corr": wandb.Image(post_corr),
+                    "prior_corr": wandb.Image(prior_corr),
+                    "post_partition": wandb.Image(post_partition),
+                    "prior_partition": wandb.Image(prior_partition),
                     # "layer_energy_correlation_GT": wandb.Image(fig_target_corr),
                     # "layer_energy_correlation_sampled": wandb.Image(fig_sampled_corr),
                     # "frob_layerwise_GT_vs_sampled": wandb.Image(fig_frob_layerwise),
@@ -411,6 +417,10 @@ class Engine():
                     "calo_layer_recon": wandb.Image(calo_recon),
                     "calo_layer_input_avg": wandb.Image(calo_input_avg),
                     "calo_layer_recon_avg": wandb.Image(calo_recon_avg),
+                    "post_corr": wandb.Image(post_corr),
+                    "prior_corr": wandb.Image(prior_corr),
+                    "post_partition": wandb.Image(post_partition),
+                    "prior_partition": wandb.Image(prior_partition),
                     # "layer_energy_correlation_GT": wandb.Image(fig_target_corr),
                     # "sparsity_GT": wandb.Image(fig_gt_sparsity),
                     # "sparsity_correlation_GT": wandb.Image(fig_gt_sparsity_corr),

@@ -18,7 +18,7 @@ from model.decoder.decoder_full_geo import DecoderFullGeo
 from model.decoder.decoderhierarchy0 import DecoderHierarchy0, DecoderHierarchyv3, DecoderHierarchy0Hidden
 from model.decoder.decoderhierarchy0ca import DecoderHierarchy0CA
 from model.decoder.decoderhierarchytf import DecoderHierarchyTF, DecoderHierarchyTFv2
-from model.decoder.decoder_ATLAS_new import DecoderATLASNew, DecoderFullGeoATLASNew
+from model.decoder.decoder_ATLAS_new import DecoderATLASNew, DecoderFullGeoATLASNew, DecoderFullGeoATLASNewHidden
 from model.rbm.rbm import RBM, RBM_Hidden
 from model.rbm.rbm_torch import RBMtorch, RBM_Hiddentorch
 
@@ -47,7 +47,7 @@ class AutoEncoderBase(nn.Module):
 
     def _create_encoder(self):
         logger.debug("::_create_encoder")
-        if self._config.model.encoder == "hierachicalencoder":
+        if self._config.model.encoder == "hierarchicalencoder":
             return HierarchicalEncoder(self._config)
 
     def _create_decoder(self):
@@ -85,7 +85,8 @@ class AutoEncoderBase(nn.Module):
 
     def _create_prior(self):
         logger.debug("::_create_prior")
-        return RBMtorch(self._config)
+        # return RBMtorch(self._config)
+        return RBM(self._config)
 
     def create_networks(self):
         logger.debug("Creating Network Structures")
@@ -155,7 +156,7 @@ class AutoEncoderBase(nn.Module):
         return {"ae_loss":ae_loss, "kl_loss":kl_loss, "hit_loss":hit_loss,
                 "entropy":entropy, "pos_energy":pos_energy, "neg_energy":neg_energy, "logit_distance":l_dist}
     
-    def kl_divergence(self, post_logits, post_samples, is_training=True):
+    def kl_divergence(self, post_logits, post_samples):
         """Overrides kl_divergence in GumBolt.py
 
         :param post_logits (list) : List of f(logit_i|x, e) for each hierarchy
@@ -251,15 +252,39 @@ class AutoEncoderHidden(AutoEncoderBase):
         
     def _create_prior(self):
         logger.debug("::_create_prior")
-        # return RBM_Hidden(self._config)
-        return RBM_Hiddentorch(self._config)
+        return RBM_Hidden(self._config)
+        # return RBM_Hiddentorch(self._config)
     
     def _create_decoder(self):
         logger.debug("::_create_decoder")
         if self._config.model.decoder == "decoderhierachy0hidden":
             return DecoderHierarchy0Hidden(self._config)
+        elif self._config.model.decoder == "decoderfullgeoatlasnewhidden":
+            return DecoderFullGeoATLASNewHidden(self._config)
         
-    def kl_divergence(self, post_logits, post_samples, is_training=True):
+    def loss(self, input_data, args):
+        """
+        - Overrides loss in gumboltCaloV5.py
+        """
+        logger.debug("loss")
+        beta, post_logits, post_samples, output_activations, output_hits = args
+
+        kl_loss, entropy, pos_energy, neg_energy = self.kl_divergence(post_logits, post_samples)
+        # kl_loss, entropy, pos_energy, neg_energy = 0,0,0,0
+        
+        ae_loss = torch.pow((input_data - output_activations),2) * torch.exp(self._config.model.mse_weight*input_data)
+        ae_loss = torch.mean(torch.sum(ae_loss, dim=1), dim=0) * self._config.model.coefficient
+
+        hit_loss = binary_cross_entropy_with_logits(output_hits, torch.where(input_data > 0, 1., 0.),
+                        reduction='none')
+        # weight= (1+input_data).pow(self._config.model.bce_weights_power)
+        hit_loss = torch.mean(torch.sum(hit_loss, dim=1), dim=0)
+        l_dist = torch.tensor(0.0).to(ae_loss.device) #torch.pow(torch.cat(post_logits,1) - torch.cat(self.logit_distance(post_samples, post_logits),1),2).mean()
+
+        return {"ae_loss":ae_loss, "kl_loss":kl_loss, "hit_loss":hit_loss,
+                "entropy":entropy, "pos_energy":pos_energy, "neg_energy":neg_energy, "logit_distance":l_dist}
+
+    def kl_divergence(self, post_logits, post_samples):
         """Overrides kl_divergence in GumBolt.py
 
         :param post_logits (list) : List of f(logit_i|x, e) for each hierarchy
