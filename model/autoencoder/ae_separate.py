@@ -82,12 +82,15 @@ class AutoEncoderSeparate(AutoEncoderBase):
         hit_loss = binary_cross_entropy_with_logits(output_hits, torch.where(input_data > 0, 1., 0.), 
                     reduction='none')
         hit_loss = torch.mean(torch.sum(hit_loss, dim=1), dim=0)
+        l_dist = torch.pow(torch.cat(post_logits,1) - torch.cat(self.logit_distance(post_samples, post_logits),1),2).mean()
+
 
         return {
             "ae_loss": ae_loss,
             "hit_loss": hit_loss,
             "entropy": entropy_loss,
             "pos_energy": pos_energy,
+            "logit_distance":l_dist
         }
 
 
