@@ -180,11 +180,12 @@ class Engine():
             x = x.to(self.device)
             x0 = x0.to(self.device)
             x = self._reduce(x, x0)
-            # Forward pass
-            output = self.model((x, x0), self.beta, self.slope)
-            # Compute loss
-            loss_dict = self.model.loss(x, output)
-            loss_dict["loss"] = torch.stack([loss_dict[key] * self._config.model.loss_coeff[key]  for key in loss_dict.keys() if "loss" != key]).sum()
+            with torch.no_grad():
+                # Forward pass
+                output = self.model((x, x0), self.beta, self.slope)
+                # Compute loss
+                loss_dict = self.model.loss(x, output)
+                loss_dict["loss"] = torch.stack([loss_dict[key] * self._config.model.loss_coeff[key]  for key in loss_dict.keys() if "loss" != key]).sum()
             if hasattr(self.model.prior, "step_on_batch") and callable(getattr(self.model.prior, "step_on_batch")):
                 self.model.prior.step_on_batch([sample.detach() for sample in output[2]])
             else:
