@@ -235,6 +235,29 @@ def get_reference_point():
     )
     return ref_metrics
 
+def get_naive_metrics(engine):
+    engine.evaluate_vae(engine.data_mgr.train_loader, 0)
+    engine.evaluate_trivial()
+    naive_HEP_obj = HepMetrics(engine)
+
+    naive_HEPMetrics = get_fpd_kpd_metrics(
+        np.array(engine.showers), 
+        np.array(engine.showers_prior), 
+        False, naive_HEP_obj.hlf, naive_HEP_obj.ref_hlf, if_Atlas=naive_HEP_obj.if_Atlas
+    )
+
+    fpd_naive = naive_HEPMetrics[0]
+    fpd_naive_err = naive_HEPMetrics[1]
+    kpd_naive = naive_HEPMetrics[2]
+    kpd_naive_err = naive_HEPMetrics[3]
+    
+    logger.info(
+        f"Naive FPD (x10^3): {fpd_naive*1e3:.4f} ± {fpd_naive_err*1e3:.4f}\n"
+        f"Naive KPD (x10^3): {kpd_naive*1e3:.4f} ± {kpd_naive_err*1e3:.4f}"
+    )
+    return fpd_naive, fpd_naive_err, kpd_naive, kpd_naive_err
+
+
 if __name__=="__main__":
     logger.info("Starting main executable.")
     main()

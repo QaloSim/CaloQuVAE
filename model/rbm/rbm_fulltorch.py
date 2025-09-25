@@ -109,10 +109,7 @@ class ContrastiveDivergenceFn(Function):
                               m01, m02, m03, m12, m13, m23)
         ctx.n_nodes_p = n_nodes_p
 
-        # The forward returns a scalar tensor so calling .backward() will
-        # trigger our custom backward(). The actual scalar value is not used
-        # to compute the gradients (we compute them manually) but we return a
-        # stable value for debug/logging. We use the squared-difference sum.
+        # The forward returns a scalar tensor so calling .backward() will trigger our custom backward().
         loss = (data_mean - data_gen).pow(2).sum() + (vh_data_mean - vh_gen_mean).pow(2).sum()
         return loss
 
@@ -244,9 +241,6 @@ class RBMTorchFull(RBM):
         return loss
 
     def step_on_batch(self, post_samples):
-        """Convenience method: compute loss, backward, and optimizer step.
-        Mirrors the behaviour of previous update_params functions.
-        """
         loss = self.forward(post_samples)
         self.opt.zero_grad()
         loss.backward()

@@ -21,6 +21,7 @@ from model.decoder.decoderhierarchytf import DecoderHierarchyTF, DecoderHierarch
 from model.decoder.decoder_ATLAS_new import DecoderATLASNew, DecoderFullGeoATLASNew
 from model.rbm.rbm import RBM, RBM_Hidden
 from model.rbm.rbm_torch import RBMtorch, RBM_Hiddentorch
+from model.rbm.rbm_fulltorch import RBMTorchFull
 
 #logging module with handmade settings.
 from CaloQuVAE import logging
@@ -87,7 +88,7 @@ class AutoEncoderBase(nn.Module):
 
     def _create_prior(self):
         logger.debug("::_create_prior")
-        return RBMtorch(self._config)
+        return RBMTorchFull(self._config)
 
     def create_networks(self):
         logger.debug("Creating Network Structures")
