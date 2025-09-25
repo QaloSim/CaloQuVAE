@@ -1,5 +1,5 @@
 save_state: 1
-load_state: 0
+load_state: 1
 save_hists: 0
 save_partition: 1
 freeze_vae: 1
@@ -7,12 +7,12 @@ freeze_vae: 1
 run_path: ""
 # config_path: "/fast_scratch_1/caloqvae/jtoledo/wandb/run-20250821_230537-pp65hpwu/files/autoencoderhidden_9_config.yaml"
 # config_path: "/fast_scratch_1/caloqvae/jtoledo/wandb/run-20250825_185123-cysb33l7/files/autoencoderhidden_9_config.yaml"
-config_path: /fast_scratch_1/caloqvae/jtoledo/wandb/run-20250825_231749-qtzezvdq/files/autoencoderhidden_189_config.yaml
+config_path: "/fast_scratch_1/caloqvae/lzhu/wandb/run-20250921_184156-g27teyav/files/autoencoderbase_159_config.yaml"
 # config_path: /fast_scratch_1/caloqvae/jtoledo/wandb/run-20250819_203111-u88m8d6w/files/autoencoderbase_249_config.yaml
 
 device: gpu
 gpu_list:
-  - 4
+  - 3
 
 defaults:
   - data: AtlasReg000New
@@ -22,6 +22,6 @@ defaults:
   - rbm: zephyr
   - _self_
 
-n_epochs: 350
-epoch_freeze: 250
+n_epochs: 200
+epoch_freeze: 160
 epoch_start: 0
