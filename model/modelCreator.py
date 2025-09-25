@@ -129,12 +129,18 @@ class ModelCreator():
         opt_rbm_path   = os.path.join(base_dir, f"{cfg_string}_opt_rbm.pth")
 
         if vae_opt is not None and os.path.exists(opt_vae_path):
-            vae_opt.load_state_dict(torch.load(opt_vae_path, map_location=device))
-            logger.info("Loaded VAE optimizer state")
+            try:
+                vae_opt.load_state_dict(torch.load(opt_vae_path, map_location=device))
+                logger.info("Loaded VAE optimizer state")
+            except Exception as e:
+                logger.error(f"Failed to load VAE optimizer state: {e}")
 
         if rbm_opt is not None and os.path.exists(opt_rbm_path):
-            rbm_opt.load_state_dict(torch.load(opt_rbm_path, map_location=device))
-            logger.info("Loaded RBM optimizer state")
+            try:
+                rbm_opt.load_state_dict(torch.load(opt_rbm_path, map_location=device))
+                logger.info("Loaded RBM optimizer state")
+            except Exception as e:
+                logger.error(f"Failed to load RBM optimizer state: {e}")
 
                     
     def load_RBM_state(self, run_path, device):
