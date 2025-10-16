@@ -1,14 +1,16 @@
 model_name: Zephyr
+model_type: "RBM"
 fullyconnected: 1
+clamped: 0
 no_weights: 0
-latent_nodes_per_p: 512
+latent_nodes_per_p: 280
 partitions: 4
 method: "CD"
-bgs_steps: 3000
-lr: 0.1
-gamma: 0.001
+bgs_steps: 500
+lr: 0.01
+gamma: 0.000
 w_std: 
-  - 1.0
+  - 0.0001
   - 1.0
   - 1.0
   - 1.0
@@ -21,3 +23,7 @@ b_std:
   - 1.0
 optimize_partition: 0
 hidden_layer: 0
+two_partite: 1
+SGD: 1
+num_chains: 5000
+centered: 0

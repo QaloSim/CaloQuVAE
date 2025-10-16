@@ -22,6 +22,6 @@ defaults:
   - rbm: zephyr
   - _self_
 
-n_epochs: 200
+n_epochs: 2000
 epoch_freeze: 160
 epoch_start: 0

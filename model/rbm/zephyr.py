@@ -60,15 +60,17 @@ class ZephyrRBM(nn.Module):
                 torch.randn(self._nodes_per_partition)*self._config.rbm.b_std[i], requires_grad=True)
             
         if self._config.rbm.fullyconnected:
+            logger.info("RBM is configured to be fully connected.")
             for key in itertools.combinations(range(self._n_partitions), 2):
                 str_key = ''.join([str(key[i]) for i in range(len(key))])
                 self._weight_mask_dict[str_key] = nn.Parameter(torch.ones(self._nodes_per_partition, self._nodes_per_partition), requires_grad=False)
-        if hasattr(self._config.rbm, 'no_weights') and self._config.rbm.no_weights:
+        elif hasattr(self._config.rbm, 'no_weights') and self._config.rbm.no_weights:
             for key in itertools.combinations(range(self._n_partitions), 2):
                 str_key = ''.join([str(key[i]) for i in range(len(key))])
                 self._weight_mask_dict[str_key] = nn.Parameter(torch.zeros(self._nodes_per_partition, self._nodes_per_partition), requires_grad=False)
             logger.info("RBM is configured to have no weights.")
         else:
+            logger.info("RBM is configured to use Zephyr topology.")
             for key in itertools.combinations(range(self._n_partitions), 2):
                 str_key = ''.join([str(key[i]) for i in range(len(key))])
                 self._weight_mask_dict[str_key] = nn.Parameter(torch.zeros(self._nodes_per_partition, self._nodes_per_partition), requires_grad=False)
@@ -260,10 +262,10 @@ class ZephyrRBM(nn.Module):
                     {q: dnx.zephyr_coordinates(self.m,self.t).linear_to_zephyr(q)
                     for q in graph.nodes})
             self.adjacency = self._qpu_sampler.adjacency
-        except:
-            logger.warn("QPU is offline. Setting a hard-coded zephyr. " \
-                    "Check to see you're pinging the correct chip_id"
-                    )
+        except Exception as e:
+            logger.warning(f"QPU is offline. Setting a hard-coded zephyr. "
+                           f"Check to see you're pinging the correct chip_id: {e}"
+                           )
             self.m, self.t = 12,4
             print(os.getcwd())
             repo_root = os.path.dirname(CaloQuVAE.__file__)  # /.../CaloQuVAE

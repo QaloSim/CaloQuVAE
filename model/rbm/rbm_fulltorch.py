@@ -45,7 +45,8 @@ class ContrastiveDivergenceFn(Function):
                 post_zetas,
                 m01, m02, m03, m12, m13, m23,
                 bgs_steps: int,
-                latent_nodes_per_p: int):
+                latent_nodes_per_p: int,
+                clamped: bool):
 
         device = post_zetas.device
         n_nodes_p = latent_nodes_per_p
@@ -96,6 +97,11 @@ class ContrastiveDivergenceFn(Function):
             # sample p3
             p3_logits = (p0 @ W03) + (p1 @ W13) + (p2 @ W23) + b3_t
             p3 = torch.bernoulli(torch.sigmoid(p3_logits))
+
+            if not clamped:
+                # sample p0
+                p0_logits = (p1 @ W01_T) + (p2 @ W02_T) + (p3 @ W03_T) + b0_t
+                p0 = torch.bernoulli(torch.sigmoid(p0_logits))
 
         # Build generated statistics (we detach samples because we won't
         # compute gradients through the sampling process itself)
@@ -151,7 +157,7 @@ class ContrastiveDivergenceFn(Function):
         # follow with Nones for post_zetas, masks, bgs_steps, latent
         out = out + (None,)  # post_zetas
         out = out + (None, None, None, None, None, None)  # masks
-        out = out + (None, None)  # bgs_steps, latent
+        out = out + (None, None, None)  # bgs_steps, latent, clamped
         return out
 
 
@@ -191,6 +197,7 @@ class RBMTorchFull(RBM):
         self._weight_masks = [self._weight_mask_dict[k].to(self._weight_params[0].device)
                                for k in self._weight_keys]
 
+        self.clamped = cfg.rbm.clamped if hasattr(cfg.rbm, "clamped") else True
         # init optimizer over the new ParameterList
         self.initOpt()
 
@@ -236,7 +243,8 @@ class RBMTorchFull(RBM):
             post_zetas,
             *m_args,
             int(self._config.rbm.bgs_steps),
-            int(self._config.rbm.latent_nodes_per_p)
+            int(self._config.rbm.latent_nodes_per_p),
+            self.clamped
         )
         return loss
 
