@@ -14,4 +14,4 @@ loss_coeff:
   hit_loss: 1.0
   entropy: 0
   pos_energy: 0
-  logit_distance: 1
+  logit_distance: 0
