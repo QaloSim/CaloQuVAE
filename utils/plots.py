@@ -244,6 +244,7 @@ def vae_plots(cfg, incident_energies, target_showers, recon_showers, sampled_sho
 def corr_plots(cfg, post_logits, post_samples, prior_samples):
     p_size = cfg.rbm.latent_nodes_per_p
     p_0 = post_samples[:, :p_size].cpu()
+    print(f"Partition 0 Standard Deviation (per node):\n{torch.std(p_0, dim=0)}")
     post_probs = torch.sigmoid(post_logits)
     post_probs = torch.cat([p_0, post_probs], dim=1)
     post_correlations = torch.corrcoef(post_probs.cpu().T).cpu().numpy()

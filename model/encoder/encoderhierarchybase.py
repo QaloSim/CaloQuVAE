@@ -79,7 +79,7 @@ class HierarchicalEncoder(nn.Module):
         mask = 2**torch.arange(bits).to(x.device, x.dtype)
         return x.bitwise_and(mask).ne(0).byte().to(dtype=torch.float)
     
-    def binary_energy(self, x, lin_bits=20, sqrt_bits=20, log_bits=20):
+    def binary_energy(self, x, lin_bits=15, sqrt_bits=15, log_bits=15):
         reps = int(np.floor(self.n_latent_nodes/(lin_bits+sqrt_bits+log_bits)))
         residual = self.n_latent_nodes - reps*(lin_bits+sqrt_bits+log_bits)
         x = torch.cat((self.binary(x.int(),lin_bits), 
