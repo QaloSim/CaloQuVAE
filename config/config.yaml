@@ -1,11 +1,11 @@
 save_state: 1
-load_state: 0
+load_state: 1
 save_hists: 0
 save_partition: 1
 freeze_vae: 1
 
 run_path: ""
-config_path: /home/jtoledo/CaloQuVAE/outputs_sym/run-20250917_234352-86h8x8db/files/autoencoderbase_349_config.yaml
+config_path: /home/jtoledo/CaloQuVAE/outputs_sym/run-20250922_210528-bpfg29py/files/autoencoderhidden_229_config.yaml
 
 device: gpu
 gpu_list:
