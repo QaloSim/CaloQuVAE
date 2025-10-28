@@ -215,7 +215,7 @@ class AutoEncoderBase(nn.Module):
         p1_ans = self.logit_mcmc(W01, W12_T, W13_T,   p0, torch.sigmoid(p2), torch.sigmoid(p3), b1)
 
         return p1_ans, p2_ans, p3_ans
-        return torch.pow(torch.cat(post_logits,1) - torch.cat([p1_ans, p2_ans, p3_ans],1),2).mean()
+        # return torch.pow(torch.cat(post_logits,1) - torch.cat([p1_ans, p2_ans, p3_ans],1),2).mean()
 
     def logit_mcmc(self, weights_ax, weights_bx, weights_cx,
                  pa_state, pb_state, pc_state, bias_x) -> torch.Tensor:
