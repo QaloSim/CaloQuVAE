@@ -99,7 +99,7 @@ def layer_plots(cfg, incident_energies, target_showers, recon_showers, sampled_s
     return energy_sum_layer_fig, incidence_ratio_layer_fig, target_recon_ratio_layer_fig, sparsity_layer_fig
 
 
-def vae_plots(cfg, incident_energies, target_showers, recon_showers, sampled_showers):
+def vae_plots(cfg, incident_energies, target_showers, recon_showers, sampled_showers, incidence_energy_sampled = None):
     """
     Plot the energy sums and ratios for target, reconstructed, and sampled showers (overall and binned by incident energy).
     """
@@ -113,7 +113,10 @@ def vae_plots(cfg, incident_energies, target_showers, recon_showers, sampled_sho
 
     target_incidence_ratio = target_energy_sums / (incident_energies.view(-1) + epsilon)
     recon_incidence_ratio = recon_energy_sums / (incident_energies.view(-1) + epsilon)
-    sampled_incidence_ratio = sampled_energy_sums / (incident_energies.view(-1) + epsilon)
+    if incidence_energy_sampled is not None:
+        sampled_incidence_ratio = sampled_energy_sums / (incidence_energy_sampled.view(-1) + epsilon)
+    else:
+        sampled_incidence_ratio = sampled_energy_sums / (incident_energies.view(-1) + epsilon)
 
     target_recon_ratio = recon_energy_sums / (target_energy_sums.view(-1) + epsilon)
 
@@ -132,6 +135,8 @@ def vae_plots(cfg, incident_energies, target_showers, recon_showers, sampled_sho
 
     target_recon_ratio_np = target_recon_ratio.numpy()
     incident_energies_np = incident_energies.numpy().squeeze()
+    if incidence_energy_sampled is not None:
+        incidence_energy_sampled_np = incidence_energy_sampled.numpy().squeeze()
 
     target_sparsity_np = target_sparsity.numpy()
     recon_sparsity_np = recon_sparsity.numpy()
@@ -167,7 +172,14 @@ def vae_plots(cfg, incident_energies, target_showers, recon_showers, sampled_sho
     overall_fig.tight_layout()
 
     # set up the binning for conditioned plots:
-    if 'atlas' in dataset_name:
+    if "custom" in dataset_name:
+        max_energy = float(300100.0)
+        bin_width = max_energy/ 15
+        first_center = bin_width / 2.0       
+        last_center = max_energy - (bin_width / 2.0) 
+
+        energy_bin_centers = [first_center + i * bin_width for i in range(15)]
+    elif 'atlas' in dataset_name:
         energy_bin_centers = [2 ** i for i in range(8, 23)] # for atlas
     else:
         energy_bin_centers = [10 ** i for i in np.linspace(3, 6, num=15, endpoint=True)] # for calo
@@ -180,23 +192,30 @@ def vae_plots(cfg, incident_energies, target_showers, recon_showers, sampled_sho
     for i, energy_center in enumerate(energy_bin_centers):
         row = i // 5
         col = i % 5
-
-        e_low = 2 ** (np.log2(energy_center) - 0.5)
-        e_high = 2 ** (np.log2(energy_center) + 0.5)
+        if "custom" in dataset_name:
+            e_low = energy_center - (bin_width / 2.0)
+            e_high = energy_center + (bin_width / 2.0)
+        else:
+            e_low = 2 ** (np.log2(energy_center) - 0.5)
+            e_high = 2 ** (np.log2(energy_center) + 0.5)
 
         mask = (incident_energies_np >= e_low) & (incident_energies_np < e_high)
+        if incidence_energy_sampled is not None:
+            sampled_mask = (incidence_energy_sampled_np >= e_low) & (incidence_energy_sampled_np < e_high)
+        else:
+            sampled_mask = mask
         if mask.sum() == 0:
             print(f"No data in energy range {e_low:.1f} - {e_high:.1f} MeV, skipping this bin.")
             continue
 
         target_energy_sums_e = target_energy_sums_np[mask]
         recon_energy_sums_e = recon_energy_sums_np[mask]
-        sampled_energy_sums_e = sampled_energy_sums_np[mask]
+        sampled_energy_sums_e = sampled_energy_sums_np[sampled_mask]
         
         target_incidence_ratio_e = target_incidence_ratio_np[mask]
         recon_incidence_ratio_e = recon_incidence_ratio_np[mask]
-        sampled_incidence_ratio_e = sampled_incidence_ratio_np[mask]
-        
+        sampled_incidence_ratio_e = sampled_incidence_ratio_np[sampled_mask]
+
         target_recon_ratio_e = target_recon_ratio_np[mask]
 
         plot_histograms(ax_energy_sum[row, col], target_energy_sums_e, recon_energy_sums_e, sampled_energy_sums_e,
@@ -226,7 +245,7 @@ def vae_plots(cfg, incident_energies, target_showers, recon_showers, sampled_sho
         ax_target_recon_ratio[row, col].legend()
         ax_target_recon_ratio[row, col].set_title(f'Recon Ratio ~ {e_low / 1000:.1f} - {e_high / 1000:.1f} GeV')
 
-        plot_histograms(ax_sparsity[row, col], target_sparsity_np[mask], recon_sparsity_np[mask], sampled_sparsity_np[mask],
+        plot_histograms(ax_sparsity[row, col], target_sparsity_np[mask], recon_sparsity_np[mask], sampled_sparsity_np[sampled_mask],
                         xlabel='Sparsity', ylabel='Density',
                         title=f'Sparsity ~ {e_low / 1000:.1f} - {e_high / 1000:.1f} GeV')
         
@@ -320,3 +339,31 @@ def corr_plots(cfg, post_logits, post_samples, prior_samples):
         ax.invert_yaxis()
     prior_partition_fig.tight_layout()
     return post_fig, prior_fig, post_partition_fig, prior_partition_fig
+
+
+def incidence_energy_plots(gt_incidence_energies, sampled_incidence_energies):
+    """
+    Plot the incidence energy distributions for ground truth and sampled data.
+    """
+    fig, ax = plt.subplots(figsize=(8, 6))
+
+    max_value = max(gt_incidence_energies.max(), sampled_incidence_energies.max())
+    min_value = min(gt_incidence_energies.min(), sampled_incidence_energies.min())
+    if min_value == max_value:
+        print("Warning: min and max values are the same, adjusting to avoid division by zero.")
+        max_value += 0.1  # Avoid division by zero if all values are the same
+    binning = np.arange(min_value, max_value, (max_value - min_value) / 30)
+
+    ax.hist(gt_incidence_energies, histtype="stepfilled", bins=binning, density=True, alpha=0.7, label='Ground Truth', color='b', linewidth=2.5)
+    ax.hist(sampled_incidence_energies, histtype="step", bins=binning, density=True, label='Sampled', color='orange', linewidth=2.5)
+
+    ax.set_xlabel('Incidence Energy (MeV)')
+    ax.set_ylabel('Density')
+    ax.set_title('Incidence Energy Distribution')
+    ax.set_yscale('log')
+    ax.grid(True)
+    ax.legend()
+
+    return fig
+
+

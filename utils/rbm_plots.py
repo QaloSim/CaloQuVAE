@@ -2,6 +2,7 @@ import matplotlib.pyplot as plt
 import numpy as np
 import torch
 import torch.nn as nn
+from model.rbm.rbm_two_partite import RBM_TwoPartite
 
 def plot_rbm_histogram(rbm_post, rbm_prior, rbm_prior_qpu=None):
     # Assuming rbm_post and rbm_prior are tensors with energy values
@@ -395,3 +396,54 @@ def plot_forward_output(self, i=0):
     axes[3, 3].axis('off')
 
     return fig
+
+
+def plot_weight_distribution(rbm: RBM_TwoPartite, bins: int = 50, title: str = None):
+    """
+    Plots a histogram of the RBM's weight_matrix.
+
+    Args:
+        rbm (RBM_TwoPartite): An instance of the RBM model.
+        bins (int, optional): Number of bins for the histogram. Defaults to 50.
+        title (str, optional): Title for the plot. If None, a default is used.
+    """
+    
+    # 1. Get the weights tensor
+    weights = rbm.params["weight_matrix"]
+    
+    # 2. Move to CPU (if on GPU) and convert to NumPy
+    # .detach() is important to remove it from the computation graph
+    weights_np = weights.detach().cpu().numpy()
+    
+    # 3. Flatten the 2D matrix into a 1D array for the histogram
+    weights_flat = weights_np.flatten()
+    
+    # 4. Create the plot
+    plt.figure(figsize=(10, 6))
+
+    plt.hist(weights_flat, bins=bins, density=False, alpha=0.75, color='blue', edgecolor='black', label='Weight Distribution', log=True)
+
+    # Add a title
+    if title is None:
+        title = 'Distribution of RBM Weights'
+    plt.title(title, fontsize=16)
+    
+    # Add labels
+    plt.xlabel('Weight Value', fontsize=12)
+    plt.ylabel('Counts', fontsize=12)
+    
+    # Add a legend and grid
+    plt.legend()
+    plt.grid(True, linestyle='--', alpha=0.6)
+    
+    # Add mean and std dev text
+    mean_val = np.mean(weights_flat)
+    std_val = np.std(weights_flat)
+    plt.text(0.05, 0.95, f'Mean: {mean_val:.4f}\nStd: {std_val:.4f}',
+             transform=plt.gca().transAxes,
+             verticalalignment='top',
+             bbox=dict(boxstyle='round,pad=0.5', facecolor='white', alpha=0.8))
+    
+    # 5. Show the plot
+    plt.tight_layout()
+    plt.show()

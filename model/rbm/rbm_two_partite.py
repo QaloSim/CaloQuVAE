@@ -2,6 +2,10 @@ import torch
 from typing import Dict
 from model.rbm.zephyr import ZephyrRBM
 from CaloQuVAE import logging
+import h5py
+import numpy as np
+import os
+from omegaconf import OmegaConf
 logger = logging.getLogger(__name__)
 
 class RBM_TwoPartite:
@@ -189,6 +193,251 @@ class RBM_TwoPartite:
 
         self.sample_state()
         self.update_parameters(data, centered)
+
+    def compute_energy(self, v_nodes: torch.Tensor) -> torch.Tensor:
+        """
+        Computes the Free Energy of the model given a batch of visible states.
+
+        Args:
+            v_nodes (torch.Tensor): A batch of visible states,
+                                    shape [batch_size, num_visibles].
+            
+        Returns:
+            torch.Tensor: The free energy for each visible state in the batch,
+                          shape [batch_size].
+        """
+        # Ensure the input tensor is on the same device as the model parameters
+        v_nodes = v_nodes.to(self.device)
+        
+        # Access parameters from self
+        vbias = self.params["vbias"]
+        hbias = self.params["hbias"]
+        weight_matrix = self.params["weight_matrix"]
+
+        field = v_nodes @ vbias
+        exponent = hbias + (v_nodes @ weight_matrix)
+        
+        log_term = torch.where(
+            exponent < 10, 
+            torch.log(1. + torch.exp(exponent)), 
+            exponent
+        )
+        
+        # Sum over the hidden dimension (axis 1)
+        return -field - log_term.sum(1)
+
+
+    def _sample_h_given_v(self, v: torch.Tensor, beta: float = 1.0) -> (torch.Tensor, torch.Tensor):
+        """
+        Helper: Samples hiddens given an arbitrary visible tensor 'v'.
+        Does NOT modify self.chains.
+        """
+        mh = torch.sigmoid(beta * (self.params["hbias"] + v @ self.params["weight_matrix"]))
+        h = torch.bernoulli(mh)
+        return h, mh
+
+    def _sample_v_given_h(self, h: torch.Tensor, beta: float = 1.0) -> (torch.Tensor, torch.Tensor):
+        """
+        Helper: Samples visibles given an arbitrary hidden tensor 'h'.
+        Does NOT modify self.chains.
+        """
+        mv = torch.sigmoid(beta * (self.params["vbias"] + h @ self.params["weight_matrix"].T))
+        v = torch.bernoulli(mv)
+        return v, mv
+
+    def sample_v_given_v_clamped(
+        self,
+        clamped_v: torch.Tensor,
+        n_clamped: int,
+        gibbs_steps: int,
+        beta: float = 1.0
+    ) -> torch.Tensor:
+        """
+        Performs conditional sampling (clamping) of the visible units.
+        Given the state of the first 'n_clamped' visible units, this function
+        samples the state of the remaining visible units.
+
+        This method creates its own sampling chains and does NOT
+        modify the persistent 'self.chains' used for training.
+
+        Returns:
+            torch.Tensor:
+            - v_samples (torch.Tensor): The final sampled visible states,
+                                        shape [num_samples, num_visibles].
+        """
+        clamped_v = clamped_v.to(self.device)
+        
+        num_samples = clamped_v.shape[0]
+        num_visibles = self.params["vbias"].shape[0]
+        num_unclamped = num_visibles - n_clamped
+
+        if n_clamped >= num_visibles or n_clamped <= 0:
+            raise ValueError(f"n_clamped ({n_clamped}) must be > 0 and < num_visibles ({num_visibles})")
+        if clamped_v.shape[1] != n_clamped:
+             raise ValueError(f"clamped_v shape[1] ({clamped_v.shape[1]}) does not match n_clamped ({n_clamped})")
+
+        # 1. Initialize the full visible state for sampling
+        v_sample = torch.zeros(num_samples, num_visibles, device=self.device, dtype=torch.float32)
+        
+        # Set the clamped part
+        v_sample[:, :n_clamped] = clamped_v
+        
+        # Initialize the unclamped part (randomly)
+        v_sample[:, n_clamped:] = torch.randint(
+            0, 2, (num_samples, num_unclamped), device=self.device, dtype=torch.float32
+        )
+
+        # Run the Gibbs sampling loop
+        h_sample = None
+        
+        for _ in range(gibbs_steps):
+            # Sample hidden given full visible
+            h_sample, _ = self._sample_h_given_v(v_sample, beta)
+            
+            # Sample visibles given hidden
+            v_sample_new, _ = self._sample_v_given_h(h_sample, beta)
+            
+            # Enforce the clamp
+            v_sample_new[:, :n_clamped] = clamped_v
+            
+            # Update v_sample for the next iteration
+            v_sample = v_sample_new
+            
+
+        # v_sample is the final state after the last loop
+        return v_sample
+
+    
+    
+    def save_checkpoint(self, filepath: str, epoch: int, config: OmegaConf):
+        """
+        Saves the RBM's state to an HDF5 file.
+
+        This method creates the file if it doesn't exist and manages
+        hyperparameters, model parameters, persistent chains, and RNG states.
+        
+        Args:
+            filepath (str): Path to the HDF5 checkpoint file.
+            epoch (int): The current epoch number (to be saved).
+            config (OmegaConf): The Hydra config object to save hyperparameters.
+        """
+        # 'a' mode: read/write if file exists, create otherwise
+        with h5py.File(filepath, 'a') as f:
+            
+            # --- 1. Save Hyperparameters (only on first save) ---
+            if 'hyperparameters' not in f:
+                logger.info(f"Creating new checkpoint file: {filepath}")
+                h_group = f.create_group('hyperparameters')
+                
+                # Save the full config as a YAML string
+                h_group.attrs['config_yaml'] = OmegaConf.to_yaml(config)
+                
+                # Save key hyperparameters for quick access (like in the example)
+                h_group['num_visibles'] = self.p_size # Assuming p_size is n_vis
+                h_group['num_hiddens'] = self.p_size # Assuming p_size is n_hid
+                h_group['num_chains'] = config.rbm.num_chains
+                h_group['learning_rate'] = config.rbm.lr
+                # ... add any other key hyperparameters ...
+            
+            # --- 2. Create Group for this specific checkpoint ---
+            group_name = f"epoch_{epoch}"
+            if group_name in f:
+                del f[group_name]  # Overwrite old checkpoint for this epoch
+            cp_group = f.create_group(group_name)
+
+            # --- 3. Save Model Parameters into the group ---
+            for key, tensor in self.params.items():
+                cp_group.create_dataset(key, data=tensor.cpu().numpy())
+
+            # --- 4. Save RNG States into the group (for reproducibility) ---
+            cp_group.create_dataset('torch_rng_state', data=torch.get_rng_state())
+            
+            # Save numpy RNG state (using the same format as the source)
+            np_rng_state = np.random.get_state()
+            cp_group.create_dataset('numpy_rng_arg0', data=np.string_(np_rng_state[0]))
+            cp_group.create_dataset('numpy_rng_arg1', data=np_rng_state[1])
+            cp_group.create_dataset('numpy_rng_arg2', data=np_rng_state[2])
+            cp_group.create_dataset('numpy_rng_arg3', data=np_rng_state[3])
+            cp_group.create_dataset('numpy_rng_arg4', data=np_rng_state[4])
+
+            # --- 5. Save Persistent Chains (at root level) ---
+            # This stores the *latest* chain state, as in the source.
+            if 'parallel_chains_v' in f:
+                del f['parallel_chains_v']
+            f.create_dataset('parallel_chains_v', data=self.chains['v'].cpu().numpy())
+            
+            # --- 6. Update the 'last_epoch' pointer ---
+            f.attrs['last_epoch'] = epoch
+
+    def load_checkpoint(self, filepath: str, epoch: int = None) -> int:
+        """
+        Loads the RBM's state from an HDF5 file.
+
+        This method loads parameters, persistent chains, and RNG states
+        into the *current* RBM instance.
+        
+        Args:
+            filepath (str): Path to the HDF5 checkpoint file.
+            epoch (int, optional): Specific epoch to load. 
+                                   If None, loads the latest epoch.
+        
+        Returns:
+            int: The epoch number that was loaded.
+        
+        Raises:
+            FileNotFoundError: If the checkpoint file doesn't exist.
+            KeyError: If the specified epoch or data is not in the file.
+        """
+        if not os.path.exists(filepath):
+            raise FileNotFoundError(f"Checkpoint file not found: {filepath}")
+
+        with h5py.File(filepath, 'r') as f:
+            
+            # --- 1. Determine which epoch to load ---
+            if epoch is None:
+                if 'last_epoch' not in f.attrs:
+                    raise KeyError("Cannot find 'last_epoch' in checkpoint file. File may be corrupt or empty.")
+                loaded_epoch = f.attrs['last_epoch']
+            else:
+                loaded_epoch = epoch
+            
+            group_name = f"epoch_{loaded_epoch}"
+            if group_name not in f:
+                raise KeyError(f"Checkpoint group '{group_name}' not found in file.")
+            
+            cp_group = f[group_name]
+            
+            # --- 2. Load Model Parameters ---
+            logger.info(f"Loading parameters from {group_name}...")
+            for key in self.params.keys():
+                if key not in cp_group:
+                    raise KeyError(f"Parameter '{key}' not found in checkpoint group '{group_name}'.")
+                self.params[key] = torch.tensor(cp_group[key][()], device=self.device)
+
+            # --- 3. Load Persistent Chains (from root) ---
+            if 'parallel_chains_v' not in f:
+                raise KeyError("'parallel_chains_v' not found in checkpoint file.")
+            
+            self.chains['v'] = torch.tensor(f['parallel_chains_v'][()], device=self.device)
+            # You might need to re-sample hiddens based on loaded chains
+            self.sample_hidden() 
+            logger.info("Loaded persistent chains.")
+
+            # --- 4. Load and Set RNG States ---
+            logger.info("Restoring RNG states...")
+            torch.set_rng_state(torch.tensor(cp_group['torch_rng_state'][()]))
+            
+            np_rng_state = (
+                cp_group['numpy_rng_arg0'][()].decode('utf-8'),
+                cp_group['numpy_rng_arg1'][()],
+                cp_group['numpy_rng_arg2'][()],
+                cp_group['numpy_rng_arg3'][()],
+                cp_group['numpy_rng_arg4'][()]
+            )
+            np.random.set_state(np_rng_state)
+            
+            return loaded_epoch
+
 
 
 

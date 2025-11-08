@@ -26,6 +26,7 @@ class HierarchicalEncoder(nn.Module):
         for lvl in range(self.n_latent_hierarchy_lvls-1):
             network=self._create_hierarchy_network(level=lvl)
             self._networks.append(network)
+        
 
     def _create_hierarchy_network(self, level=0):
 
@@ -53,7 +54,10 @@ class HierarchicalEncoder(nn.Module):
         post_samples = []
         post_logits = []
         
-        post_samples.append(self.binary_energy(x0))
+        if self._config.refactor_binary_energy:
+            post_samples.append(self.binary_energy_refacored(x0))
+        else:
+            post_samples.append(self.binary_energy(x0))
         
         for lvl in range(self.n_latent_hierarchy_lvls-1):
             
@@ -87,6 +91,22 @@ class HierarchicalEncoder(nn.Module):
                        self.binary((x.log() * torch.tensor(10).exp()).int(),log_bits)), 1)
         return torch.cat((x.repeat(1,reps), torch.zeros(x.shape[0],residual).to(x.device, x.dtype)), 1)
     
+    def binary_energy_refacored(self, x, lin_bits=19, sqrt_bits=11, log_bits=16):
+        
+        total_bits_per_rep = lin_bits + sqrt_bits + log_bits
+        
+        reps = int(np.floor(self.n_latent_nodes / total_bits_per_rep))
+        residual = self.n_latent_nodes - reps * (total_bits_per_rep)
+
+        x_encoded = torch.cat((
+            self.binary(x.int(), lin_bits), 
+            self.binary((x.sqrt() * torch.sqrt(torch.tensor(10.0))).int(), sqrt_bits), 
+            self.binary((x.log() * 5000.0).int(), log_bits)
+        ), 1)
+        
+        return torch.cat((x_encoded.repeat(1, reps), torch.zeros(x.shape[0], residual).to(x.device, x.dtype)), 1)
+
+
 class HierarchicalEncoderHidden(HierarchicalEncoder):
     def __init__(self, cfg):
         super(HierarchicalEncoderHidden, self).__init__(cfg)

@@ -303,6 +303,105 @@ def save_fantasy_samples_for_vae(rbm, n_samples, burn_in, save_dir):
     return data_path
 
 
+def save_clamped_samples_for_vae(
+    rbm: RBM_TwoPartite,
+    input_data: torch.Tensor,
+    n_clamped: int,
+    gibbs_steps: int,
+    save_dir: str,
+    gen_batch_size: int
+):
+    """
+    Generates conditional samples by clamping the first 'n_clamped'
+    nodes of 'input_data' and sampling the rest. Saves them in a
+    format loadable by LatentDataset for the VAE.
+    
+    Args:
+        rbm: The trained RBM model.
+        input_data (torch.Tensor): The full data tensor to use as the
+                                   basis for clamping.
+                                   Shape: [n_samples, num_visibles].
+        n_clamped (int): The number of nodes (from index 0) to clamp.
+        gibbs_steps (int): The number of Gibbs steps for the sampler.
+        save_dir (str): Directory to save the files.
+        gen_batch_size (int, optional): The batch size for generation.
+                                       Defaults to rbm.chains["v"].shape[0].
+    """
+    n_samples = input_data.shape[0]
+    logger.info(f"Attempting to generate {n_samples} clamped samples for VAE...")
+    
+    if gen_batch_size is None:
+        # Default to the RBM's internal chain size as the batch size
+        gen_batch_size = rbm.chains["v"].shape[0]
+    
+    if gen_batch_size == 0:
+        logger.error("RBM chains have not been initialized or have size 0.")
+        raise ValueError("RBM chains are size 0. Cannot generate samples.")
+
+    # Calculate number of batches needed
+    n_batches = math.ceil(n_samples / gen_batch_size)
+    
+    all_samples = []
+    
+    logger.info(f"RBM num_chains = {rbm.chains['v'].shape[0]}. "
+                f"Using gen_batch_size = {gen_batch_size}. "
+                f"Will generate {n_samples} samples in {n_batches} batches.")
+    
+    for i in range(n_batches):
+        logger.info(f"Generating clamped batch {i+1}/{n_batches} (gibbs_steps={gibbs_steps})...")
+        
+        # 1. Get the data slice for this batch
+        start_idx = i * gen_batch_size
+        end_idx = min((i + 1) * gen_batch_size, n_samples)
+        
+        # 2. Extract the clamped part from the input data
+        # We only need the first n_clamped nodes
+        # Shape: [current_batch_size, n_clamped]
+        batch_clamped_v = input_data[start_idx:end_idx, :n_clamped]
+
+        # Ensure it's on the correct device (matching the RBM)
+        batch_clamped_v = batch_clamped_v.to(rbm.device)
+        
+        # 3. Generate the completed samples
+        # The RBM will return the full [current_batch_size, num_visibles] tensor
+        batch_samples = rbm.sample_v_given_v_clamped(
+            clamped_v=batch_clamped_v,
+            n_clamped=n_clamped,
+            gibbs_steps=gibbs_steps
+        )
+        all_samples.append(batch_samples.cpu()) # Move to CPU for storage
+
+    # Concatenate all batches
+    final_samples = torch.cat(all_samples, dim=0)
+    
+    # No truncation needed as we started from input_data.shape[0]
+
+    # --- Save the samples and dummy labels ---
+    
+    # 1. Define file paths
+    data_filename = f"rbm_clamped_samples_train_data_final.pt"
+    label_filename = f"rbm_clamped_samples_train_labels_final.pt"
+    
+    data_path = os.path.join(save_dir, data_filename)
+    label_path = os.path.join(save_dir, label_filename)
+    
+    # 2. Create dummy labels (to satisfy LatentDataset)
+    # Shape is (N_samples, 1) to match incident_energy
+    dummy_labels = torch.zeros((final_samples.shape[0], 1), dtype=torch.float32)
+
+    # 3. Save both tensors (final_samples is already on CPU)
+    torch.save(final_samples, data_path)
+    torch.save(dummy_labels, label_path)
+    
+    logger.info("="*50)
+    logger.info(f"Saved clamped samples for VAE to: {data_path}")
+    logger.info(f"Saved dummy labels to: {label_path}")
+    logger.info(f"Final data shape: {final_samples.shape}")
+    logger.info("="*50)
+    
+    return data_path
+
+
 def main():
     # Initialize Hydra config
     hydra.core.global_hydra.GlobalHydra.instance().clear()
@@ -348,6 +447,7 @@ def main():
     logger.info(f"Saving results to '{save_dir}'")
 
     num_epochs = config.n_epochs
+    checkpoint_file = os.path.join(save_dir, "training_checkpoint.h5")
 
     for epoch in range(num_epochs):
         logger.info(f"Starting Epoch {epoch+1}/{num_epochs}")
@@ -396,8 +496,6 @@ def main():
         logger.info(f"  W: max={rbm.params['weight_matrix'].max():.4f}, "
                    f"min={rbm.params['weight_matrix'].min():.4f}")
                    
-        # ==========================================================
-        # ::: MODIFICATION HERE :::
         # Only run visualizations if we are *not* using latent data (i.e., we are using MNIST)
         if not config.rbm.use_latent_data:
             if epoch % 20 == 0:
@@ -419,6 +517,14 @@ def main():
                 logger.info("Generating MNIST sample grid...")
                 fantasy_samples = generate_fantasy_samples(rbm, n_samples=100, burn_in=10000)
                 visualize_rbm_samples_grid(fantasy_samples, label=str(epoch), save_dir=save_dir)
+        if epoch % config.rbm.checkpoint_interval == 0 or (epoch + 1) == num_epochs:
+            logger.info(f"Saving checkpoint at epoch {epoch}...")
+            try:
+                rbm.save_checkpoint(checkpoint_file, epoch, config)
+                logger.info(f"Checkpoint saved successfully to {checkpoint_file}")
+            except Exception as e:
+                logger.error(f"Failed to save checkpoint at epoch {epoch}: {e}")
+
     if not config.rbm.use_latent_data:
         logger.info("Generating final MNIST sample grid...")
         fantasy_samples = generate_fantasy_samples(rbm, n_samples=100, burn_in=10000)
@@ -435,11 +541,6 @@ def main():
     logger.info("Training complete!")
     logger.info("="*50)
 
-
-if __name__ == "__main__":
-    logger.info("Starting main executable.")
-    main()
-    logger.info("Finished running script")
 
 if __name__ == "__main__":
     logger.info("Starting main executable.")

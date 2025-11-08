@@ -282,6 +282,69 @@ class Engine():
             # Log average loss after loop
             return self.aggr_loss(data_loader, epoch)
 
+    def generate_showers_from_rbm(self, rbm_samples, incident_energies):
+        """
+        Generates showers by passing externally provided RBM samples through the decoder.
+        The first partition of the latent space is replaced by the encoded incident energy.
+
+        Args:
+            rbm_samples (torch.Tensor): A tensor of latent samples from the RBM.
+                Shape: (n_samples, latent_nodes_per_p * 4).
+            incident_energies (torch.Tensor): A tensor of corresponding incident energies (x0).
+                Shape: (n_samples, 1).
+        """
+        self.model.to(self.device)
+        self.model.eval()
+        with torch.no_grad():
+            # 1. Get sizes from input tensors and config
+            n_samples = rbm_samples.shape[0]
+            ar_input_size = self._config.data.z * self._config.data.r * self._config.data.phi
+            ar_latent_size = self._config.rbm.latent_nodes_per_p
+
+            # 2. Perform sanity checks on input tensor dimensions
+            if rbm_samples.shape[1] != ar_latent_size * 4:
+                raise ValueError("rbm_samples has an incorrect latent dimension.")
+            if n_samples != incident_energies.shape[0]:
+                raise ValueError("The number of rbm_samples and incident_energies must be the same.")
+
+            # 3. Initialize tensors to store the results
+            self.showers_prior_generated = torch.zeros((n_samples, ar_input_size), dtype=torch.float32)
+            self.showers_reduce_prior_generated = torch.zeros((n_samples, ar_input_size), dtype=torch.float32)
+            self.prior_samples_generated = rbm_samples.clone()
+            self.incident_energy_generated = incident_energies.clone()
+            
+            # Note: If n_samples is very large, you might need to process in batches.
+            # This implementation processes the entire tensor at once.
+
+            # 4. Prepare tensors for the model
+            rbm_samples_dev = rbm_samples.to(self.device)
+            incident_energies_dev = incident_energies.to(self.device)
+            
+            # The input rbm_samples tensor is flat. It needs to be split into 4 parts
+            # for the decoder, reversing the original torch.cat operation.
+            samples_split = list(torch.split(rbm_samples_dev, ar_latent_size, dim=1))
+
+            # Encode the incident energies to get the conditional part of the latent space
+            incident_energies_encoded = self.model.encoder.binary_energy_refacored(incident_energies_dev)
+            
+            # *** NEW: Replace the first partition (p0) with the encoded incident energies ***
+            # samples_split[0] = incident_energies_encoded
+
+            # 5. Pass samples through the decoder to generate showers.
+            # We pass `None` for the `x_reduce` argument, assuming the decoder's
+            # architecture can handle generation from the prior without it.
+            _, shower_prior_reduce = self.model.decode(samples_split, None, incident_energies_dev)
+            
+            # 6. Undo the reduction operation to get the full shower energy distribution
+            shower_prior_full = self._reduceinv(shower_prior_reduce, incident_energies_dev)
+
+            # 7. Store all results in the corresponding instance tensors on the CPU
+            self.showers_reduce_prior_generated = shower_prior_reduce.cpu()
+            self.showers_prior_generated = shower_prior_full.cpu()
+            
+            print(f"Successfully generated {n_samples} showers from RBM samples.")
+
+
     def evaluate_ae(self, data_loader, epoch):
         log_batch_idx = max(len(data_loader)//self._config.engine.n_batches_log_val, 1)
         self.model.eval()
