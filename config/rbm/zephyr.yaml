@@ -3,7 +3,7 @@ model_type: "RBM"
 fullyconnected: 1
 clamped: 0
 no_weights: 0
-latent_nodes_per_p: 46
+latent_nodes_per_p: 184
 partitions: 4
 method: "CD"
 bgs_steps: 500
