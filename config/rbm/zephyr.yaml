@@ -3,7 +3,7 @@ model_type: "RBM"
 fullyconnected: 1
 clamped: 0
 no_weights: 0
-latent_nodes_per_p: 184
+latent_nodes_per_p: 46
 partitions: 4
 method: "CD"
 bgs_steps: 500
@@ -28,4 +28,5 @@ SGD: 1
 num_chains: 5000
 centered: 0
 use_latent_data: 1
-latent_data_path: "/home/leozhu/CaloQuVAE/wandb-outputs/latent_train_data_2025-10-20_03-43-55.pt"
+latent_data_path: "/home/leozhu/CaloQuVAE/wandb-outputs/latent_train_data_2025-10-31_16-00-12.pt"
+checkpoint_interval: 100

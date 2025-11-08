@@ -7,7 +7,7 @@ freeze_vae: 0
 run_path: ""
 # config_path: "/fast_scratch_1/caloqvae/jtoledo/wandb/run-20250821_230537-pp65hpwu/files/autoencoderhidden_9_config.yaml"
 # config_path: "/fast_scratch_1/caloqvae/jtoledo/wandb/run-20250825_185123-cysb33l7/files/autoencoderhidden_9_config.yaml"
-config_path: "/home/leozhu/CaloQuVAE/wandb-outputs/run-20251016_234041-uxt7g1zk/files/ae_separate_199_config.yaml"
+config_path: "/fast_scratch_1/caloqvae/lzhu/wandb/run-20251106_052604-hron48nb/files/ae_separate_659_config.yaml"
 # config_path: /fast_scratch_1/caloqvae/jtoledo/wandb/run-20250819_203111-u88m8d6w/files/autoencoderbase_249_config.yaml
 
 device: gpu
@@ -15,7 +15,7 @@ gpu_list:
   - 0
 
 defaults:
-  - data: AtlasReg000New
+  - data: AtlasCustom1
   - wandb: ML2
   - model: model_ATLASNew_fullgeo_ae
   - engine: engine1
@@ -25,3 +25,5 @@ defaults:
 n_epochs: 2000
 epoch_freeze: 160
 epoch_start: 0
+
+refactor_binary_energy: 1
