@@ -257,6 +257,28 @@ def get_naive_metrics(engine):
     )
     return fpd_naive, fpd_naive_err, kpd_naive, kpd_naive_err
 
+def get_rbm_metrics(engine, rbm_samples, decoded_energies):
+    engine.evaluate_vae(engine.data_mgr.val_loader, 0)
+    engine.generate_showers_from_rbm(rbm_samples, decoded_energies)
+    rbm_HEP_obj = HepMetrics(engine)
+
+    rbm_HEPMetrics = get_fpd_kpd_metrics(
+        np.array(engine.showers), 
+        np.array(engine.showers_prior_generated), 
+        False, rbm_HEP_obj.hlf, rbm_HEP_obj.ref_hlf, if_Atlas=rbm_HEP_obj.if_Atlas
+    )
+
+    fpd_rbm = rbm_HEPMetrics[0]
+    fpd_rbm_err = rbm_HEPMetrics[1]
+    kpd_rbm = rbm_HEPMetrics[2]
+    kpd_rbm_err = rbm_HEPMetrics[3]
+    
+    logger.info(
+        f"RBM FPD (x10^3): {fpd_rbm*1e3:.4f} ± {fpd_rbm_err*1e3:.4f}\n"
+        f"RBM KPD (x10^3): {kpd_rbm*1e3:.4f} ± {kpd_rbm_err*1e3:.4f}"
+    )
+    return fpd_rbm, fpd_rbm_err, kpd_rbm, kpd_rbm_err
+
 
 if __name__=="__main__":
     logger.info("Starting main executable.")
