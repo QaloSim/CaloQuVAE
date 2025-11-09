@@ -1,22 +1,32 @@
 model_name: Zephyr
-fullyconnected: 0
-latent_nodes_per_p: 302
+model_type: "RBM"
+fullyconnected: 1
+clamped: 0
+no_weights: 0
+latent_nodes_per_p: 46
 partitions: 4
 method: "CD"
-bgs_steps: 3000
+bgs_steps: 500
 lr: 0.01
-gamma: 0.001
+gamma: 0.000
 w_std: 
-  - 1.0
-  - 1.0
-  - 1.0
-  - 1.0
-  - 1.0
-  - 1.0
-b_std: 
-  - 1.0
-  - 1.0
-  - 1.0
-  - 1.0
+  - 0.0001
+  - 0.01
+  - 0.01
+  - 0.01
+  - 0.01
+  - 0.01
+b_std:
+  - 0.01
+  - 0.01
+  - 0.01
+  - 0.01
 optimize_partition: 0
-hidden_layer: 1
+hidden_layer: 0
+two_partite: 1
+SGD: 1
+num_chains: 5000
+centered: 0
+use_latent_data: 1
+latent_data_path: /fast_scratch_1/caloqvae/rbm_encoded_data/latent_train_data_2025-11-09_01-39-56.pt
+encoded_data_prefix: /fast_scratch_1/caloqvae/rbm_encoded_data

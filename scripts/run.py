@@ -116,7 +116,7 @@ def setup_model(config=None):
     params = list(model.encoder.parameters()) + list(model.decoder.parameters())
     params = [p for p in params if p.requires_grad]
     engine.optimiser = torch.optim.Adam(params,
-                                        lr=config.engine.learning_rate)
+                                    lr=config.engine.learning_rate)
     model.prior.initOpt()
     #add the model instance to the engine namespace
     engine.model = model
