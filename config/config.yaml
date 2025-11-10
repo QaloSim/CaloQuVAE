@@ -6,7 +6,9 @@ freeze_vae: 1
 
 run_path: ""
 # config_path: /home/jtoledo/CaloQuVAE/outputs_sym/run-20251108_201310-ltj5iz2k/files/ae_separate_39_config.yaml
-config_path: /home/jtoledo/CaloQuVAE/outputs_sym/run-20251108_201310-ltj5iz2k/files/RBM_config_file.yaml
+config_path: /home/jtoledo/CaloQuVAE/outputs_sym/run-20251108_201310-ltj5iz2k/files/ae_separate_349_config.yaml
+
+rbm_config_path: /home/jtoledo/CaloQuVAE/outputs_sym/run-20251108_201310-ltj5iz2k/files/RBM_config_file.yaml
 
 device: gpu
 gpu_list:

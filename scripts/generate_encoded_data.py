@@ -52,6 +52,7 @@ def main():
 
     self._config.rbm.latent_data_path = latent_dir1
     config_path = self._config.config_path.split("files")[0] + "files/RBM_config_file.yaml"
+    self._config["rbm_config_path"] = config_path
     OmegaConf.save(self._config, config_path, resolve=True)
     logger.info(f"Saved RBM config file to {config_path}")
 

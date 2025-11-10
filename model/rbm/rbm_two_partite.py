@@ -9,16 +9,29 @@ from omegaconf import OmegaConf
 logger = logging.getLogger(__name__)
 
 class RBM_TwoPartite:
-    def __init__(self, config, data):
+    def __init__(self, config, data=None):
         self.config = config
         self.p_size = self.config.rbm.latent_nodes_per_p
         if self.config.device == "gpu" and torch.cuda.is_available():
             self.device = torch.device(f"cuda:{self.config.gpu_list[0]}")
         else:
             self.device = torch.device("cpu")
+        if data is not None:
+            self.init_parameters(data, self.p_size, self.p_size, self.device)
+            self.init_chains(self.config.rbm.num_chains, self.p_size, self.p_size, self.device)
+        else:
+            self.params = {}
+            self.params["vbias"] = torch.randn(self.p_size, device=self.device) * self.config.rbm.w_std[0]
+            self.params["hbias"] = torch.zeros(self.p_size, device=self.device) * self.config.rbm.w_std[0]
+            self.params["weight_matrix"] = torch.randn(size=(self.p_size, self.p_size), device=self.device) * self.config.rbm.w_std[0]
 
-        self.init_parameters(data, self.p_size, self.p_size, self.device)
-        self.init_chains(self.config.rbm.num_chains, self.p_size, self.p_size, self.device)
+    @property
+    def tools(self):
+        return self._tools
+
+    @tools.setter
+    def tools(self, tools):
+        self._tools = tools
 
     def init_parameters(self,
         data : torch.Tensor,
@@ -52,7 +65,6 @@ class RBM_TwoPartite:
         self.chains["h"] = torch.randint(0, 2, size=(num_chains, num_hiddens), device=device, dtype=torch.float32)
         self.chains["mv"] = torch.zeros(size=(num_chains, num_visibles), device=device, dtype=torch.float32)
         self.chains["mh"] = torch.zeros(size=(num_chains, num_hiddens), device=device, dtype=torch.float32)
-
     
     def compute_gradient(
         self,

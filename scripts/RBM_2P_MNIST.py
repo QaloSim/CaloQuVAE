@@ -12,6 +12,7 @@ from torchvision import datasets, transforms
 from torch.utils.data import DataLoader
 
 from model.rbm.rbm_two_partite import RBM_TwoPartite, ZephyrRBM_TwoPartite
+from utils.rbm_tools import RBMTools
 
 from CaloQuVAE import logging
 logger = logging.getLogger(__name__)
@@ -184,7 +185,8 @@ def generate_fantasy_samples(rbm, n_samples=8, burn_in=100):
 
     # --- 4. Get the required number of samples by slicing ---
     # We take the first n_samples from the batch of generated chains.
-    samples_tensor = rbm.chains["v"][:n_samples].clone()
+    # samples_tensor = rbm.chains["v"][:n_samples].clone()
+    samples_tensor = torch.cat([rbm.chains["v"][:n_samples,:], rbm.chains["h"][:n_samples,:]], dim=1)
 
     # --- 5. Restore the original persistent chains for training ---
     rbm.chains = original_chains
@@ -308,7 +310,7 @@ def main():
     hydra.core.global_hydra.GlobalHydra.instance().clear()
     initialize(version_base=None, config_path="../config")
     cfg = compose(config_name="config.yaml")
-    config = OmegaConf.load(cfg.config_path)
+    config = OmegaConf.load(cfg.rbm_config_path)
     config.gpu_list = cfg.gpu_list
     if not config.rbm.use_latent_data:
         config.rbm.latent_nodes_per_p = 784  # For MNIST
@@ -334,6 +336,8 @@ def main():
         rbm = RBM_TwoPartite(config, data=sample_batch_flat)
     else:
         rbm = ZephyrRBM_TwoPartite(config, data=sample_batch_flat)
+
+    rbm.tools = RBMTools
 
     logger.info(f"Initialized RBM: {rbm.p_size} visible, {rbm.p_size} hidden units")
     logger.info(f"Device: {rbm.device}")
@@ -433,7 +437,9 @@ def main():
                 save_dir=save_dir
             )
         logger.info(f"VAE data ready at: {saved_data_path}")
+        config["samples_data_path"] = saved_data_path
         logger.info("\n" + "="*50)
+        RBMTools.save_RBM_state(rbm, save_dir, cfg_string='rbm_final', config=config)
     logger.info("Training complete!")
     logger.info("="*50)
 
