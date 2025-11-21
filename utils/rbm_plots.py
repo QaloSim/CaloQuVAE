@@ -3,6 +3,11 @@ import numpy as np
 import torch
 import torch.nn as nn
 from model.rbm.rbm_two_partite import RBM_TwoPartite
+import networkx as nx
+from CaloQuVAE import logging
+logger = logging.getLogger(__name__)
+
+
 
 def plot_rbm_histogram(rbm_post, rbm_prior, rbm_prior_qpu=None):
     # Assuming rbm_post and rbm_prior are tensors with energy values
@@ -447,3 +452,128 @@ def plot_weight_distribution(rbm: RBM_TwoPartite, bins: int = 50, title: str = N
     # 5. Show the plot
     plt.tight_layout()
     plt.show()
+
+
+
+def plot_pruning_analysis(rbm: 'RBM_TwoPartite', 
+                            max_tolerance: float = None, 
+                            num_steps: int = 100):
+    """
+    Plots the number of remaining weights in an RBM as a function
+    of the pruning tolerance.
+
+    This function is non-destructive and does NOT modify the RBM.
+
+    Args:
+        rbm (RBM_TwoPartite): The RBM instance to analyze.
+        max_tolerance (float, optional): The maximum tolerance to check.
+                                        If None, defaults to the max
+                                        absolute weight in the matrix.
+        num_steps (int, optional): The number of tolerance levels to test.
+    """
+    # Get the absolute weights on the CPU for analysis
+    with torch.no_grad():
+        weights = rbm.params["weight_matrix"].abs().cpu().numpy().flatten()
+        
+    total_weights = weights.size
+    
+    if total_weights == 0:
+        print("Weight matrix is empty. Nothing to plot.")
+        return
+
+    if max_tolerance is None:
+        max_tolerance = np.max(weights)
+    
+    if max_tolerance == 0:
+        print("All weights are zero. Nothing to plot.")
+        return
+    
+    # Create a range of tolerances
+    tolerances = np.linspace(0, max_tolerance, num_steps)
+    
+    remaining_weights_count = []
+    
+    # This is much faster than calling torch.count_nonzero repeatedly
+    for tol in tolerances:
+        # Count how many weights have |w| >= tol
+        remaining = np.sum(weights >= tol)
+        remaining_weights_count.append(remaining)
+        
+    remaining_weights_percent = (np.array(remaining_weights_count) / total_weights) * 100
+
+    # --- Create the plot ---
+    fig, ax1 = plt.subplots(figsize=(10, 6))
+
+    # Plot 1: Absolute Count
+    color = 'tab:blue'
+    ax1.set_xlabel('Pruning Tolerance (Absolute Weight)')
+    ax1.set_ylabel('Remaining Weights (Count)', color=color)
+    ax1.plot(tolerances, remaining_weights_count, color=color, 
+             label='Remaining Weights (Count)')
+    ax1.tick_params(axis='y', labelcolor=color)
+    ax1.grid(True, linestyle='--', alpha=0.6)
+    ax1.set_ylim(bottom=0)
+
+    # Plot 2: Percentage (on a twin axis)
+    ax2 = ax1.twinx()
+    color = 'tab:red'
+    ax2.set_ylabel('Remaining Weights (%)', color=color)
+    ax2.plot(tolerances, remaining_weights_percent, color=color, linestyle=':',
+             label='Remaining Weights (%)')
+    ax2.tick_params(axis='y', labelcolor=color)
+    ax2.set_ylim(0, 100.5) # Percentage is 0-100
+
+    fig.suptitle('RBM Weight Pruning Analysis')
+    fig.tight_layout(rect=[0, 0.03, 1, 0.95]) # Adjust for suptitle
+    plt.show()
+
+
+def rbm_to_networkx(rbm: RBM_TwoPartite, tolerance: float = 0.0) -> nx.Graph:
+    """
+    Maps the RBM's weight matrix to a NetworkX bipartite graph.
+    
+    Nodes are partitioned into 'visible' (partition 0) and 'hidden' (partition 1).
+    An edge is created if the absolute weight >= tolerance.
+    The raw weight is stored as an 'weight' attribute on the edge.
+
+    Args:
+        rbm (RBM_TwoPartite): The RBM instance.
+        tolerance (float, optional): The minimum absolute weight
+                                     to consider for an edge.
+                                     Defaults to 0.0 (all non-zero).
+
+    Returns:
+        nx.Graph: A NetworkX Graph object with bipartite=True.
+    """
+    with torch.no_grad():
+        weights = rbm.params["weight_matrix"].cpu().numpy()
+        
+    num_visibles, num_hiddens = weights.shape
+    
+    B = nx.Graph()
+    
+    # Add nodes with bipartite attribute
+    visible_nodes = [f'v_{i}' for i in range(num_visibles)]
+    hidden_nodes = [f'h_{j}' for j in range(num_hiddens)]
+    
+    B.add_nodes_from(visible_nodes, bipartite=0) # Partition 0
+    B.add_nodes_from(hidden_nodes, bipartite=1)  # Partition 1
+    
+    # Find indices where |weight| >= tolerance
+    # Use np.where for efficiency instead of nested loops
+    abs_weights = np.abs(weights)
+    visible_indices, hidden_indices = np.where(abs_weights >= tolerance)
+    
+    # Create a list of edges with attributes
+    edges_with_data = [
+        (f'v_{i}', f'h_{j}', {'weight': float(weights[i, j])})
+        for i, j in zip(visible_indices, hidden_indices)
+    ]
+    
+    B.add_edges_from(edges_with_data)
+    
+    logger.info(f"Created NetworkX graph with {B.number_of_nodes()} nodes "
+                f"({num_visibles} visible, {num_hiddens} hidden) "
+                f"and {B.number_of_edges()} edges (Tolerance={tolerance}).")
+    
+    return B
