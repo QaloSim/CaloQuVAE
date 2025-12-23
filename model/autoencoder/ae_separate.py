@@ -72,9 +72,6 @@ class AutoEncoderSeparate(AutoEncoderBase):
         logger.debug("loss")
         beta, post_logits, post_samples, output_activations, output_hits = args
 
-        entropy_loss = -1 * self.posterior_entropy(post_logits)        
-
-        pos_energy = self.pos_energy(post_samples)
 
         ae_loss = torch.pow((input_data - output_activations),2) * torch.exp(self._config.model.mse_weight*input_data)
         ae_loss = torch.mean(torch.sum(ae_loss, dim=1), dim=0) * self._config.model.coefficient
@@ -82,16 +79,23 @@ class AutoEncoderSeparate(AutoEncoderBase):
         hit_loss = binary_cross_entropy_with_logits(output_hits, torch.where(input_data > 0, 1., 0.), 
                     reduction='none')
         hit_loss = torch.mean(torch.sum(hit_loss, dim=1), dim=0)
-        l_dist = torch.pow(torch.cat(post_logits,1) - torch.cat(self.logit_distance(post_samples, post_logits),1),2).mean()
 
 
-        return {
+        if  hasattr(self._config.model.loss_coeff, 'pos_energy') and hasattr(self._config.loss_coeff, 'logit_distance'):
+            l_dist = torch.pow(torch.cat(post_logits,1) - torch.cat(self.logit_distance(post_samples, post_logits),1),2).mean()
+            pos_energy = self.pos_energy(post_samples)
+            entropy_loss = -1 * self.posterior_entropy(post_logits)        
+
+
+            return {
             "ae_loss": ae_loss,
             "hit_loss": hit_loss,
             "entropy": entropy_loss,
             "pos_energy": pos_energy,
-            "logit_distance":l_dist
-        }
+            "logit_distance":l_dist}
+
+        else:
+            return {"ae_loss":ae_loss, "hit_loss":hit_loss}            
 
 
 class AutoEncoderSeparateHidden(AutoEncoderSeparate):

@@ -111,9 +111,13 @@ class DecoderFullGeoATLASNew(DecoderFullGeo):
     
     def _create_skip_connections(self):
         self.skip_connections = nn.ModuleList()
+        if hasattr(self, 'cond_p_size'):
+            start = self.cond_p_size + self.p_size
+        else:
+            start = self.p_size * 2
         for i in range(self.n_latent_hierarchy_lvls-1):
             skip_connection = nn.Sequential(
-                nn.ConvTranspose3d(self.p_size * (2+i), 64, (3, 5, 7), (1, 1, 1), padding=0),
+                nn.ConvTranspose3d(start + i * self.p_size, 64, (3, 5, 7), (1, 1, 1), padding=0),
                 nn.BatchNorm3d(64),
                 nn.PReLU(64, 0.02),
                 # upscales to (64, 3, 5, 7)

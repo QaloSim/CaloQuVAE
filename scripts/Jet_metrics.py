@@ -212,8 +212,8 @@ def get_reference_point():
     wandb.init(tags = [cfg.data.dataset_name], project=cfg.wandb.project, entity=cfg.wandb.entity, config=OmegaConf.to_container(cfg, resolve=True), mode='disabled')
     engine1 = setup_model(cfg)
     engine2 = setup_model(cfg)
-    engine1.evaluate_vae(engine1.data_mgr.val_loader, 0)
-    engine2.evaluate_vae(engine2.data_mgr.test_loader, 0)
+    engine1.evaluate_ae(engine1.data_mgr.val_loader, 0)
+    engine2.evaluate_ae(engine2.data_mgr.test_loader, 0)
     
     # Get the lengths of both shower arrays
     len1 = len(engine1.showers)
@@ -236,7 +236,7 @@ def get_reference_point():
     return ref_metrics
 
 def get_naive_metrics(engine):
-    engine.evaluate_vae(engine.data_mgr.train_loader, 0)
+    engine.evaluate_ae(engine.data_mgr.train_loader, 0)
     engine.evaluate_trivial()
     naive_HEP_obj = HepMetrics(engine)
 
@@ -258,7 +258,7 @@ def get_naive_metrics(engine):
     return fpd_naive, fpd_naive_err, kpd_naive, kpd_naive_err
 
 def get_rbm_metrics(engine, rbm_samples, decoded_energies):
-    engine.evaluate_vae(engine.data_mgr.val_loader, 0)
+    engine.evaluate_ae(engine.data_mgr.val_loader, 0)
     engine.generate_showers_from_rbm(rbm_samples, decoded_energies)
     rbm_HEP_obj = HepMetrics(engine)
 

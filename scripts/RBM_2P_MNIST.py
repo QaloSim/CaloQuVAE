@@ -432,7 +432,7 @@ def main():
     else:
         rbm = ZephyrRBM_TwoPartite(config, data=sample_batch_flat)
 
-    logger.info(f"Initialized RBM: {rbm.p_size} visible, {rbm.p_size} hidden units")
+    logger.info(f"Initialized RBM: {rbm.num_visible} visible, {rbm.num_hidden} hidden units")
     logger.info(f"Device: {rbm.device}")
     logger.info(f"Num chains: {config.rbm.num_chains}")
 

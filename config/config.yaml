@@ -7,12 +7,12 @@ freeze_vae: 0
 run_path: ""
 # config_path: "/fast_scratch_1/caloqvae/jtoledo/wandb/run-20250821_230537-pp65hpwu/files/autoencoderhidden_9_config.yaml"
 # config_path: "/fast_scratch_1/caloqvae/jtoledo/wandb/run-20250825_185123-cysb33l7/files/autoencoderhidden_9_config.yaml"
-config_path: "/fast_scratch_1/caloqvae/lzhu/wandb/run-20251106_052604-hron48nb/files/ae_separate_659_config.yaml"
+config_path: "/home/leozhu/CaloQuVAE/wandb-outputs/run-20251114_012936-8e96xchx/files/ae_separate_best_epoch157_config.yaml"
 # config_path: /fast_scratch_1/caloqvae/jtoledo/wandb/run-20250819_203111-u88m8d6w/files/autoencoderbase_249_config.yaml
 
 device: gpu
 gpu_list:
-  - 0
+  - 2
 
 defaults:
   - data: AtlasCustom1

@@ -144,7 +144,7 @@ class HighLevelFeatures_ATLAS_regular:
         - scale: 'linear' or 'equal_bin', determines the type of radial scale for all subplots.
         """
         num = len(self.relevantLayers)
-        fig, axes = plt.subplots(1, num, figsize=(15,15), dpi=200)
+        fig, axes = plt.subplots(1, num, figsize=(15,4), dpi=200)
         norm = LogNorm(vmin=vmin, vmax=vmax)
 
         vox = 14*24
@@ -157,7 +157,8 @@ class HighLevelFeatures_ATLAS_regular:
         sm = ScalarMappable(cmap=cmap, norm=norm)
         sm.set_array([])
         fig.colorbar(sm, ax=axes.ravel().tolist(), orientation='horizontal',
-                     fraction=0.05, pad=0.1, label='Energy')
+                     fraction=0.05, pad=0.1, label='Energy (MeV)')
+        fig.suptitle(title or "Calorimeter Shower Visualization", fontsize=20)
         return fig
 
     def plot_single_layer_with_highlights(self, data, layer, r, phi, highlight_coords, scale='equal_bin', cmap='rainbow', vmin=1e-4, vmax=1e4, title=None):
@@ -167,7 +168,7 @@ class HighLevelFeatures_ATLAS_regular:
         """
         fig, ax = plt.subplots(figsize=(6, 6))
         norm = LogNorm(vmin=vmin, vmax=vmax)
-        
+         
         layer_idx = self.relevantLayers.index(layer)
         self.single_event_energy = data[layer_idx * r * phi : (layer_idx + 1) * r * phi]
         self.current_layer = str(layer)

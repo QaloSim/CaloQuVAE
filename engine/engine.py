@@ -214,11 +214,11 @@ class Engine():
             wandb.log(self.total_loss_dict)
             return self.total_loss_dict
     
-    def track_best_val_loss(self, loss_dict):
-        if self.best_val_loss > loss_dict["val_ae_loss"]: #+ loss_dict["val_hit_loss"]:
-            self.best_val_loss = loss_dict["val_ae_loss"] #+ loss_dict["val_hit_loss"]
-            self.best_config_path = self._save_model(name="best")
-            logger.info("Best Val loss: {:.4f}".format(self.best_val_loss))
+    def track_best_val_loss(self, loss_dict, chi2, epoch=None):
+        if self.best_val_loss > loss_dict["val_ae_loss"] + chi2*10: #+ loss_dict["val_hit_loss"]:
+            self.best_val_loss = loss_dict["val_ae_loss"] + chi2*10 #+ loss_dict["val_hit_loss"]
+            self.best_config_path = self._save_model(name="best"+(f"_epoch{epoch}" if epoch is not None else ""))
+            logger.info("Best Val loss plus chi2: {:.4f}".format(self.best_val_loss+ chi2*10))
 
     def evaluate_vae(self, data_loader, epoch):
         log_batch_idx = max(len(data_loader)//self._config.engine.n_batches_log_val, 1)
@@ -299,10 +299,10 @@ class Engine():
             # 1. Get sizes from input tensors and config
             n_samples = rbm_samples.shape[0]
             ar_input_size = self._config.data.z * self._config.data.r * self._config.data.phi
-            ar_latent_size = self._config.rbm.latent_nodes_per_p
+            ar_latent_size = self._config.rbm.latent_nodes_per_p * 3 + self._config.model.cond_p_size
 
             # 2. Perform sanity checks on input tensor dimensions
-            if rbm_samples.shape[1] != ar_latent_size * 4:
+            if rbm_samples.shape[1] != ar_latent_size:
                 raise ValueError("rbm_samples has an incorrect latent dimension.")
             if n_samples != incident_energies.shape[0]:
                 raise ValueError("The number of rbm_samples and incident_energies must be the same.")
@@ -325,7 +325,7 @@ class Engine():
             samples_split = list(torch.split(rbm_samples_dev, ar_latent_size, dim=1))
 
             # Encode the incident energies to get the conditional part of the latent space
-            incident_energies_encoded = self.model.encoder.binary_energy_refacored(incident_energies_dev)
+            incident_energies_encoded = self.model.encoder.binary_energy_refactored(incident_energies_dev)
             
             # *** NEW: Replace the first partition (p0) with the encoded incident energies ***
             # samples_split[0] = incident_energies_encoded
@@ -354,18 +354,19 @@ class Engine():
             ar_size = np.sum(bs)
             ar_input_size = self._config.data.z * self._config.data.r * self._config.data.phi
             ar_latent_size = self._config.rbm.latent_nodes_per_p
+            cond_size = self._config.model.cond_p_size
             
             self.incident_energy = torch.zeros((ar_size, 1), dtype=torch.float32)
             self.showers = torch.zeros((ar_size, ar_input_size), dtype=torch.float32)
             self.showers_reduce = torch.zeros((ar_size, ar_input_size), dtype=torch.float32)
             self.showers_recon = torch.zeros((ar_size, ar_input_size), dtype=torch.float32)
             self.showers_reduce_recon = torch.zeros((ar_size, ar_input_size), dtype=torch.float32)
-            self.post_samples = torch.zeros((ar_size, ar_latent_size * 4), dtype=torch.float32)
+            self.post_samples = torch.zeros((ar_size, ar_latent_size * 3+cond_size), dtype=torch.float32)
             self.post_logits = torch.zeros((ar_size, ar_latent_size * 3), dtype=torch.float32)
 
             self.showers_prior = torch.zeros((ar_size, ar_input_size), dtype=torch.float32)
             self.showers_reduce_prior = torch.zeros((ar_size, ar_input_size), dtype=torch.float32)
-            self.prior_samples = torch.zeros((ar_size, ar_latent_size * 4), dtype=torch.float32)
+            self.prior_samples = torch.zeros((ar_size, ar_latent_size * 3+cond_size), dtype=torch.float32)
             self.RBM_energy_prior = torch.zeros((ar_size, 1), dtype=torch.float32)
             self.RBM_energy_post = torch.zeros((ar_size, 1), dtype=torch.float32)
 
@@ -377,7 +378,7 @@ class Engine():
                 output = self.model((x_reduce, x0))
                 # Compute loss
                 loss_dict = self.model.loss(x_reduce, output)
-                loss_dict["loss"] = torch.stack([loss_dict[key] * self._config.model.loss_coeff[key]  for key in loss_dict.keys() if "loss" != key]).sum()
+                loss_dict["loss"] = torch.stack([loss_dict[key] * self._config.model.loss_coeff[key]  for key in loss_dict.keys() if "loss" != key and key in self._config.model.loss_coeff]).sum()
                 for key in list(loss_dict.keys()):
                     loss_dict['val_'+key] = loss_dict[key]
                     loss_dict.pop(key)
@@ -406,14 +407,18 @@ class Engine():
 
 
     def evaluate_trivial(self):
-        self.evaluate_vae(self.data_mgr.val_loader, 0)
+        self.evaluate_ae(self.data_mgr.val_loader, 0)
         # create naive samples
         p_size = self._config.rbm.latent_nodes_per_p
+        if hasattr(self._config.model, "cond_p_size"):
+            cond_p_size = self._config.model.cond_p_size
+        else:
+            cond_p_size = p_size
         probs = torch.sigmoid(self.post_logits).mean(dim=0).cpu()
         num_samples = self.post_logits.shape[0]
         expanded_probs = probs.expand(num_samples, -1)
         naive_samples = torch.bernoulli(expanded_probs)
-        p0_slice = self.post_samples[:,:p_size]
+        p0_slice = self.post_samples[:,:cond_p_size]
         naive_samples = torch.cat((p0_slice, naive_samples), dim=1)
 
         # set up storage of naive showers
@@ -429,7 +434,7 @@ class Engine():
             idx1, idx2 = int(np.sum(bs[:i])), int(np.sum(bs[:i+1]))
             x_reduce = self._reduce(x, x0)
             naive_sample = naive_samples[i*batch_size:(i+1)*batch_size,:]
-            split_samples = torch.split(naive_sample, p_size, dim=1)
+            split_samples = torch.split(naive_sample, [cond_p_size, p_size, p_size, p_size], dim=1)
             self.model.to(torch.device("cpu"))
 
             _, shower_naive = self.model.decode(split_samples, x_reduce, x0)
@@ -440,19 +445,7 @@ class Engine():
     def generate_plots(self, epoch, key):
         if self._config.wandb.mode != "disabled": # Only log if wandb is enabled
             
-            # Correlation and Frobenius plots
-            # fig_target_corr, fig_sampled_corr, fig_gt_grid, fig_prior_grid, fig_frob_layerwise, fig_gt, fig_prior, gt_spars_corr, 
-            #   prior_spars_corr, fig_gt_sparsity, fig_prior_sparsity, fig_gt_sparsity_corr, fig_prior_sparsity_corr, fig_gt_patch, 
-            #   fig_prior_patch =correlation_plots(
-            #       cfg=self._config,
-            #       incident_energy=self.incident_energy,
-            #       showers=self.showers,
-            #       showers_prior=self.showers_prior,
-            #       epoch=epoch
-            #   )
-           
-            # Calorimeter layer plots
-            
+            # --- Calorimeter Plots ---
             calo_input, calo_recon, calo_sampled, calo_input_avg, calo_recon_avg, calo_sampled_avg = plot_calorimeter_shower(
                 cfg=self._config,
                 showers=self.showers,
@@ -462,76 +455,123 @@ class Engine():
                 save_dir=None
             )
             
-            # Log plots
-            overall_fig, fig_energy_sum, fig_incidence_ratio, fig_target_recon_ratio, fig_sparsity, fig_sum_layers, fig_incidence_layers, fig_ratio_layers, fig_sparsity_layers = vae_plots(self._config,
-                self.incident_energy, self.showers, self.showers_recon, self.showers_prior)
+            # --- VAE Plots & Chi2 Metrics (Updated Call) ---
+            # Unpack all 10 items from the updated vae_plots function
+            (overall_fig, fig_energy_sum, fig_incidence_ratio, fig_target_recon_ratio, 
+             fig_sparsity, energy_sum_layer_fig, incidence_ratio_layer_fig, 
+             target_recon_ratio_layer_fig, sparsity_layer_fig, 
+             all_chi2_metrics) = vae_plots(self._config,
+                                          self.incident_energy, self.showers, 
+                                          self.showers_recon, self.showers_prior)
+            
+            # --- Corr Plots ---
             post_corr, prior_corr, post_partition, prior_partition = corr_plots(self._config, self.post_logits, self.post_samples, self.prior_samples)
             
+            # --- Initialize wandb_log dictionary ---
+            # Use your original keys, mapping to the new variable names
+            wandb_log = {
+                "overall_plots": wandb.Image(overall_fig),
+                "conditioned_energy_sum": wandb.Image(fig_energy_sum),
+                "conditioned_incidence_ratio": wandb.Image(fig_incidence_ratio),
+                "conditioned_target_recon_ratio": wandb.Image(fig_target_recon_ratio),
+                "conditioned_sparsity": wandb.Image(fig_sparsity),
+                "energy_sum_layers": wandb.Image(energy_sum_layer_fig),         # Was fig_sum_layers
+                "incidence_ratio_layers": wandb.Image(incidence_ratio_layer_fig), # Was fig_incidence_layers
+                "target_recon_ratio_layers": wandb.Image(target_recon_ratio_layer_fig), # Was fig_ratio_layers
+                "sparsity_layers": wandb.Image(sparsity_layer_fig),             # Was fig_sparsity_layers
+
+                # Common Calo plots
+                "calo_layer_input": wandb.Image(calo_input),
+                "calo_layer_recon": wandb.Image(calo_recon),
+                "calo_layer_input_avg": wandb.Image(calo_input_avg),
+                "calo_layer_recon_avg": wandb.Image(calo_recon_avg),
+
+                # Common Corr plots
+                "post_corr": wandb.Image(post_corr),
+                "prior_corr": wandb.Image(prior_corr),
+                "post_partition": wandb.Image(post_partition),
+                "prior_partition": wandb.Image(prior_partition),
+                
+            }
+
+            
+            # A. Log overall Chi2 metrics (simple key-value pairs)
+            for metric, values in all_chi2_metrics.items():
+                if metric.startswith('overall_'):
+                    wandb_log[f"Chi2/{metric}_recon"] = values.get('recon', float('nan'))
+                    wandb_log[f"Chi2/{metric}_sampled"] = values.get('sampled', float('nan'))
+
+            # B. Log layer-wise Chi2 metrics
+            layer_chi2 = all_chi2_metrics.get('layer', {}) # Use .get for safety
+            for metric_name, pairs in layer_chi2.items(): # e.g., metric_name = 'energy_sum'
+                if 'recon' in pairs:
+                    for layer_num, chi2_val in pairs['recon']:
+                        wandb_log[f"Chi2/layer_{layer_num}_{metric_name}_recon"] = chi2_val
+                if 'sampled' in pairs:
+                    for layer_num, chi2_val in pairs['sampled']:
+                        wandb_log[f"Chi2/layer_{layer_num}_{metric_name}_sampled"] = chi2_val
+                    
+            # C. Log binned Chi2 metrics (as mean and as Table)
+            for metric_name in ['binned_energy_sum', 'binned_incidence_ratio', 'binned_sparsity']:
+                if metric_name not in all_chi2_metrics: continue
+                
+                recon_vals = [val for _, val in all_chi2_metrics[metric_name].get('recon', [])]
+                sampled_vals = [val for _, val in all_chi2_metrics[metric_name].get('sampled', [])]
+                
+                if recon_vals:
+                    wandb_log[f"Chi2/mean_{metric_name}_recon"] = np.mean(recon_vals)
+                if sampled_vals:
+                    wandb_log[f"Chi2/mean_{metric_name}_sampled"] = np.mean(sampled_vals)
+
+                # Log W&B Table
+                binned_data = []
+                recon_dict = dict(all_chi2_metrics[metric_name].get('recon', []))
+                sampled_dict = dict(all_chi2_metrics[metric_name].get('sampled', []))
+                
+                # Get all unique energy bins that have data
+                all_bins = sorted(list(set(recon_dict.keys()) | set(sampled_dict.keys())))
+                
+                for energy_bin in all_bins:
+                    binned_data.append([
+                        energy_bin,
+                        recon_dict.get(energy_bin),   # .get() returns None if key is missing
+                        sampled_dict.get(energy_bin)
+                    ])
+                
+                if binned_data: # Only log table if there is data
+                    wandb_log[f"Chi2_Tables/{metric_name}"] = wandb.Table(
+                        data=binned_data,
+                        columns=["Energy Bin Center", "Chi2 Recon", "Chi2 Sampled"]
+                    )
+            # --- End of new Chi2 logic ---
+
+            # --- Conditional Logging ---
             if key != "ae":
+                # RBM plots
                 rbm_hist = plot_rbm_histogram(self.RBM_energy_post, self.RBM_energy_prior)
                 rbm_params = plot_rbm_params(self)
                 rbm_floppy = plot_forward_output_v2(self)
             
-                wandb.log({
-                    "overall_plots": wandb.Image(overall_fig),
-                    "conditioned_energy_sum": wandb.Image(fig_energy_sum),
-                    "conditioned_incidence_ratio": wandb.Image(fig_incidence_ratio),
-                    "conditioned_target_recon_ratio": wandb.Image(fig_target_recon_ratio),
-                    "conditioned_sparsity": wandb.Image(fig_sparsity),
-                    "energy_sum_layers": wandb.Image(fig_sum_layers),
-                    "incidence_ratio_layers": wandb.Image(fig_incidence_layers),
-                    "target_recon_ratio_layers": wandb.Image(fig_ratio_layers),
-                    "sparsity_layers": wandb.Image(fig_sparsity_layers),
+                # Add RBM plots to log
+                wandb_log.update({
                     "RBM histogram": wandb.Image(rbm_hist),
                     "RBM params": wandb.Image(rbm_params),
                     "RBM floppy": wandb.Image(rbm_floppy),
-                    "calo_layer_input": wandb.Image(calo_input),
-                    "calo_layer_recon": wandb.Image(calo_recon),
+                })
+                
+                # Add sampled calo plots (which are omitted for "ae")
+                wandb_log.update({
                     "calo_layer_sampled": wandb.Image(calo_sampled),
-                    "calo_layer_input_avg": wandb.Image(calo_input_avg),
-                    "calo_layer_recon_avg": wandb.Image(calo_recon_avg),
                     "calo_layer_sampled_avg": wandb.Image(calo_sampled_avg),
-                    "post_corr": wandb.Image(post_corr),
-                    "prior_corr": wandb.Image(prior_corr),
-                    "post_partition": wandb.Image(post_partition),
-                    "prior_partition": wandb.Image(prior_partition),
-                    # "layer_energy_correlation_GT": wandb.Image(fig_target_corr),
-                    # "layer_energy_correlation_sampled": wandb.Image(fig_sampled_corr),
-                    # "frob_layerwise_GT_vs_sampled": wandb.Image(fig_frob_layerwise),
-                    # "sparsity_GT": wandb.Image(fig_gt_sparsity),
-                    # "sparsity_prior": wandb.Image(fig_prior_sparsity),
-                    # "sparsity_correlation_GT": wandb.Image(fig_gt_sparsity_corr),
-                    # "sparsity_correlation_prior": wandb.Image(fig_prior_sparsity_corr),
-                    # "patch_corr_GT": wandb.Image(fig_gt_patch),
-                    # "patch_corr_prior": wandb.Image(fig_prior_patch),
-                    # "voxel_corr_GT": wandb.Image(fig_gt),
-                    # "voxel_corr_prior": wandb.Image(fig_prior),
                 })
-            else:
-                wandb.log({
-                    "overall_plots": wandb.Image(overall_fig),
-                    "conditioned_energy_sum": wandb.Image(fig_energy_sum),
-                    "conditioned_incidence_ratio": wandb.Image(fig_incidence_ratio),
-                    "conditioned_target_recon_ratio": wandb.Image(fig_target_recon_ratio),
-                    "conditioned_sparsity": wandb.Image(fig_sparsity),
-                    "energy_sum_layers": wandb.Image(fig_sum_layers),
-                    "incidence_ratio_layers": wandb.Image(fig_incidence_layers),
-                    "target_recon_ratio_layers": wandb.Image(fig_ratio_layers),
-                    "sparsity_layers": wandb.Image(fig_sparsity_layers),
-                    "calo_layer_input": wandb.Image(calo_input),
-                    "calo_layer_recon": wandb.Image(calo_recon),
-                    "calo_layer_input_avg": wandb.Image(calo_input_avg),
-                    "calo_layer_recon_avg": wandb.Image(calo_recon_avg),
-                    "post_corr": wandb.Image(post_corr),
-                    "prior_corr": wandb.Image(prior_corr),
-                    "post_partition": wandb.Image(post_partition),
-                    "prior_partition": wandb.Image(prior_partition),
-                    # "layer_energy_correlation_GT": wandb.Image(fig_target_corr),
-                    # "sparsity_GT": wandb.Image(fig_gt_sparsity),
-                    # "sparsity_correlation_GT": wandb.Image(fig_gt_sparsity_corr),
-                    # "patch_corr_GT": wandb.Image(fig_gt_patch),
-                    # "voxel_corr_GT": wandb.Image(fig_gt),
-                })
+            
+            # The 'else' block for "ae" is now handled,
+            # because the "sampled" and "RBM" plots are only added if key != "ae".
+            
+            # --- Final Log Call ---
+            wandb.log(wandb_log)
+            incidence_ratio_mean_chi2 = np.mean([val for _, val in all_chi2_metrics["binned_incidence_ratio"].get('recon', [])])
+            return incidence_ratio_mean_chi2
 
     
     @property

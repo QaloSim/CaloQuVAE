@@ -37,7 +37,7 @@ def main(cfg=None):
 
     for i, idx in enumerate(np.sort(list(filenames.keys()))):
         engine = load_engine(filenames[idx], config1)
-        engine.evaluate_vae(engine.data_mgr.val_loader, 0)
+        engine.evaluate_ae(engine.data_mgr.val_loader, 0)
         if i == 0:
             logger.info("First instance model")
             hepMet = HepMetrics(engine)
@@ -69,23 +69,68 @@ def load_engine(filename, config1):
     engine._model_creator.load_state(config_loaded.run_path, engine.device)
     return engine
 
+
 def create_filenames_dict(config):
     """
     Create a dictionary mapping checkpoint indices to model and config file paths.
+    
+    Handles two formats:
+    1. '..._{idx}.pth' (e.g., 'ae_separate_109.pth')
+    2. '..._best_epoch{idx}.pth' (e.g., 'ae_separate_best_epoch99.pth')
+    
     Args:
         config: Config object with run_path
     Returns:
         dict: {idx: [model_path, config_path]}
     """
-    pattern = r'\d+.pth$'
+    # Regex for '..._best_epochXX.pth'
+    pattern_best = re.compile(r'_best_epoch(\d+)\.pth$')
+    
+    # Regex for '..._XX.pth'
+    pattern_simple = re.compile(r'_(\d+)\.pth$')
+    
     prefix = config.run_path.split('files')[0] + 'files/'
-    _fn = list(np.sort(os.listdir(prefix)))
-    modelnames = [prefix + word for word in _fn if re.search(pattern, word)]
-    confignames = [re.sub(r'\.pth$', '_config.yaml', name) for name in modelnames]
-    idx = [int(name.split('_')[-1].split('.')[0]) for name in modelnames]
-    filenames = {idx[i]: [modelnames[i], confignames[i]] for i in range(len(modelnames))}
-    return filenames
+    
+    try:
+        # Get all files in the directory
+        _fn = list(np.sort(os.listdir(prefix)))
+    except FileNotFoundError:
+        print(f"Warning: Directory not found: {prefix}")
+        return {}
+        
+    filenames = {}
+    
+    # Iterate over all files, not just a pre-filtered list
+    for filename in _fn:
+        # We only care about .pth files
+        if not filename.endswith('.pth'):
+            continue
 
+        model_path = prefix + filename
+        idx = None
+                
+        match_best = pattern_best.search(filename)
+        
+        if match_best:
+            # Found '..._best_epoch99.pth'
+            # .group(1) captures just the digits (\d+)
+            idx = int(match_best.group(1)) 
+        else:
+            # check for the simple format.
+            match_simple = pattern_simple.search(filename)
+            if match_simple:
+                # Found '..._109.pth'
+                idx = int(match_simple.group(1))
+        
+        # If we successfully found an index (idx) from either pattern
+        if idx is not None:
+            # Use the original (and correct) logic to create the config name
+            config_path = re.sub(r'\.pth$', '_config.yaml', model_path)
+            
+            # Add the entry to our dictionary
+            filenames[idx] = [model_path, config_path]
+            
+    return filenames
 if __name__ == "__main__":
     logger.info("Starting main executable.")
     main()

@@ -22,7 +22,9 @@ class HierarchicalEncoder(nn.Module):
         self.n_latent_nodes=self._config.rbm.latent_nodes_per_p
 
         self._networks=nn.ModuleList([])
-        
+        if hasattr(self._config.model, 'cond_p_size'):
+            self.cond_p_size = self._config.model.cond_p_size
+
         for lvl in range(self.n_latent_hierarchy_lvls-1):
             network=self._create_hierarchy_network(level=lvl)
             self._networks.append(network)
@@ -55,7 +57,7 @@ class HierarchicalEncoder(nn.Module):
         post_logits = []
         
         if self._config.refactor_binary_energy:
-            post_samples.append(self.binary_energy_refacored(x0))
+            post_samples.append(self.binary_energy_refactored(x0))
         else:
             post_samples.append(self.binary_energy(x0))
         
@@ -90,18 +92,24 @@ class HierarchicalEncoder(nn.Module):
                        self.binary((x.sqrt() * torch.sqrt(torch.tensor(10))).int(),sqrt_bits), 
                        self.binary((x.log() * torch.tensor(10).exp()).int(),log_bits)), 1)
         return torch.cat((x.repeat(1,reps), torch.zeros(x.shape[0],residual).to(x.device, x.dtype)), 1)
-    
-    def binary_energy_refacored(self, x, lin_bits=19, sqrt_bits=11, log_bits=16):
-        
+
+    def binary_energy_refactored(self, x, lin_bits=19, sqrt_bits=17, log_bits=17):
+        if hasattr(self._config.model, 'lin_bits'):
+            lin_bits = self._config.model.lin_bits
+        if hasattr(self._config.model, 'sqrt_bits'):
+            sqrt_bits = self._config.model.sqrt_bits
+        if hasattr(self._config.model, 'log_bits'):
+            log_bits = self._config.model.log_bits
+
         total_bits_per_rep = lin_bits + sqrt_bits + log_bits
         
-        reps = int(np.floor(self.n_latent_nodes / total_bits_per_rep))
-        residual = self.n_latent_nodes - reps * (total_bits_per_rep)
+        reps = int(np.floor(self.cond_p_size / total_bits_per_rep))
+        residual = self.cond_p_size - reps * (total_bits_per_rep)
 
         x_encoded = torch.cat((
             self.binary(x.int(), lin_bits), 
-            self.binary((x.sqrt() * torch.sqrt(torch.tensor(10.0))).int(), sqrt_bits), 
-            self.binary((x.log() * 5000.0).int(), log_bits)
+            self.binary((x.sqrt() * 200).int(), sqrt_bits), 
+            self.binary((x.log() * 1e4).int(), log_bits)
         ), 1)
         
         return torch.cat((x_encoded.repeat(1, reps), torch.zeros(x.shape[0], residual).to(x.device, x.dtype)), 1)

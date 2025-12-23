@@ -137,8 +137,10 @@ def run(engine, _callback=lambda _: False):
             engine.fit_ae(epoch)
 
             total_loss_dict = engine.evaluate_ae(engine.data_mgr.val_loader, epoch)
-            engine.track_best_val_loss(total_loss_dict)
-            engine.generate_plots(epoch, "ae")
+            chi2 = engine.generate_plots(epoch, "ae")
+            if epoch > 50:
+                engine.track_best_val_loss(total_loss_dict, chi2, epoch)
+
             
             if (epoch+1) % 10 == 0:
                 engine._save_model(name=str(epoch))

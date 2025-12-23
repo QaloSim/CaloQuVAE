@@ -11,14 +11,15 @@ logger = logging.getLogger(__name__)
 class RBM_TwoPartite:
     def __init__(self, config, data):
         self.config = config
-        self.p_size = self.config.rbm.latent_nodes_per_p
+        self.num_visible = self.config.rbm.num_visible_nodes
+        self.num_hidden = self.config.rbm.num_hidden_nodes
         if self.config.device == "gpu" and torch.cuda.is_available():
             self.device = torch.device(f"cuda:{self.config.gpu_list[0]}")
         else:
             self.device = torch.device("cpu")
 
-        self.init_parameters(data, self.p_size, self.p_size, self.device)
-        self.init_chains(self.config.rbm.num_chains, self.p_size, self.p_size, self.device)
+        self.init_parameters(data, self.num_visible, self.num_hidden, self.device)
+        self.init_chains(self.config.rbm.num_chains, self.num_visible, self.num_hidden, self.device)
 
     def init_parameters(self,
         data : torch.Tensor,
@@ -333,8 +334,8 @@ class RBM_TwoPartite:
                 h_group.attrs['config_yaml'] = OmegaConf.to_yaml(config)
                 
                 # Save key hyperparameters for quick access (like in the example)
-                h_group['num_visibles'] = self.p_size # Assuming p_size is n_vis
-                h_group['num_hiddens'] = self.p_size # Assuming p_size is n_hid
+                h_group['num_visibles'] = self.num_visible 
+                h_group['num_hiddens'] = self.num_hidden 
                 h_group['num_chains'] = config.rbm.num_chains
                 h_group['learning_rate'] = config.rbm.lr
                 # ... add any other key hyperparameters ...
@@ -437,6 +438,48 @@ class RBM_TwoPartite:
             np.random.set_state(np_rng_state)
             
             return loaded_epoch
+
+
+
+    def prune_weights(self, tolerance: float) -> int:
+            """
+            Sets weights in the weight_matrix to 0 if their absolute
+            value is less than the given tolerance.
+
+            This operation is in-place and permanent for this instance.
+
+            Args:
+                tolerance (float): The threshold. Weights with |w| < tolerance
+                                will be zeroed.
+            
+            Returns:
+                int: The number of weights that were pruned (set to 0).
+            """
+            if tolerance < 0:
+                logger.error("Tolerance must be non-negative.")
+                raise ValueError("Tolerance must be non-negative.")
+                
+            weights = self.params["weight_matrix"]
+            
+            # Find weights where |w| < tolerance
+            mask = torch.abs(weights) < tolerance
+            
+            # Count how many we are about to prune
+            # We count the non-zero elements that are now matching the mask
+            original_nonzero_to_be_pruned = torch.count_nonzero(weights[mask]).item()
+            
+            # Apply the mask in-place
+            weights[mask] = 0.0
+            
+            # Log the results
+            total_weights = weights.numel()
+            remaining_nonzero = torch.count_nonzero(weights).item()
+            
+            logger.info(f"Pruned {original_nonzero_to_be_pruned} weights (Tolerance={tolerance}).")
+            logger.info(f"Total weights: {total_weights}. Remaining: {remaining_nonzero} "
+                        f"({(remaining_nonzero/total_weights)*100:.2f}%).")
+            
+            return original_nonzero_to_be_pruned
 
 
 
