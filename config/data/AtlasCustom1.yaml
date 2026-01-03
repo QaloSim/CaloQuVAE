@@ -1,0 +1,19 @@
+dataset_name: AtlasCustom1
+path:  /fast_scratch_1/caloqvae/data/calo_custom_cat/photon_eta020_e1_300_regular/dataset_cat.hdf5
+
+binning_path: /fast_scratch_1/caloqvae/data/calo_custom/photon_eta020_e1_300_regular/dataset_combined_positive.hdf5
+particle: electron2
+
+relevantLayers : [0, 1, 2, 3, 12]
+
+z: 5
+r: 24
+phi: 14
+
+frac_val_dataset: 0.1
+frac_train_dataset: 0.8
+
+batch_size_tr: 512
+batch_size_val: 1024
+batch_size_test: 1024
+num_workers: 8

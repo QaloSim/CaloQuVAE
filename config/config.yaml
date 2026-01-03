@@ -2,23 +2,28 @@ save_state: 1
 load_state: 0
 save_hists: 0
 save_partition: 1
-freeze_vae: 1
+freeze_vae: 0
 
 run_path: ""
-config_path: "/fast_scratch_1/caloqvae/jtoledo/wandb/run-20250731_021832-ap3mcnoa/files/autoencoderbase_179_config.yaml"
+# config_path: "/fast_scratch_1/caloqvae/jtoledo/wandb/run-20250821_230537-pp65hpwu/files/autoencoderhidden_9_config.yaml"
+# config_path: "/fast_scratch_1/caloqvae/jtoledo/wandb/run-20250825_185123-cysb33l7/files/autoencoderhidden_9_config.yaml"
+config_path: "/home/leozhu/CaloQuVAE/wandb-outputs/run-20251114_012936-8e96xchx/files/ae_separate_best_epoch157_config.yaml"
+# config_path: /fast_scratch_1/caloqvae/jtoledo/wandb/run-20250819_203111-u88m8d6w/files/autoencoderbase_249_config.yaml
 
 device: gpu
 gpu_list:
-  - 3
+  - 2
 
 defaults:
-  - data: CaloChallenge2
+  - data: AtlasCustom1
   - wandb: ML2
-  - model: model3_calochallenge
+  - model: model_ATLASNew_fullgeo_ae
   - engine: engine1
   - rbm: zephyr
   - _self_
 
-n_epochs: 250
-epoch_freeze: 200
+n_epochs: 2000
+epoch_freeze: 160
 epoch_start: 0
+
+refactor_binary_energy: 1

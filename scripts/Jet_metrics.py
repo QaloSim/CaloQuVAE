@@ -8,6 +8,9 @@ from scripts.run import get_project_id, setup_model
 from utils.HighLevelFeatures import HighLevelFeatures as HLF
 from utils.HighLevelFeatsAtlasReg import HighLevelFeatures_ATLAS_regular as HLF2
 import jetnet
+import hydra
+from hydra.utils import instantiate
+from hydra import initialize, compose
 
 from CaloQuVAE import logging
 logger = logging.getLogger(__name__)
@@ -22,8 +25,9 @@ class HepMetrics:
         self.if_Atlas = "Atlas" in dataset_name
         binning_path = engine._config.data.binning_path
         if self.if_Atlas:
-            self.hlf = HLF2('electron', filename=binning_path)
-            self.ref_hlf = HLF2('electron', filename=binning_path)
+            relevantLayers = engine._config.data.relevantLayers
+            self.hlf = HLF2('electron', filename=binning_path, relevantLayers=relevantLayers)
+            self.ref_hlf = HLF2('electron', filename=binning_path, relevantLayers=relevantLayers)
         else:
             self.hlf = HLF('electron', filename=binning_path)
             self.ref_hlf = HLF('electron', filename=binning_path)
@@ -102,7 +106,7 @@ def save_plot(HEPMetric_output, run_path):
     # Plot kpd_recon and kpd_sample on ax2
     ax2.errorbar(en_list, kpd_recon, yerr=kpd_recon_err, color='blue', label='KPD Recon')
     ax2.errorbar(en_list, kpd_sample, yerr=kpd_sample_err, color='green', label='KPD Sample')
-    ax2.axhline(0.2, color='red', linestyle=':', linewidth=2, label='y=0.2')
+    # ax2.axhline(0.2, color='red', linestyle=':', linewidth=2, label='y=0.2')
     ax2.set_xlabel('Epoch Number')
     ax2.set_ylabel('KPD Values')
     ax2.set_title('KPD Recon vs KPD Sample')
@@ -200,3 +204,83 @@ def get_fpd_kpd_metrics(test_data, gen_data, syn_bool, hlf, ref_hlf, if_Atlas=Fa
         f"KPD (x10^3): {kpd_val*1e3:.4f} ± {kpd_err*1e3:.4f}"
     )
     return fpd_val, fpd_err, kpd_val, kpd_err
+
+def get_reference_point():
+    hydra.core.global_hydra.GlobalHydra.instance().clear()
+    initialize(version_base=None, config_path="../config")
+    cfg = compose(config_name="config.yaml")
+    wandb.init(tags = [cfg.data.dataset_name], project=cfg.wandb.project, entity=cfg.wandb.entity, config=OmegaConf.to_container(cfg, resolve=True), mode='disabled')
+    engine1 = setup_model(cfg)
+    engine2 = setup_model(cfg)
+    engine1.evaluate_ae(engine1.data_mgr.val_loader, 0)
+    engine2.evaluate_ae(engine2.data_mgr.test_loader, 0)
+    
+    # Get the lengths of both shower arrays
+    len1 = len(engine1.showers)
+    len2 = len(engine2.showers)
+    
+    # Determine the minimum length and truncate if necessary
+    min_length = min(len1, len2)
+    logger.info(f"Truncating showers to minimum length: {min_length} (original lengths: {len1}, {len2})")
+    
+    hlf = HLF2('electron', filename=engine1._config.data.binning_path)
+    hlf.Einc = engine1.incident_energy
+    ref_hlf = HLF2('electron', filename=engine1._config.data.binning_path)
+    
+    # Use truncated arrays for metric calculation
+    ref_metrics = get_fpd_kpd_metrics(
+        np.array(engine2.showers[:min_length]), 
+        np.array(engine1.showers[:min_length]), 
+        False, hlf, ref_hlf, if_Atlas=True
+    )
+    return ref_metrics
+
+def get_naive_metrics(engine):
+    engine.evaluate_ae(engine.data_mgr.train_loader, 0)
+    engine.evaluate_trivial()
+    naive_HEP_obj = HepMetrics(engine)
+
+    naive_HEPMetrics = get_fpd_kpd_metrics(
+        np.array(engine.showers), 
+        np.array(engine.showers_prior), 
+        False, naive_HEP_obj.hlf, naive_HEP_obj.ref_hlf, if_Atlas=naive_HEP_obj.if_Atlas
+    )
+
+    fpd_naive = naive_HEPMetrics[0]
+    fpd_naive_err = naive_HEPMetrics[1]
+    kpd_naive = naive_HEPMetrics[2]
+    kpd_naive_err = naive_HEPMetrics[3]
+    
+    logger.info(
+        f"Naive FPD (x10^3): {fpd_naive*1e3:.4f} ± {fpd_naive_err*1e3:.4f}\n"
+        f"Naive KPD (x10^3): {kpd_naive*1e3:.4f} ± {kpd_naive_err*1e3:.4f}"
+    )
+    return fpd_naive, fpd_naive_err, kpd_naive, kpd_naive_err
+
+def get_rbm_metrics(engine, rbm_samples, decoded_energies):
+    engine.evaluate_ae(engine.data_mgr.val_loader, 0)
+    engine.generate_showers_from_rbm(rbm_samples, decoded_energies)
+    rbm_HEP_obj = HepMetrics(engine)
+
+    rbm_HEPMetrics = get_fpd_kpd_metrics(
+        np.array(engine.showers), 
+        np.array(engine.showers_prior_generated), 
+        False, rbm_HEP_obj.hlf, rbm_HEP_obj.ref_hlf, if_Atlas=rbm_HEP_obj.if_Atlas
+    )
+
+    fpd_rbm = rbm_HEPMetrics[0]
+    fpd_rbm_err = rbm_HEPMetrics[1]
+    kpd_rbm = rbm_HEPMetrics[2]
+    kpd_rbm_err = rbm_HEPMetrics[3]
+    
+    logger.info(
+        f"RBM FPD (x10^3): {fpd_rbm*1e3:.4f} ± {fpd_rbm_err*1e3:.4f}\n"
+        f"RBM KPD (x10^3): {kpd_rbm*1e3:.4f} ± {kpd_rbm_err*1e3:.4f}"
+    )
+    return fpd_rbm, fpd_rbm_err, kpd_rbm, kpd_rbm_err
+
+
+if __name__=="__main__":
+    logger.info("Starting main executable.")
+    main()
+    logger.info("Finished running script")

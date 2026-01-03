@@ -1,6 +1,13 @@
 import matplotlib.pyplot as plt
 import numpy as np
 import torch
+import torch.nn as nn
+from model.rbm.rbm_two_partite import RBM_TwoPartite
+import networkx as nx
+from CaloQuVAE import logging
+logger = logging.getLogger(__name__)
+
+
 
 def plot_rbm_histogram(rbm_post, rbm_prior, rbm_prior_qpu=None):
     # Assuming rbm_post and rbm_prior are tensors with energy values
@@ -85,8 +92,10 @@ def plot_rbm_params(engine):
     # Row 2: Histograms of prior.weight_dict[key] for each of the 8 keys
     for col, key in enumerate(keys):
         ax = axes[2, col]
-        # w_vals = (engine.model.prior.weight_dict[key].sum(dim=1) / engine.model.prior.bias_dict[key[0]]).detach().cpu().numpy()
-        w_vals = (engine.model.prior._weight_mask_dict[key].sum(dim=1) * engine.model.prior.weight_dict[key].pow(2).mean(dim=1).sqrt() / engine.model.prior.bias_dict[key[0]]).abs().detach().cpu().numpy()
+        num = (engine.model.prior._weight_mask_dict[key].sum(dim=1) * engine.model.prior.weight_dict[key].pow(2)).mean(dim=1).sqrt().detach().cpu()
+        denom = engine.model.prior.bias_dict[key[0]].abs().detach().cpu()
+        w_vals = torch.where(denom> 1e-8, num / denom, torch.zeros_like(num)).numpy()
+        # w_vals = (engine.model.prior._weight_mask_dict[key].sum(dim=1) * engine.model.prior.weight_dict[key].pow(2).mean(dim=1).sqrt() / engine.model.prior.bias_dict[key[0]]).abs().detach().cpu().numpy()
         ratio = np.around((w_vals >= 1).sum()/w_vals.shape[0],6)
         med = np.around(np.median(w_vals),4)
         # print(med)
@@ -136,3 +145,435 @@ def plot_rbm_params(engine):
     # Add an overall title and display
     fig.suptitle("Grid of Histograms: Singular values, Weights, and Bias SVD", fontsize=20, y=1.02)
     return fig
+
+def plot_forward_output_v2(self, i=0):
+
+    with torch.inference_mode():
+        fwd_output = self.model((self.showers_reduce[i,:].repeat(1000,1).to(self.device), self.incident_energy[i,0].repeat(1000,1).to(self.device)))
+        post_logits, post_samples = [fwd_output[1][j].detach().cpu() for j in range(len(fwd_output[1]))], [fwd_output[2][j].detach().cpu() for j in range(len(fwd_output[2]))]
+
+    hist_colors   = ['C0', 'C1', 'C2']
+    line_colors   = ['C3', 'C4', 'C5', 'C6']
+    combo_colors  = ['C7', 'C8']  # for the third‐row overlay plots
+
+    # Create a 3×4 grid of subplots
+    fig, axes = plt.subplots(4, 4, figsize=(16, 12))
+    fig.tight_layout(pad=4.0)
+
+    # -----------------------------
+    # ROW 0: Three Histograms + 1 Empty
+    # -----------------------------
+    for idx in range(3):
+        ax = axes[0, idx]
+        data = nn.Sigmoid()(post_logits[idx]).view(-1).numpy()
+        ax.hist(data, bins=50, log=True, color=hist_colors[idx], alpha=0.75)
+        ax.set_title(f"Histogram of Sigmoid(post_logits[{idx}])")
+        ax.grid(True, linestyle=':', alpha=0.5)
+
+    # Leave the last cell in row 0 empty
+    axes[0, 3].axis('off')
+    # -----------------------------
+    # ROW 1: Four Std‐Dev Line Plots (post_samples[idx].std)
+    # -----------------------------
+    for idx in range(4):
+        ax = axes[1, idx]
+        std_vals = (
+            post_samples[idx].std(dim=0).numpy()
+        )
+        ax.plot(std_vals, color=line_colors[idx], linewidth=1.5)
+        ax.set_title(f"Std‐dev of post_samples[{idx}]")
+        ax.set_xlabel("Feature Index")
+        ax.set_ylabel("Std Dev")
+        ax.grid(True, linestyle=':', alpha=0.5)
+    # -----------------------------
+    # ROW 2: Overlay of Mean√[p(1−p)] & Next Sample’s Std (for idx=0,1,2)
+    # -----------------------------
+    for idx in range(3):
+        ax = axes[2, idx]
+
+        # Compute: √[p * (1 − p)] averaged over batch for post_logits[idx]
+        p = nn.Sigmoid()(post_logits[idx])
+        mean_sqrt = (
+            (p * (1 - p)).sqrt().mean(dim=0).numpy()
+        )
+
+        # Compute: std‐dev of post_samples[idx+1] across axis=0
+        std_next = (
+            post_samples[idx + 1].std(dim=0).numpy()
+        )
+
+        ax.plot(mean_sqrt, color=combo_colors[0], linestyle='-', linewidth=1.5,
+                label='Mean √[p(1−p)]')
+        ax.plot(std_next, color=combo_colors[1], linestyle='--', linewidth=1.5,
+                label=f'Std of post_samples[{idx+1}]')
+        ax.set_title(f"Idx={idx} → Mean√p(1−p) & Std sample {idx+1}")
+        ax.set_xlabel("Feature Index")
+        ax.set_ylabel("Value")
+        ax.legend(loc='upper right', fontsize='small')
+        ax.grid(True, linestyle=':', alpha=0.5)
+
+    # Leave the last cell in row 2 empty
+    axes[2, 3].axis('off')
+
+    # -----------------------------
+    # ROW 3: Three Histograms + 1 Empty
+    # -----------------------------
+    for idx in range(3):
+        ax = axes[3, idx]
+        data = post_logits[idx].view(-1).numpy()
+        ax.hist(data, bins=50, log=True, color=hist_colors[idx], alpha=0.75)
+        ax.set_title(f"Histogram of raw post_logits[{idx}]")
+        ax.grid(True, linestyle=':', alpha=0.5)
+
+    # Leave the last cell in row 0 empty
+    axes[3, 3].axis('off')
+
+    return fig
+
+def plot_forward_output_hidden(self, i=0):
+
+    with torch.inference_mode():
+        fwd_output = self.model((self.showers_reduce[i,:].repeat(1000,1).to(self.device), self.incident_energy[i,0].repeat(1000,1).to(self.device)))
+        post_logits, post_samples = [fwd_output[1][j].detach().cpu() for j in range(len(fwd_output[1]))], [fwd_output[2][j].detach().cpu() for j in range(len(fwd_output[2]))]
+
+    hist_colors   = ['C0', 'C1', 'C2']
+    line_colors   = ['C3', 'C4', 'C5', 'C6']
+    combo_colors  = ['C7', 'C8']  # for the third‐row overlay plots
+
+    # Create a 3×4 grid of subplots
+    fig, axes = plt.subplots(4, 3, figsize=(16, 12))
+    fig.tight_layout(pad=4.0)
+
+    # -----------------------------
+    # ROW 0: Three Histograms + 1 Empty
+    # -----------------------------
+    for idx in range(2):
+        ax = axes[0, idx]
+        data = nn.Sigmoid()(post_logits[idx]).view(-1).numpy()
+        ax.hist(data, bins=50, log=True, color=hist_colors[idx], alpha=0.75)
+        ax.set_title(f"Histogram of Sigmoid(post_logits[{idx}])")
+        ax.grid(True, linestyle=':', alpha=0.5)
+
+    # Leave the last cell in row 0 empty
+    axes[0, 2].axis('off')
+    # -----------------------------
+    # ROW 1: Four Std‐Dev Line Plots (post_samples[idx].std)
+    # -----------------------------
+    for idx in range(3):
+        ax = axes[1, idx]
+        std_vals = (
+            post_samples[idx].std(dim=0).numpy()
+        )
+        ax.plot(std_vals, color=line_colors[idx], linewidth=1.5)
+        ax.set_title(f"Std‐dev of post_samples[{idx}]")
+        ax.set_xlabel("Feature Index")
+        ax.set_ylabel("Std Dev")
+        ax.grid(True, linestyle=':', alpha=0.5)
+    # -----------------------------
+    # ROW 2: Overlay of Mean√[p(1−p)] & Next Sample’s Std (for idx=0,1,2)
+    # -----------------------------
+    for idx in range(2):
+        ax = axes[2, idx]
+
+        # Compute: √[p * (1 − p)] averaged over batch for post_logits[idx]
+        p = nn.Sigmoid()(post_logits[idx])
+        mean_sqrt = (
+            (p * (1 - p)).sqrt().mean(dim=0).numpy()
+        )
+
+        # Compute: std‐dev of post_samples[idx+1] across axis=0
+        std_next = (
+            post_samples[idx + 1].std(dim=0).numpy()
+        )
+
+        ax.plot(mean_sqrt, color=combo_colors[0], linestyle='-', linewidth=1.5,
+                label='Mean √[p(1−p)]')
+        ax.plot(std_next, color=combo_colors[1], linestyle='--', linewidth=1.5,
+                label=f'Std of post_samples[{idx+1}]')
+        ax.set_title(f"Idx={idx} → Mean√p(1−p) & Std sample {idx+1}")
+        ax.set_xlabel("Feature Index")
+        ax.set_ylabel("Value")
+        ax.legend(loc='upper right', fontsize='small')
+        ax.grid(True, linestyle=':', alpha=0.5)
+
+    # Leave the last cell in row 2 empty
+    axes[2, 2].axis('off')
+
+    # -----------------------------
+    # ROW 3: Three Histograms + 1 Empty
+    # -----------------------------
+    for idx in range(2):
+        ax = axes[3, idx]
+        data = post_logits[idx].view(-1).numpy()
+        ax.hist(data, bins=50, log=True, color=hist_colors[idx], alpha=0.75)
+        ax.set_title(f"Histogram of raw post_logits[{idx}]")
+        ax.grid(True, linestyle=':', alpha=0.5)
+
+    # Leave the last cell in row 0 empty
+    axes[3, 2].axis('off')
+
+    return fig
+
+def plot_forward_output(self, i=0):
+
+    with torch.inference_mode():
+        x, x0 = next(iter(self.data_mgr.val_loader))
+        x = x.to(self.device)
+        x0 = x0.to(self.device)
+        x = self._reduce(x,x0)
+        fwd_output = self.model((x[i,:].repeat(1000,1), x0[i,0].repeat(1000,1)))
+        post_logits, post_samples = [fwd_output[1][j].detach().cpu() for j in range(len(fwd_output[1]))], [fwd_output[2][j].detach().cpu() for j in range(len(fwd_output[2]))]
+
+    hist_colors   = ['C0', 'C1', 'C2']
+    line_colors   = ['C3', 'C4', 'C5', 'C6']
+    combo_colors  = ['C7', 'C8']  # for the third‐row overlay plots
+
+    # Create a 3×4 grid of subplots
+    fig, axes = plt.subplots(4, 4, figsize=(16, 12))
+    fig.tight_layout(pad=4.0)
+
+    # -----------------------------
+    # ROW 0: Three Histograms + 1 Empty
+    # -----------------------------
+    for idx in range(3):
+        ax = axes[0, idx]
+        data = nn.Sigmoid()(post_logits[idx]).view(-1).numpy()
+        ax.hist(data, bins=50, log=True, color=hist_colors[idx], alpha=0.75)
+        ax.set_title(f"Histogram of Sigmoid(post_logits[{idx}])")
+        ax.grid(True, linestyle=':', alpha=0.5)
+
+    # Leave the last cell in row 0 empty
+    axes[0, 3].axis('off')
+    # -----------------------------
+    # ROW 1: Four Std‐Dev Line Plots (post_samples[idx].std)
+    # -----------------------------
+    for idx in range(4):
+        ax = axes[1, idx]
+        std_vals = (
+            post_samples[idx].std(dim=0).numpy()
+        )
+        ax.plot(std_vals, color=line_colors[idx], linewidth=1.5)
+        ax.set_title(f"Std‐dev of post_samples[{idx}]")
+        ax.set_xlabel("Feature Index")
+        ax.set_ylabel("Std Dev")
+        ax.grid(True, linestyle=':', alpha=0.5)
+    # -----------------------------
+    # ROW 2: Overlay of Mean√[p(1−p)] & Next Sample’s Std (for idx=0,1,2)
+    # -----------------------------
+    for idx in range(3):
+        ax = axes[2, idx]
+
+        # Compute: √[p * (1 − p)] averaged over batch for post_logits[idx]
+        p = nn.Sigmoid()(post_logits[idx])
+        mean_sqrt = (
+            (p * (1 - p)).sqrt().mean(dim=0).numpy()
+        )
+
+        # Compute: std‐dev of post_samples[idx+1] across axis=0
+        std_next = (
+            post_samples[idx + 1].std(dim=0).numpy()
+        )
+
+        ax.plot(mean_sqrt, color=combo_colors[0], linestyle='-', linewidth=1.5,
+                label='Mean √[p(1−p)]')
+        ax.plot(std_next, color=combo_colors[1], linestyle='--', linewidth=1.5,
+                label=f'Std of post_samples[{idx+1}]')
+        ax.set_title(f"Idx={idx} → Mean√p(1−p) & Std sample {idx+1}")
+        ax.set_xlabel("Feature Index")
+        ax.set_ylabel("Value")
+        ax.legend(loc='upper right', fontsize='small')
+        ax.grid(True, linestyle=':', alpha=0.5)
+
+    # Leave the last cell in row 2 empty
+    axes[2, 3].axis('off')
+
+    # -----------------------------
+    # ROW 3: Three Histograms + 1 Empty
+    # -----------------------------
+    for idx in range(3):
+        ax = axes[3, idx]
+        data = post_logits[idx].view(-1).numpy()
+        ax.hist(data, bins=50, log=True, color=hist_colors[idx], alpha=0.75)
+        ax.set_title(f"Histogram of raw post_logits[{idx}]")
+        ax.grid(True, linestyle=':', alpha=0.5)
+
+    # Leave the last cell in row 0 empty
+    axes[3, 3].axis('off')
+
+    return fig
+
+
+def plot_weight_distribution(rbm: RBM_TwoPartite, bins: int = 50, title: str = None):
+    """
+    Plots a histogram of the RBM's weight_matrix.
+
+    Args:
+        rbm (RBM_TwoPartite): An instance of the RBM model.
+        bins (int, optional): Number of bins for the histogram. Defaults to 50.
+        title (str, optional): Title for the plot. If None, a default is used.
+    """
+    
+    # 1. Get the weights tensor
+    weights = rbm.params["weight_matrix"]
+    
+    # 2. Move to CPU (if on GPU) and convert to NumPy
+    # .detach() is important to remove it from the computation graph
+    weights_np = weights.detach().cpu().numpy()
+    
+    # 3. Flatten the 2D matrix into a 1D array for the histogram
+    weights_flat = weights_np.flatten()
+    
+    # 4. Create the plot
+    plt.figure(figsize=(10, 6))
+
+    plt.hist(weights_flat, bins=bins, density=False, alpha=0.75, color='blue', edgecolor='black', label='Weight Distribution', log=True)
+
+    # Add a title
+    if title is None:
+        title = 'Distribution of RBM Weights'
+    plt.title(title, fontsize=16)
+    
+    # Add labels
+    plt.xlabel('Weight Value', fontsize=12)
+    plt.ylabel('Counts', fontsize=12)
+    
+    # Add a legend and grid
+    plt.legend()
+    plt.grid(True, linestyle='--', alpha=0.6)
+    
+    # Add mean and std dev text
+    mean_val = np.mean(weights_flat)
+    std_val = np.std(weights_flat)
+    plt.text(0.05, 0.95, f'Mean: {mean_val:.4f}\nStd: {std_val:.4f}',
+             transform=plt.gca().transAxes,
+             verticalalignment='top',
+             bbox=dict(boxstyle='round,pad=0.5', facecolor='white', alpha=0.8))
+    
+    # 5. Show the plot
+    plt.tight_layout()
+    plt.show()
+
+
+
+def plot_pruning_analysis(rbm: 'RBM_TwoPartite', 
+                            max_tolerance: float = None, 
+                            num_steps: int = 100):
+    """
+    Plots the number of remaining weights in an RBM as a function
+    of the pruning tolerance.
+
+    This function is non-destructive and does NOT modify the RBM.
+
+    Args:
+        rbm (RBM_TwoPartite): The RBM instance to analyze.
+        max_tolerance (float, optional): The maximum tolerance to check.
+                                        If None, defaults to the max
+                                        absolute weight in the matrix.
+        num_steps (int, optional): The number of tolerance levels to test.
+    """
+    # Get the absolute weights on the CPU for analysis
+    with torch.no_grad():
+        weights = rbm.params["weight_matrix"].abs().cpu().numpy().flatten()
+        
+    total_weights = weights.size
+    
+    if total_weights == 0:
+        print("Weight matrix is empty. Nothing to plot.")
+        return
+
+    if max_tolerance is None:
+        max_tolerance = np.max(weights)
+    
+    if max_tolerance == 0:
+        print("All weights are zero. Nothing to plot.")
+        return
+    
+    # Create a range of tolerances
+    tolerances = np.linspace(0, max_tolerance, num_steps)
+    
+    remaining_weights_count = []
+    
+    # This is much faster than calling torch.count_nonzero repeatedly
+    for tol in tolerances:
+        # Count how many weights have |w| >= tol
+        remaining = np.sum(weights >= tol)
+        remaining_weights_count.append(remaining)
+        
+    remaining_weights_percent = (np.array(remaining_weights_count) / total_weights) * 100
+
+    # --- Create the plot ---
+    fig, ax1 = plt.subplots(figsize=(10, 6))
+
+    # Plot 1: Absolute Count
+    color = 'tab:blue'
+    ax1.set_xlabel('Pruning Tolerance (Absolute Weight)')
+    ax1.set_ylabel('Remaining Weights (Count)', color=color)
+    ax1.plot(tolerances, remaining_weights_count, color=color, 
+             label='Remaining Weights (Count)')
+    ax1.tick_params(axis='y', labelcolor=color)
+    ax1.grid(True, linestyle='--', alpha=0.6)
+    ax1.set_ylim(bottom=0)
+
+    # Plot 2: Percentage (on a twin axis)
+    ax2 = ax1.twinx()
+    color = 'tab:red'
+    ax2.set_ylabel('Remaining Weights (%)', color=color)
+    ax2.plot(tolerances, remaining_weights_percent, color=color, linestyle=':',
+             label='Remaining Weights (%)')
+    ax2.tick_params(axis='y', labelcolor=color)
+    ax2.set_ylim(0, 100.5) # Percentage is 0-100
+
+    fig.suptitle('RBM Weight Pruning Analysis')
+    fig.tight_layout(rect=[0, 0.03, 1, 0.95]) # Adjust for suptitle
+    plt.show()
+
+
+def rbm_to_networkx(rbm: RBM_TwoPartite, tolerance: float = 0.0) -> nx.Graph:
+    """
+    Maps the RBM's weight matrix to a NetworkX bipartite graph.
+    
+    Nodes are partitioned into 'visible' (partition 0) and 'hidden' (partition 1).
+    An edge is created if the absolute weight >= tolerance.
+    The raw weight is stored as an 'weight' attribute on the edge.
+
+    Args:
+        rbm (RBM_TwoPartite): The RBM instance.
+        tolerance (float, optional): The minimum absolute weight
+                                     to consider for an edge.
+                                     Defaults to 0.0 (all non-zero).
+
+    Returns:
+        nx.Graph: A NetworkX Graph object with bipartite=True.
+    """
+    with torch.no_grad():
+        weights = rbm.params["weight_matrix"].cpu().numpy()
+        
+    num_visibles, num_hiddens = weights.shape
+    
+    B = nx.Graph()
+    
+    # Add nodes with bipartite attribute
+    visible_nodes = [f'v_{i}' for i in range(num_visibles)]
+    hidden_nodes = [f'h_{j}' for j in range(num_hiddens)]
+    
+    B.add_nodes_from(visible_nodes, bipartite=0) # Partition 0
+    B.add_nodes_from(hidden_nodes, bipartite=1)  # Partition 1
+    
+    # Find indices where |weight| >= tolerance
+    # Use np.where for efficiency instead of nested loops
+    abs_weights = np.abs(weights)
+    visible_indices, hidden_indices = np.where(abs_weights >= tolerance)
+    
+    # Create a list of edges with attributes
+    edges_with_data = [
+        (f'v_{i}', f'h_{j}', {'weight': float(weights[i, j])})
+        for i, j in zip(visible_indices, hidden_indices)
+    ]
+    
+    B.add_edges_from(edges_with_data)
+    
+    logger.info(f"Created NetworkX graph with {B.number_of_nodes()} nodes "
+                f"({num_visibles} visible, {num_hiddens} hidden) "
+                f"and {B.number_of_edges()} edges (Tolerance={tolerance}).")
+    
+    return B

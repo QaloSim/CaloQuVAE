@@ -1,0 +1,32 @@
+# This model configuration uses the hierarchical decoder instead of the standard decoder.
+# This allows for more complex decoding processes, potentially improving the model's performance on certain tasks.
+# The rest of the configuration remains unchanged from model2.yaml.
+model_name: autoencoderhidden
+encoder: hierarchicalencoderhidden
+encoderblock: CaloChallenge2
+decoder: decoderhierachy0hidden
+
+decoder_input:
+  - 906
+  - 3066
+  - 3066
+  - 3066
+
+decoder_output:
+  - 2160
+  - 2160
+  - 2160
+  - 6480
+
+hidden_layer: 1
+
+mse_weight: 0.5
+coefficient: 0.01
+
+loss_coeff:
+  ae_loss: 1.0
+  kl_loss: 0.0
+  hit_loss: 1.0
+  entropy: 1.0
+  pos_energy: 1.0
+  neg_energy: 1.0

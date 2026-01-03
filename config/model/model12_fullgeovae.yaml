@@ -1,0 +1,16 @@
+model_name: autoencoderbase
+encoder: hierachicalencoder
+encoderblock: AtlasReg
+decoder: decoderfullgeo
+
+output_smoothing_fct: 60
+mse_weight: 0.5
+coefficient: 0.01
+
+loss_coeff:
+  ae_loss: 1.0
+  kl_loss: 0.0
+  hit_loss: 1.0
+  entropy: 0.01
+  pos_energy: 1.0
+  neg_energy: 1.0

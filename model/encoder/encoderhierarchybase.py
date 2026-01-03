@@ -22,15 +22,20 @@ class HierarchicalEncoder(nn.Module):
         self.n_latent_nodes=self._config.rbm.latent_nodes_per_p
 
         self._networks=nn.ModuleList([])
-        
+        if hasattr(self._config.model, 'cond_p_size'):
+            self.cond_p_size = self._config.model.cond_p_size
+
         for lvl in range(self.n_latent_hierarchy_lvls-1):
             network=self._create_hierarchy_network(level=lvl)
             self._networks.append(network)
+        
 
     def _create_hierarchy_network(self, level=0):
 
         if self._config.model.encoderblock == "AtlasReg":
             return EncoderBlockPBH3Dv3Reg(self._config)
+        elif self._config.model.encoderblock == "AtlasNew":
+            return EncoderBlockATLASNew(self._config)
         elif self._config.model.encoderblock == "CaloChallenge2":
             return EncoderBlockPBH3Dv3(self._config)
 
@@ -51,7 +56,10 @@ class HierarchicalEncoder(nn.Module):
         post_samples = []
         post_logits = []
         
-        post_samples.append(self.binary_energy(x0))
+        if self._config.refactor_binary_energy:
+            post_samples.append(self.binary_energy_refactored(x0))
+        else:
+            post_samples.append(self.binary_energy(x0))
         
         for lvl in range(self.n_latent_hierarchy_lvls-1):
             
@@ -77,13 +85,56 @@ class HierarchicalEncoder(nn.Module):
         mask = 2**torch.arange(bits).to(x.device, x.dtype)
         return x.bitwise_and(mask).ne(0).byte().to(dtype=torch.float)
     
-    def binary_energy(self, x, lin_bits=20, sqrt_bits=20, log_bits=20):
+    def binary_energy(self, x, lin_bits=15, sqrt_bits=15, log_bits=15):
         reps = int(np.floor(self.n_latent_nodes/(lin_bits+sqrt_bits+log_bits)))
         residual = self.n_latent_nodes - reps*(lin_bits+sqrt_bits+log_bits)
         x = torch.cat((self.binary(x.int(),lin_bits), 
                        self.binary((x.sqrt() * torch.sqrt(torch.tensor(10))).int(),sqrt_bits), 
                        self.binary((x.log() * torch.tensor(10).exp()).int(),log_bits)), 1)
         return torch.cat((x.repeat(1,reps), torch.zeros(x.shape[0],residual).to(x.device, x.dtype)), 1)
+
+    def binary_energy_refactored(self, x, lin_bits=19, sqrt_bits=17, log_bits=17):
+        if hasattr(self._config.model, 'lin_bits'):
+            lin_bits = self._config.model.lin_bits
+        if hasattr(self._config.model, 'sqrt_bits'):
+            sqrt_bits = self._config.model.sqrt_bits
+        if hasattr(self._config.model, 'log_bits'):
+            log_bits = self._config.model.log_bits
+
+        total_bits_per_rep = lin_bits + sqrt_bits + log_bits
+        
+        reps = int(np.floor(self.cond_p_size / total_bits_per_rep))
+        residual = self.cond_p_size - reps * (total_bits_per_rep)
+
+        x_encoded = torch.cat((
+            self.binary(x.int(), lin_bits), 
+            self.binary((x.sqrt() * 200).int(), sqrt_bits), 
+            self.binary((x.log() * 1e4).int(), log_bits)
+        ), 1)
+        
+        return torch.cat((x_encoded.repeat(1, reps), torch.zeros(x.shape[0], residual).to(x.device, x.dtype)), 1)
+
+
+class HierarchicalEncoderHidden(HierarchicalEncoder):
+    def __init__(self, cfg):
+        super(HierarchicalEncoderHidden, self).__init__(cfg)
+        self.smoothing_dist_mod = GumbelMod()
+        self._config = cfg
+
+        self.n_latent_hierarchy_lvls=self._config.rbm.partitions - self._config.model.hidden_layer
+        # self.n_latent_hierarchy_lvls=self._config.rbm.partitions - self._config.rbm.hidden_layer
+
+        self.n_latent_nodes=self._config.rbm.latent_nodes_per_p
+
+        self._networks=nn.ModuleList([])
+        
+        for lvl in range(self.n_latent_hierarchy_lvls-1):
+            network=self._create_hierarchy_network(level=lvl)
+            self._networks.append(network)
+
+
+####################Encoder blocks
+##################################
     
 
 class EncoderBlockPBH3Dv3Reg(nn.Module):
@@ -220,3 +271,33 @@ class PeriodicConv3d(nn.Module):
         # Apply convolution
         x = self.conv(x)
         return x
+
+class EncoderBlockATLASNew(EncoderBlockPBH3Dv3Reg):
+    def __init__(self, cfg=None):
+        super(EncoderBlockATLASNew, self).__init__(cfg)
+        self._config = cfg
+        self.n_latent_nodes = self._config.rbm.latent_nodes_per_p
+        self.z = self._config.data.z #5
+        self.r = self._config.data.r #14
+        self.phi = self._config.data.phi #24
+        
+        self.seq1 = nn.Sequential(
+    
+                PeriodicConv3d(1, 32, (1,3,3), (1,1,2), 1),
+                nn.BatchNorm3d(32),
+                nn.PReLU(32, 0.02),
+    
+                PeriodicConv3d(32, 128, (2,2,3), (1,2,2), 1),
+                nn.BatchNorm3d(128),
+                nn.PReLU(128, 0.02),
+                )
+
+        self.seq2 = nn.Sequential(
+                        PeriodicConv3d(129, 256, (3,3,3), (1,2,1), 0),
+                        nn.BatchNorm3d(256),
+                        nn.PReLU(256, 0.02),
+
+                        PeriodicConv3d(256, self.n_latent_nodes, (2,3,3), (2,2,2), 0),
+                        nn.PReLU(self.n_latent_nodes, 1.0),
+                        nn.Flatten(),
+                        )

@@ -5,6 +5,7 @@ import matplotlib.pyplot as plt
 from omegaconf import OmegaConf
 import wandb
 from scripts.run import get_project_id
+import matplotlib.figure as mf
 
 from scripts.run import setup_model
 from hydra import initialize, compose
@@ -45,18 +46,27 @@ class CorrelationMetrics:
     Class to handle correlation and Frobenius metrics
     """
     def __init__(self, engine):
-        print(engine._config.data.dataset_name)
-        self.epoch_list = []
-        self.frobenius_scores = []
-        self.config = engine._config
-        self.plots = {
-            'fig_target_corr': [], 'fig_sampled_corr': [],
-            'fig_gt_grid': [], 'fig_prior_grid': [],
-            'fig_frob_layerwise': [], 'fig_gt': [], 'fig_prior': [],
-            'fig_gt_sparsity': [], 'fig_prior_sparsity': [],
-            'fig_gt_sparsity_corr': [], 'fig_prior_sparsity_corr': [],
-            'fig_gt_patch': [], 'fig_prior_patch': []
-        }
+            print(engine._config.data.dataset_name)
+            self.epoch_list = []
+            self.frobenius_scores = []
+            self.config = engine._config
+
+            # figures to save
+            self.plots = {
+                # voxel energy and sparsity correlation plots:
+                'fig_target_corr': [], 'fig_sampled_corr': [],
+                'fig_gt_grid': [], 'fig_prior_grid': [],
+                'fig_frob_layerwise': [], 'fig_gt': [], 'fig_prior': [],
+                'gt_spars_corr': [], 'prior_spars_corr': [],
+                'fig_gt_sparsity': [], 'fig_prior_sparsity': [],
+                'fig_gt_sparsity_corr': [], 'fig_prior_sparsity_corr': [],
+                'fig_gt_patch': [], 'fig_prior_patch': [],
+                # latent correlation plots:
+                'fig_latent_post_corr': [], 'fig_latent_prior_corr': [],
+                'fig_latent_frob_groups': [], 'fig_lat_partitions': [],
+                'node_post': [], 'node_prior': [],
+                'fig_grid_prior_latent': [], 'fig_grid_post_latent': [],
+            }
 
     def run(self, engine, idx):
         results = correlation_plots(
@@ -64,76 +74,140 @@ class CorrelationMetrics:
             incident_energy=engine.incident_energy,
             showers=engine.showers,
             showers_prior=engine.showers_prior,
-            epoch=idx
+            epoch=idx,
+            post_samples=engine.post_samples,
+            prior_samples=engine.prior_samples,
         )
-        
+
+        # unpack: metrics dict + latent figs dict
+        main_figs   = results[:-2]
+        metrics     = results[-2]
+        latent_figs = results[-1]
+
+        # base metrics
         frobs = {
-            "voxel_corr": results[-1]["frob_dist_voxel"],
-            "layer_corr": results[-1]["frob_dist_energy_corr_layer"],
-            "sparsity_voxel": results[-1]["sparsity_frob_distance"],
-            "sparsity_layer": results[-1]["frob_sparsity_dists_layer"],
-            "patch_layer": results[-1]["frob_patch_layer"]
+            "voxel_corr": metrics["frob_dist_voxel"],
+            "layer_corr": metrics["frob_dist_energy_corr_layer"],
+            "sparsity_voxel": metrics["sparsity_frob_distance"],
+            "sparsity_layer": metrics["frob_sparsity_dists_layer"], 
+            "layer_sparsity": metrics["frob_sparsity_combined_layer"],
+            "patch_layer": metrics["frob_patch_layer"],
         }
+        # latent
+        if "latent_frob_all" in metrics:
+            frobs["latent_frob_all"] = metrics["latent_frob_all"]
+        if "latent_frob_per_group" in metrics:
+            for g, val in metrics["latent_frob_per_group"].items():
+                frobs[f"latent_frob_per_group_g{g}"] = val
+        if "pair_frobs" in metrics:
+            # expand per pair (p1,p2) -> float
+            for (p1, p2), val in metrics["pair_frobs"].items():
+                frobs[f"latent_crosspair_frob_p{p1}_{p2}"] = val
+
         if not hasattr(self, "frob_all"):
             self.frob_all = {key: [] for key in frobs}
+
+        # metrics aligned by epoch
         for key, val in frobs.items():
-            self.frob_all[key].append((idx, val))
+            self.frob_all.setdefault(key, []).append((idx, val))
 
         self.epoch_list.append(idx)
-        frob_val = frobs['voxel_corr']
-        self.frobenius_scores.append(frob_val)
-        logger.info(f"Frobenius score at epoch {idx}: {frob_val:.4f}")
+        self.frobenius_scores.append(frobs['voxel_corr'])
+        logger.info(f"Frobenius score at epoch {idx}: {frobs['voxel_corr']:.4f}")
 
-        keys = list(self.plots.keys())
-        for i, key in enumerate(keys):
-            self.plots[key].append((idx, results[i]))
+        # maps returned figs to keys in order
+        keys = [
+            'fig_target_corr','fig_sampled_corr','fig_gt_grid','fig_prior_grid',
+            'fig_frob_layerwise','fig_gt','fig_prior',
+            'gt_spars_corr','prior_spars_corr',
+            'fig_gt_sparsity','fig_prior_sparsity',
+            'fig_gt_sparsity_corr','fig_prior_sparsity_corr',
+            'fig_gt_patch','fig_prior_patch',
+            'fig_lat_partitions',    
+        ]
+        for fig_key, fig in zip(keys, main_figs):
+            self.plots[fig_key].append((idx, fig))
+
+        # added latent figs
+        for k in [
+            'fig_latent_post_corr','fig_latent_prior_corr','fig_latent_frob_groups',
+            'node_post','node_prior','fig_grid_prior_latent','fig_grid_post_latent',
+        ]:
+            if k in latent_figs and latent_figs[k] is not None:
+                self.plots[k].append((idx, latent_figs[k]))
+
 
     def flush(self, run_path):
         """
-        Save the metrics to a file
+        Save figures to the folder CorrPlots/ and all frobenius metrics to Frobenius_All.npz
         """
-        path = run_path.split('files')[0] + 'files/'
-        os.makedirs(path, exist_ok=True)
+        base = run_path.split('files')[0] + 'files/'
+        os.makedirs(base, exist_ok=True)
+        plots_dir = os.path.join(base, 'CorrPlots')
+        os.makedirs(plots_dir, exist_ok=True)
 
-        # saving figures
+        # save figures
         for key, fig_list in self.plots.items():
             for idx, fig in fig_list:
-                fig.savefig(os.path.join(path, f"{key}_epoch{idx}.png"))
-                
-        if hasattr(self, "frob_all"):
-            for key, values in self.frob_all.items():
-                epochs, vals = zip(*values)
-                np.savez(os.path.join(path, f"{key}_FrobeniusScores.npz"),
-                         epochs=np.array(epochs),
-                         frobenius=np.array(vals))
-                
+                if isinstance(fig, mf.Figure):
+                    fig.savefig(os.path.join(plots_dir, f"{key}_epoch{idx}.png"),
+                                dpi=300, bbox_inches="tight")
+
+        # saving metrics
+        if hasattr(self, "frob_all") and self.frob_all:
+            epochs_sorted = np.array(sorted(set(self.epoch_list)))
+            pack = {"epochs": epochs_sorted}
+
+            for key, items in self.frob_all.items():
+                # items is structured like list[(epoch, value)]
+                by_epoch = dict(items)
+                vals = [by_epoch[e] for e in epochs_sorted if e in by_epoch]
+                # first try to stack
+                try:
+                    arr = np.stack(vals, axis=0)
+                except Exception:
+                    arr = np.array(vals, dtype=object)
+                pack[key] = arr
+
+            out_path = os.path.join(base, "Frobenius_All.npz")
+            np.savez(out_path, **pack)
+
         logger.info("Frobenius and correlation metrics flushed and saved.")
 
-# def create_filenames_dict(config):
-#     pattern = r'\d+.pth$'
-#     prefix = config.run_path.split('files')[0] + 'files/'
-#     _fn = list(np.sort(os.listdir(prefix)))
-#     modelnames = [prefix + word for word in _fn if re.search(pattern, word)]
-#     confignames = [re.sub(r'\.pth$', '_config.yaml', name) for name in modelnames]
+def stack_or_object(vals):
+    """
+    Will try to stack a list of arrays/scalars and if shapes differ it will return an object array
+    """
+    try:
+        return np.stack(vals, axis=0)  # (n_epochs, ...)
+    except Exception:
+        return np.array(vals, dtype=object)
 
-#     idx = [int(name.split('_')[-1].split('.')[0]) for name in modelnames]
-#     filenames = {idx[i]: [modelnames[i], confignames[i]] for i in range(len(modelnames))}
-#     return filenames
+def create_filenames_dict(config):
+    pattern = r'\d+.pth$'
+    prefix = config.run_path.split('files')[0] + 'files/'
+    _fn = list(np.sort(os.listdir(prefix)))
+    modelnames = [prefix + word for word in _fn if re.search(pattern, word)]
+    confignames = [re.sub(r'\.pth$', '_config.yaml', name) for name in modelnames]
 
-# def load_engine(filename, config1):
-#     """
-#     Load the engine instance from the config file
-#     """
-#     model_name, config_name = filename
-#     logger.info(f"Processing model: {model_name} \n config: {config_name}")
-#     config_loaded = OmegaConf.load(config_name)
-#     config_loaded.gpu_list = config1.gpu_list
-#     config_loaded.load_state = 1
-#     self = setup_model(config_loaded)
-#     self._model_creator.load_state(config_loaded.run_path, self.device)
-#     return self
+    idx = [int(name.split('_')[-1].split('.')[0]) for name in modelnames]
+    filenames = {idx[i]: [modelnames[i], confignames[i]] for i in range(len(modelnames))}
+    return filenames
 
-if __name__ == "__main__":
-    logger.info("Starting main executable.")
-    main()
-    logger.info("Finished running script")
+def load_engine(filename, config1):
+    """
+    Load the engine instance from the config file
+    """
+    model_name, config_name = filename
+    logger.info(f"Processing model: {model_name} \n config: {config_name}")
+    config_loaded = OmegaConf.load(config_name)
+    config_loaded.gpu_list = config1.gpu_list
+    config_loaded.load_state = 1
+    self = setup_model(config_loaded)
+    self._model_creator.load_state(config_loaded.run_path, self.device)
+    return self
+
+# if __name__ == "__main__":
+#     logger.info("Starting main executable.")
+#     main()
+#     logger.info("Finished running script")

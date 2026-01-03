@@ -3,7 +3,6 @@ scriptJT.sh
 runLZ.sh
 submit_caloquvae_LZ.slurm
 wandb-outputs
-nbLZ.ipynb
 outputs/
 cfg_test.yaml
 wandb/
@@ -12,6 +11,7 @@ outputs_sym
 modelsJT.md
 nbDGX.ipynb
 modelsDGX.md
+.vscode/
 
 # Byte-compiled / optimized / DLL files
 __pycache__/

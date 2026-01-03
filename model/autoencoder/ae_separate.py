@@ -19,7 +19,7 @@ from torch.distributions import Bernoulli
 from CaloQuVAE import logging
 logger = logging.getLogger(__name__)
 
-from model.autoencoder.autoencoderbase import AutoEncoderBase
+from model.autoencoder.autoencoderbase import AutoEncoderBase, AutoEncoderHidden
 
 
 class AutoEncoderSeparate(AutoEncoderBase):
@@ -56,6 +56,13 @@ class AutoEncoderSeparate(AutoEncoderBase):
         
         return batch_average_entropy
     
+    def pos_energy(self, post_samples):
+        """
+        Compute positive phase (energy expval under posterior variables)
+        """
+        pos_energy = self.prior.energy_exp_cond(post_samples[0],post_samples[1],post_samples[2],post_samples[3]).mean()
+        return pos_energy
+
     def loss(self, input_data, args):
         """
         Override autoencoderbase loss function
@@ -65,9 +72,7 @@ class AutoEncoderSeparate(AutoEncoderBase):
         logger.debug("loss")
         beta, post_logits, post_samples, output_activations, output_hits = args
 
-        entropy_loss = -1 * self.posterior_entropy(post_logits)        
 
-        
         ae_loss = torch.pow((input_data - output_activations),2) * torch.exp(self._config.model.mse_weight*input_data)
         ae_loss = torch.mean(torch.sum(ae_loss, dim=1), dim=0) * self._config.model.coefficient
 
@@ -75,9 +80,33 @@ class AutoEncoderSeparate(AutoEncoderBase):
                     reduction='none')
         hit_loss = torch.mean(torch.sum(hit_loss, dim=1), dim=0)
 
-        return {
+
+        if  hasattr(self._config.model.loss_coeff, 'pos_energy') and hasattr(self._config.loss_coeff, 'logit_distance'):
+            l_dist = torch.pow(torch.cat(post_logits,1) - torch.cat(self.logit_distance(post_samples, post_logits),1),2).mean()
+            pos_energy = self.pos_energy(post_samples)
+            entropy_loss = -1 * self.posterior_entropy(post_logits)        
+
+
+            return {
             "ae_loss": ae_loss,
             "hit_loss": hit_loss,
             "entropy": entropy_loss,
-        }
+            "pos_energy": pos_energy,
+            "logit_distance":l_dist}
 
+        else:
+            return {"ae_loss":ae_loss, "hit_loss":hit_loss}            
+
+
+class AutoEncoderSeparateHidden(AutoEncoderSeparate):
+    def __init__(self, cfg):
+        super(AutoEncoderSeparateHidden, self).__init__(cfg)
+
+    def pos_energy(self, post_samples):
+        """
+        Compute positive phase (energy expval under posterior variables)
+        """
+        p3 = self.prior.sigmoid_C_k(self.prior.weight_dict['03'],   self.prior.weight_dict['13'],   self.prior.weight_dict['23'], 
+                              post_samples[0],post_samples[1],post_samples[2], self.prior.bias_dict['3'])
+        pos_energy = self.prior.energy_exp_cond(post_samples[0],post_samples[1],post_samples[2], p3).mean()
+        return pos_energy

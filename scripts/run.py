@@ -16,7 +16,7 @@ np.random.seed(32)
 import hydra
 from hydra.utils import instantiate
 
-from omegaconf import OmegaConf
+from omegaconf import OmegaConf, open_dict
 
 # PyTorch imports
 from torch import device
@@ -46,8 +46,9 @@ def main(cfg=None):
         cfg = engine._config
         os.environ["WANDB_DIR"] = cfg.config_path.split("wandb")[0]
         iden = get_project_id(cfg.run_path)
-        wandb.init(tags = [cfg.data.dataset_name], project=cfg.wandb.project, entity=cfg.wandb.entity, config=OmegaConf.to_container(cfg, resolve=True), mode=mode,
-                resume='allow', id=iden)
+        # wandb.init(tags = [cfg.data.dataset_name], project=cfg.wandb.project, entity=cfg.wandb.entity, config=OmegaConf.to_container(cfg, resolve=True), mode=mode,
+        #         resume='allow', id=iden)
+        wandb.init(tags = [cfg.data.dataset_name], project=cfg.wandb.project, entity=cfg.wandb.entity, config=OmegaConf.to_container(cfg, resolve=True), mode=mode)
         # Log metrics with wandb
         wandb.watch(engine.model)
     else:
@@ -112,21 +113,20 @@ def setup_model(config=None):
     #add device instance to engine namespace
     engine.device=dev    
     #instantiate and register optimisation algorithm
-    engine.optimiser = torch.optim.Adam(model.parameters(),
+    params = list(model.encoder.parameters()) + list(model.decoder.parameters())
+    params = [p for p in params if p.requires_grad]
+    engine.optimiser = torch.optim.Adam(params,
                                         lr=config.engine.learning_rate)
     model.prior.initOpt()
     #add the model instance to the engine namespace
     engine.model = model
     # add the modelCreator instance to engine namespace
     engine.model_creator = modelCreator
-    # if 'discriminator' in engine._config.engine.keys() and engine._config.engine.discriminator:
-    #     engine.critic.to(dev)
-    #     engine.critic_2.to(dev)
     
-    for name, param in engine.model.named_parameters():
-        if 'prior' in name:
-            param.requires_grad = False
-        print(name, param.requires_grad)
+    # for name, param in engine.model.named_parameters():
+    #     if 'prior' in name:
+    #         param.requires_grad = False
+    #     print(name, param.requires_grad)
     
     return engine
 
@@ -137,8 +137,10 @@ def run(engine, _callback=lambda _: False):
             engine.fit_ae(epoch)
 
             total_loss_dict = engine.evaluate_ae(engine.data_mgr.val_loader, epoch)
-            engine.track_best_val_loss(total_loss_dict)
-            engine.generate_plots(epoch, "ae")
+            chi2 = engine.generate_plots(epoch, "ae")
+            if epoch > 50:
+                engine.track_best_val_loss(total_loss_dict, chi2, epoch)
+
             
             if (epoch+1) % 10 == 0:
                 engine._save_model(name=str(epoch))
@@ -167,7 +169,7 @@ def run(engine, _callback=lambda _: False):
 
     if engine._config.engine.training_mode == "rbm":
         logger.info("Training RBM")
-        freeze_vae(engine)
+        # freeze_vae(engine)
         for epoch in range(engine._config.epoch_start, engine._config.n_epochs):
 
             engine.fit_rbm(epoch)
@@ -208,12 +210,13 @@ def callback(engine, epoch):
     """
     logger.info(f"Callback function executed at epoch {epoch}.")
     if engine._config.freeze_vae and epoch + 1 >= engine._config.epoch_freeze:
-        # engine.load_best_model(epoch)
+        if engine._config.engine.training_mode=="ae":
+            engine.load_best_model(epoch)
         engine._config.engine.training_mode = "rbm"
         engine._config.epoch_start = epoch + 1
         return True
     else:
-        logger.info("Continuing training in AE mode.")
+        logger.info("Continuing training in current mode.")
         return False
 
 def get_project_id(path):
@@ -227,12 +230,17 @@ def load_model_instance(cfg, adjust_epoch_start=True):
     config = OmegaConf.load(cfg.config_path)
     if adjust_epoch_start:
         # Adjust the epoch start based on the run_path
-        config.epoch_start = int(config.run_path.split("_")[-1].split(".")[0]) + 1
+        if config.run_path.split("_")[-1].split(".")[0].isdigit():
+            config.epoch_start = int(config.run_path.split("_")[-1].split(".")[0])
+        else:
+            config.epoch_start = cfg.epoch_start
     config.gpu_list = cfg.gpu_list
     config.load_state = cfg.load_state
+    if hasattr(cfg.rbm, "no_weights"):
+        with open_dict(config):
+            config.rbm.no_weights = cfg.rbm.no_weights
     self = setup_model(config)
-    self._model_creator.load_state(config.run_path, self.device)
-    self.model.prior.initOpt()
+    self._model_creator.load_state(config.run_path, self.device, vae_opt=self.optimiser, rbm_opt=self.model.prior.opt)
     return self
 
 if __name__=="__main__":
