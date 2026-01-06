@@ -192,6 +192,8 @@ def build_expanded_embedding(conditioning_sets, left_chains, right_chains, num_v
         expanded_embedding[global_id] = list(hidden_chain_source[key])
 
     return expanded_embedding, fragment_map
+
+    
 def get_expanded_flux_biases(
     logical_clamps, 
     fragment_map, 

@@ -9,6 +9,7 @@ import torch
 from dwave.embedding import unembed_sampleset
 import dimod
 import dwave.embedding
+from dwave.preprocessing.composites import SpinReversalTransformComposite
 
 def sample_logical_ising(qpu_sampler, h, J, num_samples=64, measure_time=False, chain_strength=None):
     h_min, h_max = qpu_sampler.child.properties['h_range']
@@ -211,7 +212,126 @@ def sample_physical_with_analysis(
 
     return result
 
+def sample_physical_with_analysis_srt(
+    raw_sampler, 
+    h_logical, 
+    J_logical, 
+    embedding, 
+    flux_biases, 
+    num_samples=1, 
+    chain_strength=None,
+    device='cpu',
+    metadata: dict = None,
+    save_dir: str = None,
+    use_srt: bool = True  # <--- NEW ARGUMENT
+):
+    if metadata is None: metadata = {}
 
+    # --- 1. Embed ---
+    target_adj = raw_sampler.adjacency
+    h_phys, J_phys = dwave.embedding.embed_ising(
+        h_logical, J_logical, embedding, target_adj, chain_strength=chain_strength
+    )
+    
+    # Clamp values to QPU ranges
+    h_min, h_max = raw_sampler.properties['h_range']
+    j_min, j_max = raw_sampler.properties['extended_j_range']
+    h_phys = {k: max(h_min, min(v, h_max)) for k, v in h_phys.items()}
+    J_phys = {k: max(j_min, min(v, j_max)) for k, v in J_phys.items()}
+
+    # --- 2. Construct BQM Explicitly ---
+    # We do this explicitly so we can inspect variable order for the SRT mask
+    bqm_phys = dimod.BinaryQuadraticModel.from_ising(h_phys, J_phys)
+
+    # --- 3. Prepare Sampler & SRT Mask ---
+    sample_kwargs = {
+        'num_reads': num_samples, 
+        'answer_mode': 'raw', 
+        'auto_scale': False,
+        'flux_biases': flux_biases, 
+        'flux_drift_compensation': False
+    }
+
+    if use_srt:
+
+        active_sampler = SpinReversalTransformComposite(raw_sampler)
+        
+        mask_list = []
+        # var_label is the integer physical qubit ID (e.g., 3005)
+        for var_label in bqm_phys.variables:
+            
+            # --- FIX: Direct Indexing ---
+            # flux_biases is a dense list where index i == qubit i
+            is_protected = False
+            
+            if var_label < len(flux_biases):
+                if abs(flux_biases[var_label]) > 1e-5:
+                    is_protected = True
+            
+            if is_protected:
+                mask_list.append(False) # Protected: DO NOT FLIP
+            else:
+                mask_list.append(bool(np.random.choice([True, False])))
+        
+        # Pass the mask
+        sample_kwargs['srts'] = np.array([mask_list], dtype=bool)
+    else:
+        active_sampler = raw_sampler
+
+    # --- 4. Sample ---
+    # Note: We pass the BQM directly, not h/J
+    physical_response = active_sampler.sample(bqm_phys, **sample_kwargs)
+    physical_response = physical_response.change_vartype(dimod.SPIN, inplace=False)
+    
+    # --- 5. Unembed ---
+    # (Recreate source BQM for unembedding context)
+    source_bqm = dimod.BinaryQuadraticModel.from_ising(h_logical, J_logical)
+    logical_response = dwave.embedding.unembed_sampleset(
+        target_sampleset=physical_response,
+        embedding=embedding,
+        source_bqm=source_bqm,
+        chain_break_method=dwave.embedding.chain_breaks.majority_vote,
+        chain_break_fraction=True
+    )
+    
+    # --- 6. Analyze Chains (Existing Logic) ---
+    logical_vars_ordered = list(logical_response.variables)
+    phys_matrix = physical_response.record.sample
+    
+    n_logical = len(logical_vars_ordered)
+    n_samples_actual = phys_matrix.shape[0]
+    break_matrix = np.zeros((n_samples_actual, n_logical), dtype=bool)
+    
+    phys_labels = list(physical_response.variables)
+    phys_label_to_col = {lbl: i for i, lbl in enumerate(phys_labels)}
+
+    for col_idx, logical_var in enumerate(logical_vars_ordered):
+        chain = embedding.get(logical_var, [])
+        if len(chain) <= 1: continue 
+        chain_cols = [phys_label_to_col[q] for q in chain if q in phys_label_to_col]
+        if not chain_cols: continue
+        chain_vals = phys_matrix[:, chain_cols]
+        break_matrix[:, col_idx] = (np.min(chain_vals, axis=1) != np.max(chain_vals, axis=1))
+
+    # --- 7. Pack & Save ---
+    log_tensor = torch.tensor(logical_response.record.sample, dtype=torch.float32, device=device)
+        
+    result = ChainAnalysisResult(
+        logical_samples = log_tensor,
+        variable_labels = logical_vars_ordered,
+        metadata = metadata,
+        break_matrix = break_matrix,
+        physical_matrix = phys_matrix,
+        physical_labels = phys_labels,
+        embedding = embedding,
+        physical_response = physical_response
+    )
+    
+    if save_dir:
+        prefix = f"{metadata.get('source', 'dwave')}_"
+        result.save(directory=save_dir, prefix=prefix)
+
+    return result
 
 def sample_manual_ising(raw_sampler, h_phys, J_phys, flux_biases, num_reads=100):
     props = raw_sampler.properties

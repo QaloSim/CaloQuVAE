@@ -9,7 +9,10 @@ from utils.HighLevelFeatures import HighLevelFeatures
 import matplotlib.patches as mpatches
 import matplotlib.lines as mlines
 import seaborn as sns
+import dwave.embedding
 from typing import TYPE_CHECKING
+from utils.dwave.physics import rbm_to_expanded_ising
+from utils.dwave.graphs import build_expanded_embedding
 
 if TYPE_CHECKING:
     from utils.dwave.sampling_backend import ChainAnalysisResult
@@ -684,4 +687,173 @@ def plot_chain_break_correlations(experiment_data: dict, n_clamped: int = 53, mi
         cbar_ax = fig.add_axes([0.92, 0.15, 0.015, 0.7]) 
         fig.colorbar(last_im, cax=cbar_ax)
 
+    plt.show()
+
+def plot_magnetization_diagnostics(experiment_data, n_clamped=53):
+    """
+    Plots the Average Magnetization <sigma_z> for each latent node.
+    Compares Classical Baseline vs QPU Clean vs QPU Broken.
+    """
+    energy = experiment_data['incidence_energy']
+    
+    # 1. Extract Samples
+    # Ensure everything is on CPU and float for calculation
+    samples_cl = experiment_data['classical_samples'].float().cpu()
+    samples_clean = experiment_data['clean_samples'].float().cpu()
+    samples_dirty = experiment_data['dirty_samples'].float().cpu()
+
+    # 2. Compute Magnetization (Mean across batch dim=0)
+    # We slice [n_clamped:] immediately to ignore the clamped visible units
+    mag_cl = samples_cl.mean(dim=0)[n_clamped:].numpy()
+    mag_clean = samples_clean.mean(dim=0)[n_clamped:].numpy()
+    mag_dirty = samples_dirty.mean(dim=0)[n_clamped:].numpy()
+    
+    # Create X-axis indices (shifted to match your plots)
+    indices = np.arange(n_clamped, n_clamped + len(mag_cl))
+    
+    # 3. Plotting
+    fig, axes = plt.subplots(2, 1, figsize=(15, 10), sharex=True)
+    fig.suptitle(f"Node Diagnostic: Magnetization Profiles (E = {energy} MeV)", fontsize=16)
+
+    # --- Subplot 1: The Raw Profiles ---
+    ax = axes[0]
+    ax.plot(indices, mag_cl, label='Classical Baseline', color='black', linestyle='--', alpha=0.7)
+    ax.plot(indices, mag_clean, label='QPU Clean Chains', color='#1f77b4', linewidth=2)
+    ax.plot(indices, mag_dirty, label='QPU Broken Chains', color='#d62728', alpha=0.6)
+    
+    
+    ax.set_ylabel(r"Average Magnetization $\langle \sigma_z \rangle$", fontsize=12)
+    ax.set_ylim(0.0, 1.1)
+    ax.legend(loc='upper right')
+    ax.grid(True, alpha=0.3)
+    ax.set_title("Are nodes 'Stuck' (at +/- 1) or 'Noisy' (at 0)?")
+
+    # --- Subplot 2: Deviation from Baseline (The "Error Signal") ---
+    # This shows purely the *error* introduced by the QPU
+    ax = axes[1]
+    
+    error_clean = mag_clean - mag_cl
+    error_dirty = mag_dirty - mag_cl
+    
+    ax.bar(indices, error_clean, color='#1f77b4', alpha=0.6, label='Error (Clean Chains)')
+    # We plot dirty errors as a line/scatter to not clutter the bars
+    ax.plot(indices, error_dirty, color='#d62728', linestyle=':', alpha=0.8, label='Error (Broken Chains)')
+
+    ax.set_ylabel(r"Bias Error $\langle \sigma_{QPU} \rangle - \langle \sigma_{RBM} \rangle$", fontsize=12)
+    ax.set_xlabel("Latent Node Index", fontsize=12)
+    ax.set_ylim(-0.4, 0.6)
+    ax.legend()
+    ax.grid(True, alpha=0.3)
+    ax.set_title("Magnitude of Bias Shift")
+
+    plt.tight_layout()
+    plt.show()
+
+def plot_expanded_j_distribution(
+    rbm, 
+    raw_sampler, 
+    conditioning_sets, 
+    left_chains, 
+    right_chains, 
+    hidden_side='right',
+    beta=1.0, 
+    chain_strength=None, 
+    rho=28.0,
+    save_path=None
+):
+    """
+    Plots the distribution of Physical J values for the expanded embedding.
+    Matches the logic of 'sample_expanded_flux_conditioned_rigorous' to ensure
+    the plot reflects the actual hardware submission.
+    """
+    
+    # --- 1. Setup Dimensions & Sides (Identical to Sampling Function) ---
+    n_vis = rbm.params["vbias"].shape[0]
+    
+    if hidden_side == 'right':
+        visible_side = 'left' 
+    elif hidden_side == 'left':
+        visible_side = 'right'
+    else:
+        raise ValueError("hidden_side must be 'left' or 'right'")
+
+    # --- 2. Build Embedding Internally ---
+    exp_embedding, fragment_map = build_expanded_embedding(
+        conditioning_sets, 
+        left_chains, 
+        right_chains, 
+        num_visible=n_vis, 
+        hidden_side=hidden_side
+    )
+
+    # --- 3. Get Logical Ising ---
+    h_exp, J_exp = rbm_to_expanded_ising(
+        rbm, fragment_map, exp_embedding, raw_sampler.adjacency, beta
+    )
+
+    # --- 4. Handle Dynamic Chain Strength ---
+    # This duplicates the logic in your sampler to ensure the plot is accurate
+    if chain_strength is None:
+        calc_strength = calculate_rms_chain_strength(J_exp, rho=rho)
+        max_j = raw_sampler.properties.get('extended_j_range', [None, 2.0])[1]
+        chain_strength = min(calc_strength, max_j)
+        print(f"[Plot Debug] Calculated Dynamic Chain Strength: {chain_strength:.4f} (rho={rho})")
+    else:
+        print(f"[Plot Debug] Using Manual Chain Strength: {chain_strength}")
+
+    # --- 5. Embed to Physical (What the QPU sees) ---
+    target_adj = raw_sampler.adjacency
+    # We pass h_exp even though we only care about J, because embed_ising requires it
+    _, J_phys = dwave.embedding.embed_ising(
+        h_exp, J_exp, exp_embedding, target_adj, chain_strength=chain_strength
+    )
+
+    # --- 6. Clamp to Hardware Limits ---
+    # You specified limits of +/- 1.0. 
+    # The sampler might support extended ranges, but we clamp to standard Ising limits here.
+    j_min, j_max = -1.0, 1.0
+    
+    j_values_raw = np.array(list(J_phys.values()))
+    j_values_clamped = np.clip(j_values_raw, j_min, j_max)
+
+    # Separate Chains vs Logical for visualization
+    # Heuristic: Chains are usually set exactly to -chain_strength
+    is_chain = np.isclose(j_values_raw, -chain_strength, atol=1e-4)
+    logical_couplings = j_values_clamped[~is_chain]
+    chain_couplings = j_values_clamped[is_chain]
+
+    # --- 7. Plotting ---
+    plt.figure(figsize=(12, 6))
+    
+    # Histogram for Logical Couplings
+    plt.hist(logical_couplings, bins=60, alpha=0.7, color='#4c72b0', 
+             label=f'Logical Interactions (Beta={beta})', edgecolor='k', linewidth=0.5)
+    
+    # Histogram for Chain Couplings
+    if len(chain_couplings) > 0:
+        plt.hist(chain_couplings, bins=10, alpha=0.6, color='#dd8452', 
+                 label=f'Chain Couplings (Str={chain_strength:.2f})', edgecolor='k', linewidth=0.5)
+
+    # Hardware Limits
+    plt.axvline(x=j_min, color='r', linestyle='--', linewidth=2, label='Hardware Limit (-1.0)')
+    plt.axvline(x=j_max, color='r', linestyle='--', linewidth=2, label='Hardware Limit (+1.0)')
+    
+    # Zero line
+    plt.axvline(x=0, color='k', linestyle='-', alpha=0.3)
+
+    # Stats Titles
+    n_clipped = np.sum(j_values_raw < j_min) + np.sum(j_values_raw > j_max)
+    mean_abs_j = np.mean(np.abs(logical_couplings))
+    
+    plt.title(f"Physical J Distribution | Beta: {beta} | Chain Str: {chain_strength:.2f}\n"
+              f"Mean Abs Logical J: {mean_abs_j:.3f} | Total Clipped: {n_clipped}")
+    plt.xlabel("Physical J Strength")
+    plt.ylabel("Count")
+    plt.legend()
+    plt.grid(True, alpha=0.3)
+    
+    if save_path:
+        plt.savefig(save_path)
+        print(f"Plot saved to {save_path}")
+    
     plt.show()
