@@ -308,6 +308,118 @@ class RBM_TwoPartite:
         # v_sample is the final state after the last loop
         return v_sample
 
+
+    def sample_v_given_v_clamped_noise(
+            self,
+            clamped_v: torch.Tensor,
+            n_clamped: int,
+            gibbs_steps: int,
+            beta: float = 1.0,
+            precision: int = 5,  # Precision in bits (e.g., 5, 6, 8)
+            sigma_scale: float = 1.0 # Multiplier: 1.0 means Sigma = 1 LSB
+        ) -> torch.Tensor:
+            """
+            Performs clamped sampling with analog noise derived from bit precision.
+            
+            The standard deviation of the noise is calculated as:
+                sigma = (Max_Param / 2^(precision - 1)) * sigma_scale
+                
+            This simulates a scenario where the analog noise floor is proportional
+            to the resolution of the DAC.
+            """
+            
+            # --- Setup ---
+            clamped_v = clamped_v.to(self.device)
+            batch_size = clamped_v.shape[0]
+            num_visibles = self.params["vbias"].shape[0]
+            num_unclamped = num_visibles - n_clamped
+
+            if n_clamped >= num_visibles or n_clamped <= 0:
+                raise ValueError(f"n_clamped must be between 0 and {num_visibles}")
+            if clamped_v.shape[1] != n_clamped:
+                raise ValueError("clamped_v shape mismatch")
+
+            # --- Step 1: Forward Transform (RBM -> Ising) ---
+            W = self.params["weight_matrix"]
+            vb = self.params["vbias"]
+            hb = self.params["hbias"]
+
+            # J_ij = -W_ij / 4beta
+            J_base = -W / (4.0 * beta)
+            
+            # Shift terms
+            s_v_base = torch.sum(J_base, dim=1)
+            s_h_base = torch.sum(J_base, dim=0)
+
+            # Ising Biases
+            h_vis_base = -vb / (2.0 * beta) + s_v_base
+            h_hid_base = -hb / (2.0 * beta) + s_h_base
+
+            # --- Step 2: Calculate Noise Sigma from Precision ---
+            # Find global max absolute value to define the DAC range
+            # We look at both J and h to find the single largest requirement
+            max_J = torch.max(torch.abs(J_base))
+            max_h_vis = torch.max(torch.abs(h_vis_base))
+            max_h_hid = torch.max(torch.abs(h_hid_base))
+            
+            global_max = torch.max(max_J, torch.max(max_h_vis, max_h_hid))
+            
+            # Avoid division by zero if weights are 0
+            if global_max > 0:
+                # LSB size = Range / (2^(bits - 1))
+                # (Using bits-1 assumes signed integers)
+                lsb_size = global_max / (2**(precision - 1))
+                noise_std = lsb_size * sigma_scale
+            else:
+                noise_std = 0.0
+
+            # --- Step 3: Expand and Add Noise ---
+            # Expand to [Batch, ...]
+            J_batch = J_base.unsqueeze(0).expand(batch_size, -1, -1).clone()
+            h_vis_batch = h_vis_base.unsqueeze(0).expand(batch_size, -1).clone()
+            h_hid_batch = h_hid_base.unsqueeze(0).expand(batch_size, -1).clone()
+
+            if noise_std > 0:
+                # Add Gaussian noise scaled to the calculated LSB
+                J_batch += torch.randn_like(J_batch) * noise_std
+                h_vis_batch += torch.randn_like(h_vis_batch) * noise_std
+                h_hid_batch += torch.randn_like(h_hid_batch) * noise_std
+
+            # --- Step 4: Inverse Transform (Noisy Ising -> Noisy RBM) ---
+            W_prime = -4.0 * beta * J_batch
+            
+            # Recompute shifts (Critical step: noise in J affects effective bias)
+            s_v_prime = torch.sum(J_batch, dim=2) # Sum over hidden
+            s_h_prime = torch.sum(J_batch, dim=1) # Sum over visible
+            
+            vb_prime = -2.0 * beta * (h_vis_batch - s_v_prime)
+            hb_prime = -2.0 * beta * (h_hid_batch - s_h_prime)
+
+            # --- Step 5: Batch-wise Gibbs Sampling ---
+            v_sample = torch.zeros(batch_size, num_visibles, device=self.device, dtype=torch.float32)
+            v_sample[:, :n_clamped] = clamped_v
+            v_sample[:, n_clamped:] = torch.randint(0, 2, (batch_size, num_unclamped), device=self.device, dtype=torch.float32)
+
+            for _ in range(gibbs_steps):
+                # Sample Hidden (using bmm)
+                v_input = v_sample.unsqueeze(1) 
+                activation_h = torch.bmm(v_input, W_prime).squeeze(1) + hb_prime
+                mh = torch.sigmoid(beta * activation_h)
+                h_sample = torch.bernoulli(mh)
+                
+                # Sample Visible (using bmm)
+                h_input = h_sample.unsqueeze(1)
+                W_prime_T = W_prime.transpose(1, 2)
+                activation_v = torch.bmm(h_input, W_prime_T).squeeze(1) + vb_prime
+                mv = torch.sigmoid(beta * activation_v)
+                v_sample_new = torch.bernoulli(mv)
+                
+                # Clamp
+                v_sample_new[:, :n_clamped] = clamped_v
+                v_sample = v_sample_new
+
+            return v_sample
+
     
     
     def save_checkpoint(self, filepath: str, epoch: int, config: OmegaConf):
