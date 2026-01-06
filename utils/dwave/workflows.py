@@ -24,6 +24,7 @@ from .sampling_backend import (
     sample_logical_ising,
     sample_ising_flux_bias,
     sample_physical_with_analysis,
+    sample_physical_with_analysis_srt,
     sample_manual_ising
     )
 from .postprocessing import (
@@ -426,7 +427,7 @@ def sample_expanded_flux_conditioned_rigorous(
     binary_patterns_batch, 
     hidden_side='right',
     beta=1.0, 
-    chain_strength=None, 
+    chain_strength=1.0, 
     rho = 28.0,
     clamp_strength_h=50.0,
     source=None,
@@ -466,7 +467,7 @@ def sample_expanded_flux_conditioned_rigorous(
     )
     
     # 3. Ising Formulation
-    # Note: Ensure rbm_to_expanded_ising handles the mix of integer (logical) 
+    # Note: rbm_to_expanded_ising handles the mix of integer (logical) 
     # and string (fragment) keys in exp_embedding.
     h_exp, J_exp = rbm_to_expanded_ising(
         rbm, fragment_map, exp_embedding, raw_sampler.adjacency, beta
@@ -532,6 +533,103 @@ def sample_expanded_flux_conditioned_rigorous(
     if hasattr(analysis_result, 'breaks_per_variable') and len(analysis_result.breaks_per_variable) > 0:
         print(f"Top 5 broken vars: {np.argsort(analysis_result.breaks_per_variable)[-5:]}")
     
+    return analysis_result
+
+
+def sample_expanded_flux_conditioned_rigorous_srt(
+    rbm, 
+    raw_sampler, 
+    conditioning_sets, 
+    left_chains, 
+    right_chains, 
+    binary_patterns_batch, 
+    hidden_side='right',
+    beta=1.0, 
+    chain_strength=1.0, 
+    rho = 28.0,
+    clamp_strength_h=50.0,
+    source=None,
+    save_dir="/home/leozhu/CaloQuVAE/wandb-outputs/dwave_misc/",
+    use_srt=True # <--- Enable by default for gauge averaging
+):
+    """
+    Samples from the D-Wave QPU using expanded embedding.
+    Supports Partial Spin Reversal Transformations.
+    """
+    batch_size = binary_patterns_batch.shape[0]
+    total_qubits = raw_sampler.properties['num_qubits']
+    n_vis = rbm.params["vbias"].shape[0]
+    n_hid = rbm.params["hbias"].shape[0]
+    n_cond = len(conditioning_sets)
+
+    # 1. Determine Sides
+    if hidden_side == 'right':
+        visible_side = 'left' 
+    elif hidden_side == 'left':
+        visible_side = 'right'
+    else:
+        raise ValueError("hidden_side must be 'left' or 'right'")
+
+    # 2. Graph Construction
+    exp_embedding, fragment_map = build_expanded_embedding(
+        conditioning_sets, 
+        left_chains, 
+        right_chains, 
+        num_visible=n_vis, 
+        hidden_side=hidden_side
+    )
+    
+    # 3. Ising Formulation
+    h_exp, J_exp = rbm_to_expanded_ising(
+        rbm, fragment_map, exp_embedding, raw_sampler.adjacency, beta
+    )    
+
+    # 4. Flux Calculation
+    row_np = binary_patterns_batch[0].detach().cpu().numpy()
+    logical_clamps = {i: (1 if v > 0.5 else -1) for i, v in enumerate(row_np) if i < n_cond}
+
+    raw_fb = get_expanded_flux_biases(
+        logical_clamps, fragment_map, exp_embedding, total_qubits, clamp_strength_h
+    )
+    
+    safe_fb = [max(-0.01, min(v, 0.01)) for v in raw_fb]
+
+    if chain_strength is None:
+            calc_strength = calculate_rms_chain_strength(J_exp, rho=rho)
+            max_j = raw_sampler.properties.get('extended_j_range', [None, 2.0])[1]
+            chain_strength = min(calc_strength, max_j)
+            print(f"Dynamic Chain Strength calculated: {chain_strength:.2f} (rho={rho:.2f})")
+    
+    run_metadata = {
+        'timestamp': str(datetime.now()),
+        'n_vis': n_vis,
+        'n_hid': n_hid,
+        'n_cond': n_cond,
+        'beta': beta,
+        'hidden_side': hidden_side,
+        'use_srt': use_srt, # Record in metadata
+        "chain_strength": chain_strength,
+    }
+    if source is not None:
+        run_metadata['source'] = source
+
+    # 5. Sample with Analysis
+    print(f"Submitting Batch: (n={batch_size}, SRT={use_srt})...")    
+    analysis_result = sample_physical_with_analysis_srt(
+        raw_sampler=raw_sampler,
+        h_logical=h_exp,
+        J_logical=J_exp,
+        embedding=exp_embedding,
+        flux_biases=safe_fb,
+        num_samples=batch_size,
+        chain_strength=chain_strength,
+        device=rbm.device,
+        metadata=run_metadata,
+        save_dir=save_dir,
+        use_srt=use_srt # <--- Pass flag
+    )
+    
+    print(f"Clean samples: {analysis_result.total_clean_fraction:.2%}")
     return analysis_result
 
 
@@ -1220,3 +1318,114 @@ def run_chain_break_experiment(
             "pct_clean": clean_frac * 100
         }
     }
+
+
+
+def run_spin_gauge_experiment(
+    incidence_energy: float,
+    engine,
+    rbm,
+    raw_sampler,  # <--- MUST be the raw DWaveSampler
+    conditioning_sets,
+    left_chains,
+    right_chains,
+    n_cond: int = 53,
+    beta: float = 3.0,
+    num_reads: int = 1000,
+    batch_size: int = 1024,
+    hidden_side: str = 'right',
+    device: str = 'cpu',
+    use_srt: bool = True  # <--- New Toggle
+):
+    print(f"--- Starting Spin Gauge Experiment (Energy = {incidence_energy} MeV, SRT={use_srt}) ---")
+    
+    # 1. Prepare Target Data
+    target_batch_full = convert_energy_to_binary(
+        incidence_energy=incidence_energy, 
+        engine=engine, 
+        n_cond=n_cond, 
+        num_reads=num_reads, 
+        device=device
+    )
+
+    qpu_v_list = []
+    qpu_h_list = []
+    clean_mask_list = []
+
+    total_samples = target_batch_full.shape[0]
+    
+    # 2. Loop Through Batches
+    for i in range(0, total_samples, batch_size):
+        current_batch_end = min(i + batch_size, total_samples)
+        current_batch = target_batch_full[i : current_batch_end]
+        
+        # --- QPU Call ---
+        # We pass raw_sampler and use_srt directly.
+        # The inner function now handles the masking and wrapping.
+        analysis_result = sample_expanded_flux_conditioned_rigorous_srt(
+            rbm=rbm,
+            raw_sampler=raw_sampler,
+            conditioning_sets=conditioning_sets,
+            left_chains=left_chains,
+            right_chains=right_chains,
+            binary_patterns_batch=current_batch,
+            hidden_side=hidden_side,
+            beta=beta,
+            source=f"spin_gauge_exp_E{int(incidence_energy)}",
+            use_srt=use_srt  # <--- Passing the flag
+        )
+
+        # Unpack Results
+        batch_v, batch_h = process_analysis_result(analysis_result, rbm, conditioning_sets)
+        batch_mask = analysis_result.clean_mask
+        
+        qpu_v_list.append(batch_v.cpu())
+        qpu_h_list.append(batch_h.cpu())
+        clean_mask_list.append(batch_mask.cpu())
+
+    # --- 3. Aggregate Results ---
+    qpu_v = torch.cat(qpu_v_list, dim=0)
+    qpu_h = torch.cat(qpu_h_list, dim=0)
+    full_clean_mask = torch.cat(clean_mask_list, dim=0).bool()
+    
+    # Compute Energies
+    with torch.no_grad():
+        all_energies = joint_energy(rbm, qpu_v.to(device), qpu_h.to(device)).cpu().numpy()
+
+    clean_energies = all_energies[full_clean_mask]
+    dirty_energies = all_energies[~full_clean_mask]
+    
+    clean_count = len(clean_energies)
+    dirty_count = len(dirty_energies)
+    clean_frac = clean_count / total_samples if total_samples > 0 else 0
+
+    print(f"Result: {clean_count} Clean | {dirty_count} Dirty ({clean_frac:.1%})")
+
+    # --- 4. Classical Baseline (Optional, same as before) ---
+    print("Generating Classical Baseline...")
+    v_rbm = rbm.sample_v_given_v_clamped(
+        clamped_v=target_batch_full, 
+        n_clamped=target_batch_full.shape[1], 
+        gibbs_steps=2000, 
+        beta=1.0 
+    )
+    h_rbm, _ = rbm._sample_h_given_v(v_rbm, beta=1.0)
+    with torch.no_grad():
+        classical_energies = joint_energy(rbm, v_rbm, h_rbm).cpu().numpy()
+
+    return {
+            "incidence_energy": incidence_energy,
+            "classical": classical_energies,
+            "clean": clean_energies,
+            "dirty": dirty_energies,
+            "classical_samples": v_rbm.cpu(),
+            "clean_samples": qpu_v[full_clean_mask],
+            "dirty_samples": qpu_v[~full_clean_mask],
+            "stats": {
+                "n_clean": clean_count,
+                "n_dirty": dirty_count,
+                "n_total": total_samples,
+                "pct_clean": clean_frac * 100,
+                "use_srt": use_srt
+            }
+        }
