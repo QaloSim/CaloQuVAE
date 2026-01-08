@@ -105,7 +105,7 @@ def plot_calorimeter_shower(cfg, showers, showers_recon, showers_sampled, epoch,
             highlight_coords=highlight_coords,
             title=f"(Epoch {epoch}) Highlighted Voxels")
 
-    return image_input, image_recon, image_sample, image_input_avg, image_recon_avg, image_sample_avg, found_energy_val
+    return image_input, image_recon, image_sample, image_input_avg, image_recon_avg, image_sample_avg
 
 
 class AtlasEvaluator:
@@ -490,3 +490,35 @@ def make_validation_plots(hlf_ref, list_hlf_models, labels, output_dir="plots/")
         plot_layer_grid(grid_width_phi, 'Width Phi [mm]', labels, output_dir, yscale='log', pdf=pdf)
 
     print("Done! PDF saved to", pdf_path)
+
+
+
+class FeatureAdapter:
+    """
+    Wraps the dictionary output from DifferentiableFeatureExtractor 
+    to mimic the interface of HighLevelFeatures_ATLAS_regular 
+    so existing plotting code works without changes.
+    """
+    def __init__(self, features_dict, relevant_layers, e_inc):
+        self.relevantLayers = relevant_layers
+        self.Einc = to_np(e_inc).flatten()
+        
+        # Unpack Tensor dict to Numpy arrays
+        self.E_tot = to_np(features_dict['E_tot'])
+        
+        # Initialize containers expected by plotting code
+        self.E_layers = {}
+        self.EC_rs = {}
+        self.EC_phis = {}
+        self.width_rs = {}
+        self.width_phis = {}
+
+        # Populate layer-wise stats
+        # features_dict['R_center'] is shape (Batch, Num_Layers)
+        # We need to map the column index 0...N back to the actual layer ID (e.g., 0, 1, 12...)
+        for i, layer_id in enumerate(self.relevantLayers):
+            self.E_layers[layer_id] = to_np(features_dict['E_layer'][:, i])
+            self.EC_rs[layer_id]    = to_np(features_dict['R_center'][:, i])
+            self.EC_phis[layer_id]  = to_np(features_dict['Phi_center'][:, i])
+            self.width_rs[layer_id] = to_np(features_dict['R_width'][:, i])
+            self.width_phis[layer_id] = to_np(features_dict['Phi_width'][:, i])
