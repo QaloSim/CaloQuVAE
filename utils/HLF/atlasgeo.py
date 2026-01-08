@@ -70,58 +70,53 @@ class DifferentiableFeatureExtractor(nn.Module):
         phi_grid_list = [geometry_handler.phi_centers[l] for l in self.relevant_layers]
         
         # Register as buffers so they are part of the model state (move to GPU, save/load)
-        # but are not updated by the optimizer.
         self.register_buffer('r_grid', torch.stack(r_grid_list))       # (L, V)
         self.register_buffer('phi_grid', torch.stack(phi_grid_list))   # (L, V)
         
-        # Epsilon for numerical stability in division
+        # Epsilon for numerical stability
         self.epsilon = 1e-6
 
     def forward(self, showers):
         """
         Args:
-            showers: Tensor of shape (Batch, Total_Voxels) or (Batch, Layers, Voxels)
-                     Total_Voxels should be Layers * Voxels_Per_Layer
-        Returns:
-            Dictionary containing batched features.
+            showers: (Batch, Total_Voxels) or (Batch, Layers, Voxels)
         """
-        # 1. Standardize Input Shape to (Batch, Layers, Voxels)
+        # 1. Standardize Input Shape
         if showers.dim() == 2:
             B, Total = showers.shape
-            # Reshape: (Batch, Layers, Voxels)
             showers = showers.view(B, self.num_layers, self.voxels_per_layer)
         
-        # showers is now (B, L, V)
-        # grids are (L, V) -> broadcast to (1, L, V)
-        
         # 2. Total Energy Calculation
-        # Sum over voxels (dim=2), then sum over layers (dim=1)
         E_layer_tot = torch.sum(showers, dim=2) # (B, L)
         E_tot = torch.sum(E_layer_tot, dim=1)   # (B, )
 
         # Avoid division by zero for empty layers
-        # Create a safe denominator
         E_layer_denom = E_layer_tot.clone()
-        E_layer_denom[E_layer_denom < self.epsilon] = 1.0
+        # Use torch.where to replace safely, though clone() separates the graph enough for this specific op usually.
+        # But specifically for the denom, the inplace clamp is "okay" if E_layer_denom isn't used for gradients,
+        # but pure torch operations are safer:
+        E_layer_denom = torch.clamp(E_layer_denom, min=self.epsilon)
 
         # 3. First Moments (Centers)
-        # Weighted sum of R: Sum(Energy * R_grid)
-        # (B, L, V) * (1, L, V) -> (B, L, V) -> sum(dim=2) -> (B, L)
+        # (B, L, V) * (1, L, V) -> sum(dim=2) -> (B, L)
         R_weighted = torch.sum(showers * self.r_grid.unsqueeze(0), dim=2)
         Phi_weighted = torch.sum(showers * self.phi_grid.unsqueeze(0), dim=2)
         
         R_center = R_weighted / E_layer_denom
         Phi_center = Phi_weighted / E_layer_denom
         
-        # Mask out centers for empty layers (restore 0.0 where Energy was 0)
-        mask = (E_layer_tot < self.epsilon)
-        R_center[mask] = 0.0
-        Phi_center[mask] = 0.0
+        # Mask definition
+        mask = (E_layer_tot < self.epsilon) # (B, L) boolean tensor
+        
+        # --- FIX 1: Replace In-Place Center Masking ---
+        # OLD (Error): R_center[mask] = 0.0
+        # NEW: Use torch.where to create a new tensor
+        zeros = torch.zeros_like(R_center)
+        R_center = torch.where(mask, zeros, R_center)
+        Phi_center = torch.where(mask, zeros, Phi_center)
 
         # 4. Second Moments (Widths)
-        # Width = sqrt( Sum( E * (x - center)^2 ) / Sum(E) )
-        
-        # We need to broadcast centers back to voxel dimensions: (B, L, 1)
+        # Broadcast centers: (B, L, 1)
         diff_r = self.r_grid.unsqueeze(0) - R_center.unsqueeze(2)       # (B, L, V)
         diff_phi = self.phi_grid.unsqueeze(0) - Phi_center.unsqueeze(2) # (B, L, V)
         
@@ -129,19 +124,23 @@ class DifferentiableFeatureExtractor(nn.Module):
         var_r = torch.sum(showers * (diff_r ** 2), dim=2) / E_layer_denom
         var_phi = torch.sum(showers * (diff_phi ** 2), dim=2) / E_layer_denom
         
-        # Standard Deviation
-        width_r = torch.sqrt(torch.clamp(var_r, min=0.0))
-        width_phi = torch.sqrt(torch.clamp(var_phi, min=0.0))
+        # --- FIX: Avoid infinite gradient at 0 ---
+        # OLD: width_r = torch.sqrt(torch.clamp(var_r, min=0.0))
+        # NEW: Clamp min to epsilon (e.g. 1e-8) so we never take sqrt(0)
+        safe_var_r = torch.clamp(var_r, min=1e-8)
+        safe_var_phi = torch.clamp(var_phi, min=1e-8)
+        
+        width_r = torch.sqrt(safe_var_r)
+        width_phi = torch.sqrt(safe_var_phi)
 
-        # Mask empty layers
-        width_r[mask] = 0.0
-        width_phi[mask] = 0.0
-
+        # Mask empty layers (restore true 0.0 for output, but gradients remain stable)
+        width_r = torch.where(mask, zeros, width_r)
+        width_phi = torch.where(mask, zeros, width_phi)
         return {
-            "E_tot": E_tot,          # (B,)
-            "E_layer": E_layer_tot,  # (B, L)
-            "R_center": R_center,    # (B, L)
-            "Phi_center": Phi_center,# (B, L)
-            "R_width": width_r,      # (B, L)
-            "Phi_width": width_phi   # (B, L)
+            "E_tot": E_tot,          
+            "E_layer": E_layer_tot,  
+            "R_center": R_center,    
+            "Phi_center": Phi_center,
+            "R_width": width_r,      
+            "Phi_width": width_phi   
         }
