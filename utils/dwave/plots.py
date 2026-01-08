@@ -595,7 +595,7 @@ def plot_experiment_energies(experiment_data: dict):
 
 
 
-def plot_chain_break_correlations(experiment_data: dict, n_clamped: int = 53, min_samples: int = 5):
+def plot_chain_break_correlations(experiment_data: dict, n_clamped: int = 53, min_samples: int = 5, use_srt=True):
     """
     Plots 3 correlation matrices side-by-side with correct Latent Node Index labels.
     """
@@ -607,7 +607,11 @@ def plot_chain_break_correlations(experiment_data: dict, n_clamped: int = 53, mi
     fig, axes = plt.subplots(1, 3, figsize=(20, 6), sharey=True)
     
     # Title
-    fig.suptitle(f"Visible Unit Correlation Matrices (Generative Units Only, E = {energy} MeV)", fontsize=16)
+    title = f"Visible Unit Correlation Matrices (E = {energy} MeV)"
+    if use_srt:
+        title += " | SRT Applied"
+
+    fig.suptitle(title, fontsize=16)
     
     # Track the last valid image for the shared colorbar
     last_im = None
@@ -689,7 +693,7 @@ def plot_chain_break_correlations(experiment_data: dict, n_clamped: int = 53, mi
 
     plt.show()
 
-def plot_magnetization_diagnostics(experiment_data, n_clamped=53):
+def plot_magnetization_diagnostics(experiment_data, n_clamped=53, use_srt=True):
     """
     Plots the Average Magnetization <sigma_z> for each latent node.
     Compares Classical Baseline vs QPU Clean vs QPU Broken.
@@ -713,7 +717,8 @@ def plot_magnetization_diagnostics(experiment_data, n_clamped=53):
     
     # 3. Plotting
     fig, axes = plt.subplots(2, 1, figsize=(15, 10), sharex=True)
-    fig.suptitle(f"Node Diagnostic: Magnetization Profiles (E = {energy} MeV)", fontsize=16)
+    suffix = " | SRT Applied" if use_srt else ""
+    fig.suptitle(f"Node Diagnostic: Magnetization Profiles (E = {energy} MeV){suffix}", fontsize=16)
 
     # --- Subplot 1: The Raw Profiles ---
     ax = axes[0]
@@ -726,7 +731,6 @@ def plot_magnetization_diagnostics(experiment_data, n_clamped=53):
     ax.set_ylim(0.0, 1.1)
     ax.legend(loc='upper right')
     ax.grid(True, alpha=0.3)
-    ax.set_title("Are nodes 'Stuck' (at +/- 1) or 'Noisy' (at 0)?")
 
     # --- Subplot 2: Deviation from Baseline (The "Error Signal") ---
     # This shows purely the *error* introduced by the QPU

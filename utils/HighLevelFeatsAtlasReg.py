@@ -311,6 +311,14 @@ class HighLevelFeatures_ATLAS_regular:
             phi_locs = self.phi_locations[layer_str]
 
             # 4. Calculate the weighted sum for r (the numerator)
+            try:
+                weighted_sum_r = torch.sum(r_locs * layer_energies)
+                weighted_sum_phi = torch.sum(phi_locs * layer_energies)
+            except RuntimeError as e:
+                print(f"!! CRITICAL MISMATCH in Layer {layer_num} !!")
+                print(f"Expected size (Geometry): {r_locs.shape}")
+                print(f"Provided size (Model):    {layer_energies.shape}")
+                raise e # Re-raise to stop, or 'continue' to skip this layer
             weighted_sum_r = torch.sum(r_locs * layer_energies)
 
             # 5. Calculate the weighted sum for phi
