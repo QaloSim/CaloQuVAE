@@ -13,7 +13,8 @@ from utils.plots import vae_plots, corr_plots
 from utils.atlas_plots import plot_calorimeter_shower
 from utils.rbm_plots import plot_forward_output_v2, plot_rbm_histogram, plot_rbm_params, plot_forward_output_hidden
 # from utils.correlation_plotting import correlation_plots
-
+from utils.HLF.atlasgeo import AtlasGeometry, DifferentiableFeatureExtractor
+from utils.plots import calculate_chi_squared_distance
 
 from collections import defaultdict
 from omegaconf import OmegaConf
@@ -35,6 +36,11 @@ class Engine():
         self._data_mgr = None
         self._device = None
         self.best_val_loss = float("inf")
+        # Initialize Geometry and Extractor
+        self.geo_handler = AtlasGeometry(self._config.data.binning_path) 
+        self.feature_extractor = DifferentiableFeatureExtractor(self.geo_handler)
+        
+        self.feature_extractor.eval()
 
     @property
     def model(self):
@@ -441,6 +447,65 @@ class Engine():
             self.showers_prior[i*batch_size:(i+1)*batch_size,:] = self._reduceinv(shower_naive, x0).detach().cpu()
             print(f"Processed batch {i+1}")
 
+    def _compute_high_level_metrics(self, showers_gt, showers_recon, showers_sampled):
+            """
+            Computes Chi2 for high-level features (Centers, Widths, Energy).
+            Uses full data range (no percentile clipping) and the user's custom Chi2 function.
+            """
+            metrics = {}
+            
+            # 1. Extract features (Ensure inputs and extractor are on CPU)
+            self.feature_extractor.to('cpu')
+            
+            with torch.no_grad():
+                feats_gt = self.feature_extractor(showers_gt.cpu())
+                feats_recon = self.feature_extractor(showers_recon.cpu())
+                feats_sampled = self.feature_extractor(showers_sampled.cpu())
+
+            # 2. Iterate through features and calculate Chi2
+            for key in feats_gt.keys():
+                data_gt = feats_gt[key].numpy()
+                data_recon = feats_recon[key].numpy()
+                data_sampled = feats_sampled[key].numpy()
+
+                # --- A. Layer-wise features (Shape: Batch, Layers) ---
+                if data_gt.ndim == 2:
+                    num_layers = data_gt.shape[1]
+                    for l in range(num_layers):
+                        # Slice specific layer
+                        g_l = data_gt[:, l]
+                        r_l = data_recon[:, l]
+                        s_l = data_sampled[:, l]
+                        
+                        # Define bins using FULL Ground Truth range
+                        min_val = np.min(g_l)
+                        max_val = np.max(g_l)
+
+                        # Safety: Handle constant features (e.g., empty layer = all 0s)
+                        if max_val <= min_val:
+                            max_val = min_val + 1e-6
+
+                        bins = np.linspace(min_val, max_val, 100) 
+
+                        # Calculate Chi2
+                        metrics[f"Chi2_HighLevel/layer_{l}_{key}_recon"] = calculate_chi_squared_distance(g_l, r_l, bins)
+                        metrics[f"Chi2_HighLevel/layer_{l}_{key}_sampled"] = calculate_chi_squared_distance(g_l, s_l, bins)
+                
+                # --- B. Global features (Shape: Batch) ---
+                else:
+                    # Define bins using FULL Ground Truth range
+                    min_val = np.min(data_gt)
+                    max_val = np.max(data_gt)
+                    
+                    if max_val <= min_val:
+                        max_val = min_val + 1e-6
+                        
+                    bins = np.linspace(min_val, max_val, 100)
+
+                    metrics[f"Chi2_HighLevel/global_{key}_recon"] = calculate_chi_squared_distance(data_gt, data_recon, bins)
+                    metrics[f"Chi2_HighLevel/global_{key}_sampled"] = calculate_chi_squared_distance(data_gt, data_sampled, bins)
+
+            return metrics
     
     def generate_plots(self, epoch, key):
         if self._config.wandb.mode != "disabled": # Only log if wandb is enabled
@@ -543,7 +608,12 @@ class Engine():
                         data=binned_data,
                         columns=["Energy Bin Center", "Chi2 Recon", "Chi2 Sampled"]
                     )
-            # --- End of new Chi2 logic ---
+            hl_metrics = self._compute_high_level_metrics(
+                        self.showers, 
+                        self.showers_recon, 
+                        self.showers_prior
+                    )
+            wandb_log.update(hl_metrics)
 
             # --- Conditional Logging ---
             if key != "ae":
@@ -571,7 +641,8 @@ class Engine():
             # --- Final Log Call ---
             wandb.log(wandb_log)
             incidence_ratio_mean_chi2 = np.mean([val for _, val in all_chi2_metrics["binned_incidence_ratio"].get('recon', [])])
-            return incidence_ratio_mean_chi2
+            geo_mean_chi2 = np.mean([val for key, val in hl_metrics.items() if ("center" in key or "width" in key) and "recon" in key])
+            return incidence_ratio_mean_chi2 + 0.5 * geo_mean_chi2
 
     
     @property
