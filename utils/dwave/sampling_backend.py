@@ -58,14 +58,28 @@ def sample_ising_flux_bias(qpu_sampler, h, J, flux_biases, num_samples=1, measur
 
     return response, sampling_time
 
+def sample_manual_ising(raw_sampler, h_phys, J_phys, flux_biases, num_reads=100):
+    props = raw_sampler.properties
+    h_min, h_max = props['h_range']
+    j_min, j_max = props['extended_j_range']
+
+    h_clamped = {k: max(h_min, min(v, h_max)) for k, v in h_phys.items()}
+    J_clamped = {k: max(j_min, min(v, j_max)) for k, v in J_phys.items()}
+    
+    response = raw_sampler.sample_ising(
+        h_clamped, J_clamped,
+        flux_biases=flux_biases, flux_drift_compensation=False,
+        num_reads=num_reads, answer_mode='raw', auto_scale=False
+    )
+    return response
+
 @dataclass
 class ChainAnalysisResult:
     # --- 1. The Core Data ---
-    logical_samples: torch.Tensor       # Shape: (n_samples, n_vars)
-    variable_labels: list               # The variable names matching the columns
+    logical_samples: torch.Tensor       
+    variable_labels: list               
     
-    # --- 2. Context (The "Informative" Part) ---
-    # Stores: n_vis, n_hid, n_conditioning, beta, etc.
+    # --- 2. Context ---
     metadata: Dict[str, Any] = field(default_factory=dict)
 
     # --- 3. Chain Break Stats ---
@@ -74,18 +88,21 @@ class ChainAnalysisResult:
     breaks_per_variable: np.ndarray = None     
     break_matrix: np.ndarray = None            
 
-    # --- 4. Physical Debugging Data (Optional but useful) ---
+    # --- 4. Physical Debugging Data ---
     physical_matrix: np.ndarray = None  
     physical_labels: list = None        
     embedding: dict = None              
     physical_response: dimod.SampleSet = None
+    
+    # --- 5. Spin Reversal Transform Data (New) ---
+    srt_active: bool = False
+    srt_mask: np.ndarray = None  # The boolean array defining the transform g_i
     
     def __post_init__(self):
         # Auto-calculate masks if missing
         if self.clean_mask is None and self.break_matrix is not None:
             self.breaks_per_sample = np.sum(self.break_matrix, axis=1)
             self.breaks_per_variable = np.sum(self.break_matrix, axis=0)
-            # Create mask on same device as samples
             self.clean_mask = torch.tensor(
                 (self.breaks_per_sample == 0), 
                 device=self.logical_samples.device, 
@@ -99,10 +116,6 @@ class ChainAnalysisResult:
         return 0.0
 
     def save(self, directory: str = "./saved_samples", prefix: str = "dwave_run"):
-        """
-        Saves the object to disk.
-        Filename: {prefix}_{timestamp}_{clean_frac}_{uuid}.pt
-        """
         save_path = Path(directory)
         save_path.mkdir(parents=True, exist_ok=True)
         
@@ -110,14 +123,13 @@ class ChainAnalysisResult:
         clean_pct = int(self.total_clean_fraction * 100)
         run_id = str(uuid.uuid4())[:6]
         
-        filename = f"{prefix}_{timestamp}_clean{clean_pct}_{run_id}.pt"
+        # Add SRT tag to filename if used? Optional, but useful.
+        srt_tag = "_srt" if self.srt_active else ""
+        
+        filename = f"{prefix}{srt_tag}_{timestamp}_clean{clean_pct}_{run_id}.pt"
         full_path = save_path / filename
         
-        # Saves the entire class instance
         torch.save(self, full_path)
-        # print(f"  -> Saved samples to: {full_path}")
-
-
 
 def sample_physical_with_analysis(
     raw_sampler, 
@@ -223,7 +235,7 @@ def sample_physical_with_analysis_srt(
     device='cpu',
     metadata: dict = None,
     save_dir: str = None,
-    use_srt: bool = True  # <--- NEW ARGUMENT
+    use_srt: bool = True
 ):
     if metadata is None: metadata = {}
 
@@ -233,14 +245,13 @@ def sample_physical_with_analysis_srt(
         h_logical, J_logical, embedding, target_adj, chain_strength=chain_strength
     )
     
-    # Clamp values to QPU ranges
+    # Clamp values
     h_min, h_max = raw_sampler.properties['h_range']
     j_min, j_max = raw_sampler.properties['extended_j_range']
     h_phys = {k: max(h_min, min(v, h_max)) for k, v in h_phys.items()}
     J_phys = {k: max(j_min, min(v, j_max)) for k, v in J_phys.items()}
 
-    # --- 2. Construct BQM Explicitly ---
-    # We do this explicitly so we can inspect variable order for the SRT mask
+    # --- 2. Construct BQM ---
     bqm_phys = dimod.BinaryQuadraticModel.from_ising(h_phys, J_phys)
 
     # --- 3. Prepare Sampler & SRT Mask ---
@@ -252,18 +263,16 @@ def sample_physical_with_analysis_srt(
         'flux_drift_compensation': False
     }
 
-    if use_srt:
+    final_srt_mask = None # Default if no SRT used
 
+    if use_srt:
         active_sampler = SpinReversalTransformComposite(raw_sampler)
         
         mask_list = []
-        # var_label is the integer physical qubit ID (e.g., 3005)
         for var_label in bqm_phys.variables:
             
-            # --- FIX: Direct Indexing ---
-            # flux_biases is a dense list where index i == qubit i
+            # Check for flux bias protection
             is_protected = False
-            
             if var_label < len(flux_biases):
                 if abs(flux_biases[var_label]) > 1e-5:
                     is_protected = True
@@ -273,18 +282,19 @@ def sample_physical_with_analysis_srt(
             else:
                 mask_list.append(bool(np.random.choice([True, False])))
         
-        # Pass the mask
-        sample_kwargs['srts'] = np.array([mask_list], dtype=bool)
+        # Create the array for the sampler
+        final_srt_mask = np.array([mask_list], dtype=bool)
+        
+        # Pass the mask to kwargs
+        sample_kwargs['srts'] = final_srt_mask
     else:
         active_sampler = raw_sampler
 
     # --- 4. Sample ---
-    # Note: We pass the BQM directly, not h/J
     physical_response = active_sampler.sample(bqm_phys, **sample_kwargs)
     physical_response = physical_response.change_vartype(dimod.SPIN, inplace=False)
     
     # --- 5. Unembed ---
-    # (Recreate source BQM for unembedding context)
     source_bqm = dimod.BinaryQuadraticModel.from_ising(h_logical, J_logical)
     logical_response = dwave.embedding.unembed_sampleset(
         target_sampleset=physical_response,
@@ -294,7 +304,7 @@ def sample_physical_with_analysis_srt(
         chain_break_fraction=True
     )
     
-    # --- 6. Analyze Chains (Existing Logic) ---
+    # --- 6. Analyze Chains ---
     logical_vars_ordered = list(logical_response.variables)
     phys_matrix = physical_response.record.sample
     
@@ -324,7 +334,10 @@ def sample_physical_with_analysis_srt(
         physical_matrix = phys_matrix,
         physical_labels = phys_labels,
         embedding = embedding,
-        physical_response = physical_response
+        physical_response = physical_response,
+        # --- Store SRT Metadata ---
+        srt_active = use_srt,
+        srt_mask = final_srt_mask
     )
     
     if save_dir:
@@ -332,18 +345,3 @@ def sample_physical_with_analysis_srt(
         result.save(directory=save_dir, prefix=prefix)
 
     return result
-
-def sample_manual_ising(raw_sampler, h_phys, J_phys, flux_biases, num_reads=100):
-    props = raw_sampler.properties
-    h_min, h_max = props['h_range']
-    j_min, j_max = props['extended_j_range']
-
-    h_clamped = {k: max(h_min, min(v, h_max)) for k, v in h_phys.items()}
-    J_clamped = {k: max(j_min, min(v, j_max)) for k, v in J_phys.items()}
-    
-    response = raw_sampler.sample_ising(
-        h_clamped, J_clamped,
-        flux_biases=flux_biases, flux_drift_compensation=False,
-        num_reads=num_reads, answer_mode='raw', auto_scale=False
-    )
-    return response
