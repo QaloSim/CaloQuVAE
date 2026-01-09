@@ -649,7 +649,8 @@ def find_beta_rigorous(
     tolerance=0.1,
     adaptive=False,
     use_fast_sampling=True,
-    validate_beta_heterogeneous=False
+    validate_beta_heterogeneous=False,
+    use_srt=True
 ):
     """
     Optimizes Beta using the rigorous expanded sampling method.
@@ -690,7 +691,7 @@ def find_beta_rigorous(
     for epoch in range(num_epochs):
         
         # A. Sample
-        analysis_result = sample_expanded_flux_conditioned_rigorous(
+        analysis_result = sample_expanded_flux_conditioned_rigorous_srt(
             rbm=rbm,
             raw_sampler=raw_sampler_obj,
             conditioning_sets=conditioning_sets,
@@ -699,8 +700,8 @@ def find_beta_rigorous(
             binary_patterns_batch=target_batch,
             hidden_side=hidden_side,
             beta=beta,
-            chain_strength=None, 
             source="beta-estimate",
+            use_srt=use_srt
         )
         
         # B. Unpack (New clean function call)
