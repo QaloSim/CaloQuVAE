@@ -163,7 +163,7 @@ class Engine():
             # Forward pass
             output = self.model((x, x0), self.beta, self.slope)
             # Compute loss
-            loss_dict = self.model.loss(x, output)
+            loss_dict = self.model.loss(x, x0, output)
             loss_dict["loss"] = torch.stack([loss_dict[key] * self._config.model.loss_coeff[key]  for key in loss_dict.keys() if "loss" != key]).sum()
             
             # Backward pass and optimization
@@ -221,11 +221,21 @@ class Engine():
             return self.total_loss_dict
     
     def track_best_val_loss(self, loss_dict, chi2, epoch=None):
-        if self.best_val_loss > loss_dict["val_ae_loss"] + chi2*10: #+ loss_dict["val_hit_loss"]:
-            self.best_val_loss = loss_dict["val_ae_loss"] + chi2*10 #+ loss_dict["val_hit_loss"]
-            self.best_config_path = self._save_model(name="best"+(f"_epoch{epoch}" if epoch is not None else ""))
-            logger.info("Best Val loss plus chi2: {:.4f}".format(self.best_val_loss+ chi2*10))
+        # Calculate current score once
+        current_score = loss_dict["val_ae_loss"] + chi2 * 10
+        
+        # Check for strict improvement
+        if self.best_val_loss > current_score:
+            self.best_val_loss = current_score
+            self.best_config_path = self._save_model(name="best" + (f"_epoch{epoch}" if epoch is not None else ""))
+            logger.info("New Best Val loss plus chi2: {:.4f}".format(self.best_val_loss))
+            
+        # Check if within 1% of the best score (but not better)
+        elif current_score <= self.best_val_loss * 1.01:
+            self._save_model(name="best" + (f"_epoch{epoch}" if epoch is not None else ""))
+            logger.info("Near-best model saved (within 1%): {:.4f}".format(current_score))
 
+        
     def evaluate_vae(self, data_loader, epoch):
         log_batch_idx = max(len(data_loader)//self._config.engine.n_batches_log_val, 1)
         self.model.eval()
@@ -288,67 +298,78 @@ class Engine():
             # Log average loss after loop
             return self.aggr_loss(data_loader, epoch)
 
-    def generate_showers_from_rbm(self, rbm_samples, incident_energies):
-        """
-        Generates showers by passing externally provided RBM samples through the decoder.
-        The first partition of the latent space is replaced by the encoded incident energy.
+    def generate_showers_from_rbm(self, rbm_samples, incident_energies, batch_size=None):
+            """
+            Generates showers by passing externally provided RBM samples through the decoder.
+            Batched to prevent OOM errors on large sample sizes.
+            
+            Args:
+                rbm_samples (torch.Tensor): Latent samples from RBM (n_samples, latent_dim).
+                incident_energies (torch.Tensor): Incident energies (n_samples, 1).
+                batch_size (int, optional): Batch size. Defaults to config val batch size or 1024.
 
-        Args:
-            rbm_samples (torch.Tensor): A tensor of latent samples from the RBM.
-                Shape: (n_samples, latent_nodes_per_p * 4).
-            incident_energies (torch.Tensor): A tensor of corresponding incident energies (x0).
-                Shape: (n_samples, 1).
-        """
-        self.model.to(self.device)
-        self.model.eval()
-        with torch.no_grad():
-            # 1. Get sizes from input tensors and config
+            Returns:
+                tuple: (showers_full, showers_reduce)
+                    - showers_full (torch.Tensor): Generated showers in physical space (CPU).
+                    - showers_reduce (torch.Tensor): Generated showers in reduced space (CPU).
+            """
+            self.model.eval()
+            
+            # 1. Configuration and Dimensions
             n_samples = rbm_samples.shape[0]
+            # Calculate total latent size based on config
+            p_size = self._config.rbm.latent_nodes_per_p
+            cond_size = self._config.model.cond_p_size
+            ar_latent_size = p_size * 3 + cond_size
+            
             ar_input_size = self._config.data.z * self._config.data.r * self._config.data.phi
-            ar_latent_size = self._config.rbm.latent_nodes_per_p * 3 + self._config.model.cond_p_size
 
-            # 2. Perform sanity checks on input tensor dimensions
+            # 2. Validation
             if rbm_samples.shape[1] != ar_latent_size:
-                raise ValueError("rbm_samples has an incorrect latent dimension.")
+                raise ValueError(f"RBM samples have incorrect dimension {rbm_samples.shape[1]}, expected {ar_latent_size}")
             if n_samples != incident_energies.shape[0]:
-                raise ValueError("The number of rbm_samples and incident_energies must be the same.")
+                raise ValueError("Size mismatch between RBM samples and incident energies")
 
-            # 3. Initialize tensors to store the results
-            self.showers_prior_generated = torch.zeros((n_samples, ar_input_size), dtype=torch.float32)
-            self.showers_reduce_prior_generated = torch.zeros((n_samples, ar_input_size), dtype=torch.float32)
-            self.prior_samples_generated = rbm_samples.clone()
-            self.incident_energy_generated = incident_energies.clone()
-            
-            # Note: If n_samples is very large, you might need to process in batches.
-            # This implementation processes the entire tensor at once.
+            # 3. Pre-allocate CPU storage
+            # Local variables instead of object attributes
+            all_showers_full = torch.zeros((n_samples, ar_input_size), dtype=torch.float32)
+            all_showers_reduce = torch.zeros((n_samples, ar_input_size), dtype=torch.float32)
 
-            # 4. Prepare tensors for the model
-            rbm_samples_dev = rbm_samples.to(self.device)
-            incident_energies_dev = incident_energies.to(self.device)
-            
-            # The input rbm_samples tensor is flat. It needs to be split into 4 parts
-            # for the decoder, reversing the original torch.cat operation.
-            samples_split = list(torch.split(rbm_samples_dev, ar_latent_size, dim=1))
+            # 4. Determine Batch Size
+            if batch_size is None:
+                batch_size = getattr(self._config.data, 'batch_size_val', 1024)
 
-            # Encode the incident energies to get the conditional part of the latent space
-            incident_energies_encoded = self.model.encoder.binary_energy_refactored(incident_energies_dev)
-            
-            # *** NEW: Replace the first partition (p0) with the encoded incident energies ***
-            # samples_split[0] = incident_energies_encoded
+            logger.info(f"Generating {n_samples} showers in batches of {batch_size}...")
 
-            # 5. Pass samples through the decoder to generate showers.
-            # We pass `None` for the `x_reduce` argument, assuming the decoder's
-            # architecture can handle generation from the prior without it.
-            _, shower_prior_reduce = self.model.decode(samples_split, None, incident_energies_dev)
-            
-            # 6. Undo the reduction operation to get the full shower energy distribution
-            shower_prior_full = self._reduceinv(shower_prior_reduce, incident_energies_dev)
+            # 5. Batched Generation
+            with torch.no_grad():
+                for i in range(0, n_samples, batch_size):
+                    # Slicing handles the last batch automatically
+                    rbm_batch = rbm_samples[i : i + batch_size].to(self.device)
+                    energy_batch = incident_energies[i : i + batch_size].to(self.device)
+                    
+                    # --- Decoding Logic ---
+                    # Split flat latent vector into the 4 partitions expected by the decoder
+                    samples_split = list(torch.split(rbm_batch, ar_latent_size, dim=1))
+                    
+                    # Pass None for x_reduce since we are generating from prior
+                    _, shower_reduce = self.model.decode(samples_split, None, energy_batch)
+                    
+                    # Inverse reduction to get physical energy
+                    shower_full = self._reduceinv(shower_reduce, energy_batch)
 
-            # 7. Store all results in the corresponding instance tensors on the CPU
-            self.showers_reduce_prior_generated = shower_prior_reduce.cpu()
-            self.showers_prior_generated = shower_prior_full.cpu()
+                    # --- Store Results ---
+                    current_batch_len = rbm_batch.shape[0]
+                    idx_start = i
+                    idx_end = i + current_batch_len
+                    
+                    # Move to CPU and assign to local storage
+                    all_showers_reduce[idx_start:idx_end] = shower_reduce.cpu()
+                    all_showers_full[idx_start:idx_end] = shower_full.cpu()
+
+            logger.info(f"Successfully generated {n_samples} showers.")
             
-            print(f"Successfully generated {n_samples} showers from RBM samples.")
+            return all_showers_full, all_showers_reduce
 
 
     def evaluate_ae(self, data_loader, epoch):
@@ -383,7 +404,7 @@ class Engine():
                 # Forward pass
                 output = self.model((x_reduce, x0))
                 # Compute loss
-                loss_dict = self.model.loss(x_reduce, output)
+                loss_dict = self.model.loss(x_reduce, x0, output)
                 loss_dict["loss"] = torch.stack([loss_dict[key] * self._config.model.loss_coeff[key]  for key in loss_dict.keys() if "loss" != key and key in self._config.model.loss_coeff]).sum()
                 for key in list(loss_dict.keys()):
                     loss_dict['val_'+key] = loss_dict[key]
@@ -642,7 +663,7 @@ class Engine():
             wandb.log(wandb_log)
             incidence_ratio_mean_chi2 = np.mean([val for _, val in all_chi2_metrics["binned_incidence_ratio"].get('recon', [])])
             geo_mean_chi2 = np.mean([val for key, val in hl_metrics.items() if ("center" in key or "width" in key) and "recon" in key])
-            return incidence_ratio_mean_chi2 + 0.5 * geo_mean_chi2
+            return incidence_ratio_mean_chi2 + geo_mean_chi2
 
     
     @property
