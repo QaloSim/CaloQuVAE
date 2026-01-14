@@ -2,6 +2,7 @@ import torch
 import torch.nn as nn
 import h5py
 import numpy as np
+from utils.atlas_plots import to_np, make_validation_plots
 
 class AtlasGeometry:
     """
@@ -144,3 +145,79 @@ class DifferentiableFeatureExtractor(nn.Module):
             "R_width": width_r,      
             "Phi_width": width_phi   
         }
+
+class FeatureAdapter:
+    """
+    Wraps the dictionary output from DifferentiableFeatureExtractor 
+    to mimic the interface of HighLevelFeatures_ATLAS_regular 
+    so existing plotting code works without changes.
+    """
+    def __init__(self, features_dict, relevant_layers, e_inc):
+        self.relevantLayers = relevant_layers
+        self.Einc = to_np(e_inc).flatten()
+        
+        # Unpack Tensor dict to Numpy arrays
+        self.E_tot = to_np(features_dict['E_tot'])
+        
+        # Initialize containers expected by plotting code
+        self.E_layers = {}
+        self.EC_rs = {}
+        self.EC_phis = {}
+        self.width_rs = {}
+        self.width_phis = {}
+
+        # Populate layer-wise stats
+        # features_dict['R_center'] is shape (Batch, Num_Layers)
+        # We need to map the column index 0...N back to the actual layer ID (e.g., 0, 1, 12...)
+        for i, layer_id in enumerate(self.relevantLayers):
+            self.E_layers[layer_id] = to_np(features_dict['E_layer'][:, i])
+            self.EC_rs[layer_id]    = to_np(features_dict['R_center'][:, i])
+            self.EC_phis[layer_id]  = to_np(features_dict['Phi_center'][:, i])
+            self.width_rs[layer_id] = to_np(features_dict['R_width'][:, i])
+            self.width_phis[layer_id] = to_np(features_dict['Phi_width'][:, i])
+
+def evaluate_and_plot(data_dict, binning_path, output_dir="plots/", device="cpu"):
+    """
+    Orchestrates the flow: Raw Data -> Fast Extractor -> Adapter -> Existing Plotter
+    """
+    
+    # 1. Setup Geometry & Extractor ONCE
+    # (Move to GPU if available)
+    
+    geo = AtlasGeometry(filename=binning_path)
+    extractor = DifferentiableFeatureExtractor(geo).to(device)
+    extractor.eval() # Ensure we are in eval mode
+
+    populated_adapters = []
+    labels = []
+
+    # 2. Process all datasets
+    with torch.no_grad(): # No gradients needed for plotting
+        for label, (showers, e_inc) in data_dict.items():
+            print(f"Extracting features for: {label}...")
+            
+            # Ensure data is on the correct device
+            if not isinstance(showers, torch.Tensor):
+                showers = torch.tensor(showers, dtype=torch.float32)
+            showers = showers.to(device)
+
+            # --- THE FAST PART ---
+            # One forward pass replaces the nested loops
+            features = extractor(showers)
+            
+            # --- THE ADAPTER ---
+            # Wrap results to look like the old class
+            adapter = FeatureAdapter(features, geo.relevant_layers, e_inc)
+            
+            populated_adapters.append(adapter)
+            labels.append(label)
+
+    # 3. Separate Reference from Models
+    # First item is reference (Data/GEANT), rest are models
+    adapter_ref = populated_adapters[0]
+    list_adapter_models = populated_adapters[1:]
+    model_labels = labels[1:]
+
+    # 4. Call existing plotting code
+    # It won't know the difference between 'adapter_ref' and the old 'hlf_ref'
+    make_validation_plots(adapter_ref, list_adapter_models, model_labels, output_dir=output_dir)

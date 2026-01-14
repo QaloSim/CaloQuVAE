@@ -130,7 +130,16 @@ class AutoEncoderBase(nn.Module):
         output_hits, output_activations = self.decoder(torch.cat(post_samples,1), x0)
         
         if self.training:
-            output_activations = self._activation_fct(act_fct_slope)(output_activations) * torch.where(x > 0, 1., 0.)
+            if hasattr(self._config, "separate_hits") and self._config.separate_hits:
+                # 1. Get the mask. 
+                # In training: Use the Soft (Gumbel) output. This allows gradients to flow 
+                hit_mask = self._hit_smoothing_dist_mod(output_hits, beta=beta)
+        
+                # This forces the activation head to handle leakage.
+                activations_raw = self._activation_fct(act_fct_slope)(output_activations)
+                output_activations = activations_raw * hit_mask.detach() # Use detach to avoid gradients from activations flowing into hits head
+            else:
+                output_activations = self._activation_fct(act_fct_slope)(output_activations) * torch.where(x > 0, 1., 0.)
         else:
             output_activations = self._activation_fct(0.0)(output_activations) * self._hit_smoothing_dist_mod(output_hits)
        

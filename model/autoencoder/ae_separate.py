@@ -21,7 +21,7 @@ logger = logging.getLogger(__name__)
 
 from model.autoencoder.autoencoderbase import AutoEncoderBase, AutoEncoderHidden
 from utils.HLF.atlasgeo import AtlasGeometry, DifferentiableFeatureExtractor
-from utils.HLF.mmd import compute_mmd
+from utils.HLF.mmd import compute_cmmd, ConditionNormalizer
 
 
 class AutoEncoderSeparate(AutoEncoderBase):
@@ -32,6 +32,8 @@ class AutoEncoderSeparate(AutoEncoderBase):
         geo_file = self._config.data.binning_path        
         self.geo = AtlasGeometry(geo_file)
         self.feature_extractor = DifferentiableFeatureExtractor(self.geo)
+        self.cond_normalizer = ConditionNormalizer(method='log_minmax', max_val=300000.0)
+
 
     def posterior_entropy(self, post_logits, is_training=True):
         """
@@ -70,7 +72,7 @@ class AutoEncoderSeparate(AutoEncoderBase):
         pos_energy = self.prior.energy_exp_cond(post_samples[0],post_samples[1],post_samples[2],post_samples[3]).mean()
         return pos_energy
 
-    def loss(self, input_data, args):
+    def loss(self, input_data, x0, args):
             """
             Extended loss function with MMD term.
             """
@@ -86,39 +88,31 @@ class AutoEncoderSeparate(AutoEncoderBase):
                         reduction='none')
             hit_loss = torch.mean(torch.sum(hit_loss, dim=1), dim=0)
 
-            # 3. --- NEW: MMD Feature Loss ---
-            mmd_loss_total = torch.tensor(0.0, device=input_data.device)            
+            # 3. --- Conditional MMD Feature Loss ---
             # We only compute MMD if the weight is > 0 to save compute
+            
+            mmd_loss_total = torch.tensor(0.0, device=input_data.device)            
             mmd_weight = getattr(self._config.model.loss_coeff, "mmd_loss", 0.0)
             
             if mmd_weight > 0.0:
-                # Extract features. 
-                # Input_data is GT. output_activations is Reconstruction.
-                # We treat input_data as fixed (detach), though it doesn't have grads anyway.
-                # We want gradients to flow through output_activations -> decoder.
-                
-                # The extractor handles reshaping, so we can pass flattened inputs directly
+                # A. Extract Physics Features
                 feat_gt = self.feature_extractor(input_data)
                 feat_recon = self.feature_extractor(output_activations)
-                
+                # B. Normalize Conditions (Energy)
+                norm_energy = self.cond_normalizer(x0)
+
+                # C. Compute C-MMD for each feature
                 for key in feat_gt.keys():
-                    # Flatten features to (Batch, N) for MMD
-                    # e.g., E_layer is (B, Layers) -> (B, Layers)
-                    # e.g., E_tot is (B,) -> (B, 1)
-                    
-                    # We normalize features batch-wise for stability in the kernel
-                    # (Optional but recommended if batches are large enough)
                     val_gt = feat_gt[key].view(input_data.size(0), -1)
                     val_recon = feat_recon[key].view(input_data.size(0), -1)
                     
-                    # Add component MMD
-                    mmd_loss_total += compute_mmd(val_gt, val_recon)
-
+                    # In reconstruction, the target condition is the SAME as the source condition.
+                    mmd_loss_total += compute_cmmd(val_gt, norm_energy, val_recon, norm_energy)
             # 4. Aggregate
             total_loss_dict = {
                 "ae_loss": ae_loss,
                 "hit_loss": hit_loss,
-                "mmd_loss": mmd_loss_total * mmd_weight # Apply weight here
+                "mmd_loss": mmd_loss_total
             }
 
             # 5. Add RBM specific terms if configured
