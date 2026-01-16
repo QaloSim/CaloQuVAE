@@ -10,6 +10,7 @@ import torch
 from model.gumbel import GumbelMod
 import torch.nn.functional as F
 import numpy as np
+from model.encoder.balancedgraycodes import BalancedGrayCodeCodec
 
 class HierarchicalEncoder(nn.Module):
     def __init__(self, cfg):
@@ -29,6 +30,8 @@ class HierarchicalEncoder(nn.Module):
             network=self._create_hierarchy_network(level=lvl)
             self._networks.append(network)
         
+        self.gray_codec = BalancedGrayCodeCodec()
+        
 
     def _create_hierarchy_network(self, level=0):
 
@@ -40,47 +43,76 @@ class HierarchicalEncoder(nn.Module):
             return EncoderBlockPBH3Dv3(self._config)
 
     def forward(self, x, x0, beta_smoothing_fct=5):
-        """ This function defines a hierarchical approximate posterior distribution. The length of the output is equal 
-            to n_latent_hierarchy_lvls and each element in the list is a DistUtil object containing posterior distribution 
-            for the group of latent nodes in each hierarchy level. 
-
-        Args:
-            input: a tensor containing input tensor.
-            is_training: A boolean indicating whether we are building a training graph or evaluation graph.
-
-        Returns:
-            posterior: a list of DistUtil objects containing posterior parameters.
-            post_samples: A list of samples from all the levels in the hierarchy, i.e. q(z_k| z_{0<i<k}, x).
-        """
-        
-        post_samples = []
-        post_logits = []
-        
-        if self._config.refactor_binary_energy:
-            post_samples.append(self.binary_energy_refactored(x0))
-        else:
-            post_samples.append(self.binary_energy(x0))
-        
-        for lvl in range(self.n_latent_hierarchy_lvls-1):
+            """ This function defines a hierarchical approximate posterior distribution. """
             
-            current_net=self._networks[lvl]
-            current_input = x
+            post_samples = []
+            post_logits = []
+            
+            # --- NEW: Check for Gray Code Flag ---
+            if hasattr(self._config.model, 'use_gray_code') and self._config.model.use_gray_code:
+                post_samples.append(self.gray_energy_encoding(x0))
+            elif self._config.refactor_binary_energy:
+                post_samples.append(self.binary_energy_refactored(x0))
+            else:
+                post_samples.append(self.binary_energy(x0))
+            
+            for lvl in range(self.n_latent_hierarchy_lvls-1):
+                
+                current_net = self._networks[lvl]
+                current_input = x
 
-            # Clamping logit values
-            logits=torch.clamp(current_net(current_input, x0, post_samples), min=-88., max=88.)
+                # Clamping logit values
+                logits = torch.clamp(current_net(current_input, x0, post_samples), min=-88., max=88.)
 
-            post_logits.append(logits)
+                post_logits.append(logits)
 
-            beta = torch.tensor(beta_smoothing_fct,
-                                dtype=torch.float, device=logits.device,
-                                requires_grad=False)
+                beta = torch.tensor(beta_smoothing_fct,
+                                    dtype=torch.float, device=logits.device,
+                                    requires_grad=False)
 
-            samples=self.smoothing_dist_mod(logits, beta)
+                samples = self.smoothing_dist_mod(logits, beta)
 
-            post_samples.append(samples)
-              
-        return beta, post_logits, post_samples
-    
+                post_samples.append(samples)
+                
+            return beta, post_logits, post_samples
+
+        # --- Gray Code Encoding Method ---
+
+    def gray_energy_encoding(self, x, lin_bits=19, sqrt_bits=17, log_bits=17):
+        """
+        Encodes incidence energy using Balanced Gray Codes via lookup table.
+        Replicates the structure/repetition logic of binary_energy_refactored.
+        """
+        # Override defaults if present in config
+        if hasattr(self._config.model, 'lin_bits'):
+            lin_bits = self._config.model.lin_bits
+        if hasattr(self._config.model, 'sqrt_bits'):
+            sqrt_bits = self._config.model.sqrt_bits
+        if hasattr(self._config.model, 'log_bits'):
+            log_bits = self._config.model.log_bits
+
+        # 1. Get the encoded parts using the codec
+        # Linear: direct int cast
+        lin_enc = self.gray_codec.lookup(x.int(), lin_bits)
+        
+        # Sqrt: * 200 scaling
+        sqrt_enc = self.gray_codec.lookup((x.sqrt() * 200).int(), sqrt_bits)
+        
+        # Log: * 1e4 scaling
+        log_enc = self.gray_codec.lookup((x.log() * 1e4).int(), log_bits)
+
+        x_encoded = torch.cat((lin_enc, sqrt_enc, log_enc), dim=1)
+
+        # 2. Handle Repetitions (Same logic as binary_energy_refactored)
+        total_bits_per_rep = lin_bits + sqrt_bits + log_bits
+        
+        reps = int(np.floor(self.cond_p_size / total_bits_per_rep))
+        residual = self.cond_p_size - reps * total_bits_per_rep
+
+        # 3. Repeat and Pad
+        padding = torch.zeros(x.shape[0], residual, device=x.device, dtype=x.dtype)
+        
+        return torch.cat((x_encoded.repeat(1, reps), padding), 1)    
     def binary(self, x, bits):
         mask = 2**torch.arange(bits).to(x.device, x.dtype)
         return x.bitwise_and(mask).ne(0).byte().to(dtype=torch.float)
