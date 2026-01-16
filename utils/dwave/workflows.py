@@ -3,6 +3,7 @@ import numpy as np
 import copy
 from dwave.system.composites import FixedEmbeddingComposite
 from datetime import datetime
+import os
 
 # --- Explicit Local Imports ---
 from .physics import (
@@ -592,7 +593,8 @@ def sample_expanded_flux_conditioned_rigorous_srt(
         logical_clamps, fragment_map, exp_embedding, total_qubits, clamp_strength_h
     )
     
-    safe_fb = [max(-0.01, min(v, 0.01)) for v in raw_fb]
+    safe_limit = 0.01
+    safe_fb = [max(-1*safe_limit, min(v, safe_limit)) for v in raw_fb]
 
     if chain_strength is None:
             calc_strength = calculate_rms_chain_strength(J_exp, rho=rho)
@@ -1203,3 +1205,189 @@ def validate_beta_heterogeneous(
     plot_energy_comparison(energies_rbm, energies_qpu, beta)
     
     return diff, mean_rbm_energy, mean_dwave_energy
+
+
+
+def mass_sample_dwave(
+    incidence_energy: float,
+    total_samples_needed: int,
+    save_dir: str,
+    # System Objects
+    engine,
+    rbm,
+    raw_sampler,
+    conditioning_sets,
+    left_chains,
+    right_chains,
+    # Hyperparameters
+    n_cond: int = 53,
+    initial_beta: float = 3.0,
+    batch_size: int = 1024,
+    drift_tolerance: float = 1.0,  # Max allowed energy deviation before recalibration
+    hidden_side: str = 'right',
+    device: str = 'cpu',
+    use_srt: bool = True
+):
+    """
+    Production sampling loop for D-Wave. 
+    Continuously samples until total_samples_needed is reached.
+    Monitors energy drift and recalibrates beta if necessary, but KEEPS the drifted batch.
+    
+    Returns:
+        tuple: (path_clean, path_dirty, path_energies)
+    """
+    # Ensure directory exists
+    os.makedirs(save_dir, exist_ok=True)
+    
+    print(f"\n=== Mass Sampling Start: {total_samples_needed} samples @ {incidence_energy} MeV ===")
+    
+    # 1. Setup & Classical Baseline
+    print("-> Establishing Classical Energy Baseline...")
+    
+    # Create the binary condition pattern for this energy
+    base_pattern = convert_energy_to_binary(
+        incidence_energy=incidence_energy, 
+        engine=engine, 
+        n_cond=n_cond, 
+        num_reads=1, 
+        device=device
+    )
+    # Expand to a reasonable baseline batch size (e.g., 512) for accurate energy est
+    baseline_batch = base_pattern.repeat(512, 1)
+    
+    # Run Classical Gibbs to get baseline energy
+    v_base = rbm.sample_v_given_v_clamped(
+        clamped_v=baseline_batch, 
+        n_clamped=n_cond, 
+        gibbs_steps=2000, 
+        beta=1.0 # Classical RBM always runs at beta=1.0
+    )
+    h_base, _ = rbm._sample_h_given_v(v_base, beta=1.0)
+    
+    with torch.no_grad():
+        baseline_energies = joint_energy(rbm, v_base, h_base)
+        target_energy_mean = baseline_energies.mean().item()
+    
+    print(f"-> Target Classical Energy: {target_energy_mean:.4f}")
+
+    # 2. Initialize Accumulators
+    clean_samples_accum = []
+    dirty_samples_accum = []
+    
+    samples_collected = 0
+    current_beta = initial_beta
+    
+    # 3. Main Production Loop
+    while samples_collected < total_samples_needed:
+        
+        # Determine actual batch size (don't over-sample on the last batch)
+        remaining = total_samples_needed - samples_collected
+        current_batch_size = min(batch_size, remaining)
+        
+        # Prepare batch of conditions
+        batch_patterns = base_pattern.repeat(current_batch_size, 1)
+        
+        # --- A. Call QPU ---
+        try:
+            analysis_result = sample_expanded_flux_conditioned_rigorous_srt(
+                rbm=rbm,
+                raw_sampler=raw_sampler,
+                conditioning_sets=conditioning_sets,
+                left_chains=left_chains,
+                right_chains=right_chains,
+                binary_patterns_batch=batch_patterns,
+                hidden_side=hidden_side,
+                beta=current_beta,
+                source=f"prod_E{int(incidence_energy)}",
+                use_srt=use_srt
+            )
+        except Exception as e:
+            print(f"!! QPU Call Failed: {e}. Retrying batch...")
+            continue
+
+        # --- B. Unpack & Process ---
+        # Unpack raw bits to RBM format
+        batch_v, batch_h = process_analysis_result(analysis_result, rbm, conditioning_sets)
+        batch_mask = analysis_result.clean_mask.cpu()
+        
+        # --- C. Drift Check ---
+        # Calculate energy of the raw QPU samples using the CLASSICAL RBM weights
+        with torch.no_grad():
+            # Move to GPU for calculation, then back to CPU
+            qpu_energies = joint_energy(rbm, batch_v.to(rbm.device), batch_h.to(rbm.device))
+            qpu_energy_mean = qpu_energies.mean().item()
+            
+        energy_diff = qpu_energy_mean - target_energy_mean
+        
+        print(f"   Batch {samples_collected}/{total_samples_needed} | "
+              f"Beta: {current_beta:.3f} | "
+              f"E_qpu: {qpu_energy_mean:.2f} (Diff: {energy_diff:.2f}) | "
+              f"Clean: {analysis_result.total_clean_fraction:.1%}")
+
+        if abs(energy_diff) > drift_tolerance:
+            print(f"!! DRIFT DETECTED (Diff {energy_diff:.2f} > {drift_tolerance}). Recalibrating Beta...")
+            
+            # --- D. Recalibrate Beta ---
+            # Using your tweaked hyperparameters (lr=0.025, num_reads=1024)
+            new_beta, _, _, _ = find_beta_rigorous(
+                rbm=rbm,
+                qpu_sampler=raw_sampler, 
+                conditioning_sets=conditioning_sets,
+                left_chains=left_chains,
+                right_chains=right_chains,
+                binary_patterns_batch=batch_patterns[:128], # Use a subset for calibration
+                hidden_side=hidden_side,
+                beta_init=current_beta,
+                lr=0.025,
+                num_reads=1024,
+                tolerance=0.1, 
+                use_srt=use_srt
+            )
+            
+            print(f"-> Beta updated: {current_beta:.3f} -> {new_beta:.3f}")
+            current_beta = new_beta
+            
+            print("-> Keeping drifted batch and continuing.")
+            # We explicitly DO NOT 'continue' here, so the code falls through to step E
+            
+        # --- E. Store Valid Batch ---
+        batch_v_cpu = batch_v.cpu()
+        
+        # Split clean/dirty
+        clean_batch = batch_v_cpu[batch_mask]
+        dirty_batch = batch_v_cpu[~batch_mask]
+        
+        if len(clean_batch) > 0:
+            clean_samples_accum.append(clean_batch)
+        if len(dirty_batch) > 0:
+            dirty_samples_accum.append(dirty_batch)
+            
+        samples_collected += current_batch_size
+
+    # 4. Finalize & Save
+    print("\n-> Post-processing and saving...")
+    
+    # Concatenate lists
+    final_clean = torch.cat(clean_samples_accum, dim=0) if clean_samples_accum else torch.empty(0)
+    final_dirty = torch.cat(dirty_samples_accum, dim=0) if dirty_samples_accum else torch.empty(0)
+    
+    # Create incidence energy tensor (matches total count of clean + dirty)
+    total_count = final_clean.shape[0] + final_dirty.shape[0]
+    final_energies = torch.full((total_count, 1), incidence_energy, dtype=torch.float32)
+    
+    # Define Paths using os.path.join
+    filename_base = f"samples_E{int(incidence_energy)}_SRT{int(use_srt)}"
+    
+    path_clean = os.path.join(save_dir, f"{filename_base}_clean.pt")
+    path_dirty = os.path.join(save_dir, f"{filename_base}_dirty.pt")
+    path_energies = os.path.join(save_dir, f"{filename_base}_energies.pt")
+    
+    # Save
+    torch.save(final_clean, path_clean)
+    torch.save(final_dirty, path_dirty)
+    torch.save(final_energies, path_energies)
+    
+    print(f"Saved {final_clean.shape[0]} clean and {final_dirty.shape[0]} dirty samples.")
+    print(f"Outputs:\n  {path_clean}\n  {path_dirty}\n  {path_energies}")
+    
+    return path_clean, path_dirty, path_energies
