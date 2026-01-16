@@ -9,6 +9,7 @@ are registered properly.
 import torch
 import torch.nn as nn
 from torch.nn.functional import binary_cross_entropy_with_logits
+import torch.nn.functional as F
 from model.gumbel import GumbelMod
 from model.encoder.encoderhierarchybase import HierarchicalEncoder, HierarchicalEncoderHidden
 from model.decoder.decoder import Decoder
@@ -18,7 +19,7 @@ from model.decoder.decoder_full_geo import DecoderFullGeo
 from model.decoder.decoderhierarchy0 import DecoderHierarchy0, DecoderHierarchyv3, DecoderHierarchy0Hidden
 from model.decoder.decoderhierarchy0ca import DecoderHierarchy0CA
 from model.decoder.decoderhierarchytf import DecoderHierarchyTF, DecoderHierarchyTFv2
-from model.decoder.decoder_ATLAS_new import DecoderATLASNew, DecoderFullGeoATLASNew
+from model.decoder.decoder_ATLAS_new import DecoderATLASNew, DecoderFullGeoATLASNew, DecoderFullGeoATLASClean
 from model.rbm.rbm import RBM, RBM_Hidden
 from model.rbm.rbm_torch import RBMtorch, RBM_Hiddentorch
 from model.rbm.rbm_fulltorch import RBMTorchFull
@@ -35,8 +36,14 @@ class AutoEncoderBase(nn.Module):
         self._hit_smoothing_dist_mod = GumbelMod()
         self._bce_loss = nn.BCEWithLogitsLoss(reduction="none")
 
-    def _activation_fct(self, slope):
-        return nn.LeakyReLU(slope)
+    def _activation_fct(self, slope, x):
+        if "clean" in self._config.model.decoder:
+                # Softplus for the new model (Strictly positive, smooth)
+                return F.softplus(x, beta=1)
+        else:
+            # Legacy behavior for old models
+            return F.leaky_relu(x, negative_slope=slope)
+
 
     def type(self):
         """String identifier for current model.
@@ -81,6 +88,8 @@ class AutoEncoderBase(nn.Module):
             return DecoderATLASNew(self._config)
         elif self._config.model.decoder == "decoderfullgeoatlasnew":
             return DecoderFullGeoATLASNew(self._config)
+        elif self._config.model.decoder == "decoderfullgeoatlasclean":
+            return DecoderFullGeoATLASClean(self._config)
         elif self._config.model.decoder == "decoderhierachytfv2":
             return DecoderHierarchyTFv2(self._config)
         elif self._config.model.decoder == "decoderhierachy0ca":
@@ -136,37 +145,63 @@ class AutoEncoderBase(nn.Module):
                 hit_mask = self._hit_smoothing_dist_mod(output_hits, beta=beta)
         
                 # This forces the activation head to handle leakage.
-                activations_raw = self._activation_fct(act_fct_slope)(output_activations)
+                activations_raw = self._activation_fct(act_fct_slope, output_activations)
                 output_activations = activations_raw * hit_mask.detach() # Use detach to avoid gradients from activations flowing into hits head
             else:
-                output_activations = self._activation_fct(act_fct_slope)(output_activations) * torch.where(x > 0, 1., 0.)
+                output_activations = self._activation_fct(act_fct_slope, output_activations) * torch.where(x > 0, 1., 0.)
         else:
-            output_activations = self._activation_fct(0.0)(output_activations) * self._hit_smoothing_dist_mod(output_hits)
+            output_activations = self._activation_fct(0.0, output_activations) * self._hit_smoothing_dist_mod(output_hits)
        
         return output_hits, output_activations
     
     def loss(self, input_data, args):
         """
-        - Overrides loss in gumboltCaloV5.py
+        Adds support for Focal Loss on hits head if alpha/gamma are present in config.
         """
         logger.debug("loss")
         beta, post_logits, post_samples, output_activations, output_hits = args
 
+        # KL Divergence logic (unchanged)
         kl_loss, entropy, pos_energy, neg_energy = self.kl_divergence(post_logits, post_samples)
-        # kl_loss, entropy, pos_energy, neg_energy = 0,0,0,0
         
+        # AE Loss logic (unchanged)
         ae_loss = torch.pow((input_data - output_activations),2) * torch.exp(self._config.model.mse_weight*input_data)
         ae_loss = torch.mean(torch.sum(ae_loss, dim=1), dim=0) * self._config.model.coefficient
 
-        hit_loss = binary_cross_entropy_with_logits(output_hits, torch.where(input_data > 0, 1., 0.),
-                        reduction='none')
-        # weight= (1+input_data).pow(self._config.model.bce_weights_power)
-        hit_loss = torch.mean(torch.sum(hit_loss, dim=1), dim=0)
+        # --- HIT LOSS (Updated for Focal Loss) ---
+        targets = torch.where(input_data > 0, 1., 0.)
+        
+        # Calculate raw unreduced BCE first. This is -log(pt).
+        bce_raw = binary_cross_entropy_with_logits(output_hits, targets, reduction='none')
+
+        # Check if Focal Loss parameters exist in config
+        if hasattr(self._config.model, "focal_alpha") and hasattr(self._config.model, "focal_gamma"):
+            alpha = self._config.model.focal_alpha
+            gamma = self._config.model.focal_gamma
+            
+            # Calculate pt (probability of the true class)
+            pt = torch.exp(-bce_raw)
+            
+            # Calculate alpha_t: alpha for class 1, (1-alpha) for class 0
+            alpha_t = alpha * targets + (1 - alpha) * (1 - targets)
+            
+            # Apply Focal Loss factors: alpha_t * (1 - pt)^gamma * BCE
+            focal_loss = alpha_t * (1 - pt).pow(gamma) * bce_raw
+            
+            # Apply reduction
+            hit_loss = torch.mean(torch.sum(focal_loss, dim=1), dim=0)
+            
+        else:
+            # Revert to standard BCE reduction
+            hit_loss = torch.mean(torch.sum(bce_raw, dim=1), dim=0)
+
+        # Logit Distance (unchanged)
         l_dist = torch.pow(torch.cat(post_logits,1) - torch.cat(self.logit_distance(post_samples, post_logits),1),2).mean()
 
         return {"ae_loss":ae_loss, "kl_loss":kl_loss, "hit_loss":hit_loss,
-                "entropy":entropy, "pos_energy":pos_energy, "neg_energy":neg_energy, "logit_distance":l_dist}
-    
+                "entropy":entropy, "pos_energy":pos_energy, "neg_energy":neg_energy, "logit_distance":l_dist}    
+
+
     def kl_divergence(self, post_logits, post_samples, is_training=True):
         """Overrides kl_divergence in GumBolt.py
 
