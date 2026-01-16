@@ -10,10 +10,12 @@ import wandb
 
 # Plotting
 from utils.plots import vae_plots, corr_plots
-from utils.atlas_plots import plot_calorimeter_shower
+from utils.atlas_plots import plot_calorimeter_shower, create_grid_figure, to_np
+import matplotlib.pyplot as plt
+from IPython.display import display
 from utils.rbm_plots import plot_forward_output_v2, plot_rbm_histogram, plot_rbm_params, plot_forward_output_hidden
 # from utils.correlation_plotting import correlation_plots
-from utils.HLF.atlasgeo import AtlasGeometry, DifferentiableFeatureExtractor
+from utils.HLF.atlasgeo import AtlasGeometry, DifferentiableFeatureExtractor, FeatureAdapter
 from utils.plots import calculate_chi_squared_distance
 
 from collections import defaultdict
@@ -527,7 +529,87 @@ class Engine():
                     metrics[f"Chi2_HighLevel/global_{key}_sampled"] = calculate_chi_squared_distance(data_gt, data_sampled, bins)
 
             return metrics
-    
+
+
+    def _compute_high_level_plots(self):
+        """
+        Uses the existing self.feature_extractor to get high-level features 
+        and returns a dictionary of grid plots.
+        """
+        # Ensure extractor is in eval mode and on the correct device
+        self.feature_extractor.to(self.device)
+        self.feature_extractor.eval()
+
+        # 1. Define Data to Process
+        data_to_process = {
+            "Data": (self.showers, self.incident_energy),
+            "Recon": (self.showers_recon, self.incident_energy),
+            "Sampled": (self.showers_prior, self.incident_energy)
+        }
+        
+        # 2. Extract Features
+        adapters = {}
+        with torch.no_grad():
+            for label, (sh, e_inc) in data_to_process.items():
+                if not isinstance(sh, torch.Tensor):
+                    sh = torch.tensor(sh)
+                sh = sh.to(self.device)
+
+                if not isinstance(e_inc, torch.Tensor):
+                    e_inc = torch.tensor(e_inc)
+                e_inc = e_inc.to(self.device)                
+                # Use the existing class member
+                feats = self.feature_extractor(sh)
+                
+                # Wrap in adapter for easy dictionary access
+                adapters[label] = FeatureAdapter(feats, self.geo_handler.relevant_layers, e_inc)
+
+        # 3. Sort into Reference vs Models
+        ref_adapter = adapters["Data"]
+        model_keys = ["Recon", "Sampled"]
+        model_adapters = [adapters[k] for k in model_keys]
+        
+        # 4. Populate Data Structures for Plotting
+        grids = {
+            "energy": {}, "mean_eta": {}, "width_eta": {}, "mean_phi": {}, "width_phi": {}
+        }
+
+        for layer in self.geo_handler.relevant_layers:
+            # Helper lambda for cleaner code
+            get_data = lambda attr, lyr: [to_np(m.__dict__[attr][lyr]) for m in model_adapters]
+            
+            grids["energy"][layer] = {
+                'ref': to_np(ref_adapter.E_layers[layer]),
+                'models': get_data('E_layers', layer)
+            }
+            grids["mean_eta"][layer] = {
+                'ref': to_np(ref_adapter.EC_etas[layer]),
+                'models': get_data('EC_etas', layer)
+            }
+            grids["width_eta"][layer] = {
+                'ref': to_np(ref_adapter.width_etas[layer]),
+                'models': get_data('width_etas', layer)
+            }
+            grids["mean_phi"][layer] = {
+                'ref': to_np(ref_adapter.EC_phis[layer]),
+                'models': get_data('EC_phis', layer)
+            }
+            grids["width_phi"][layer] = {
+                'ref': to_np(ref_adapter.width_phis[layer]),
+                'models': get_data('width_phis', layer)
+            }
+
+        # 5. Create Figures
+        figs = {}
+        figs["HLF/Grid_Energy"] = create_grid_figure(grids["energy"], 'Layer Energy [MeV]', model_keys, yscale='log')
+        figs["HLF/Grid_Mean_Eta"] = create_grid_figure(grids["mean_eta"], 'Mean Eta', model_keys, yscale='log')
+        figs["HLF/Grid_Width_Eta"] = create_grid_figure(grids["width_eta"], 'Width Eta', model_keys, yscale='log')
+        figs["HLF/Grid_Mean_Phi"] = create_grid_figure(grids["mean_phi"], 'Mean Phi', model_keys, yscale='log')
+        figs["HLF/Grid_Width_Phi"] = create_grid_figure(grids["width_phi"], 'Width Phi', model_keys, yscale='log')
+
+        return figs
+
+
     def generate_plots(self, epoch, key):
         if self._config.wandb.mode != "disabled": # Only log if wandb is enabled
             
@@ -541,8 +623,7 @@ class Engine():
                 save_dir=None
             )
             
-            # --- VAE Plots & Chi2 Metrics (Updated Call) ---
-            # Unpack all 10 items from the updated vae_plots function
+            # --- VAE Plots & Chi2 Metrics ---
             (overall_fig, fig_energy_sum, fig_incidence_ratio, fig_target_recon_ratio, 
              fig_sparsity, energy_sum_layer_fig, incidence_ratio_layer_fig, 
              target_recon_ratio_layer_fig, sparsity_layer_fig, 
@@ -551,45 +632,56 @@ class Engine():
                                           self.showers_recon, self.showers_prior)
             
             # --- Corr Plots ---
-            post_corr, prior_corr, post_partition, prior_partition = corr_plots(self._config, self.post_logits, self.post_samples, self.prior_samples)
+            post_corr, prior_corr, post_partition, prior_partition = corr_plots(
+                self._config, self.post_logits, self.post_samples, self.prior_samples
+            )
+
+            # --- High Level Feature Grid Plots (NEW) ---
+            # Call the internal method using the existing feature extractor
+            hlf_grid_plots = self._compute_high_level_plots()
             
             # --- Initialize wandb_log dictionary ---
-            # Use your original keys, mapping to the new variable names
             wandb_log = {
+                # VAE Plots
                 "overall_plots": wandb.Image(overall_fig),
                 "conditioned_energy_sum": wandb.Image(fig_energy_sum),
                 "conditioned_incidence_ratio": wandb.Image(fig_incidence_ratio),
                 "conditioned_target_recon_ratio": wandb.Image(fig_target_recon_ratio),
                 "conditioned_sparsity": wandb.Image(fig_sparsity),
-                "energy_sum_layers": wandb.Image(energy_sum_layer_fig),         # Was fig_sum_layers
-                "incidence_ratio_layers": wandb.Image(incidence_ratio_layer_fig), # Was fig_incidence_layers
-                "target_recon_ratio_layers": wandb.Image(target_recon_ratio_layer_fig), # Was fig_ratio_layers
-                "sparsity_layers": wandb.Image(sparsity_layer_fig),             # Was fig_sparsity_layers
+                "energy_sum_layers": wandb.Image(energy_sum_layer_fig),
+                "incidence_ratio_layers": wandb.Image(incidence_ratio_layer_fig),
+                "target_recon_ratio_layers": wandb.Image(target_recon_ratio_layer_fig),
+                "sparsity_layers": wandb.Image(sparsity_layer_fig),
 
-                # Common Calo plots
+                # Calo Plots
                 "calo_layer_input": wandb.Image(calo_input),
                 "calo_layer_recon": wandb.Image(calo_recon),
                 "calo_layer_input_avg": wandb.Image(calo_input_avg),
                 "calo_layer_recon_avg": wandb.Image(calo_recon_avg),
 
-                # Common Corr plots
+                # Corr Plots
                 "post_corr": wandb.Image(post_corr),
                 "prior_corr": wandb.Image(prior_corr),
                 "post_partition": wandb.Image(post_partition),
                 "prior_partition": wandb.Image(prior_partition),
-                
             }
 
-            
-            # A. Log overall Chi2 metrics (simple key-value pairs)
+            # Add HLF Grid Plots to log and close them
+            for name, fig in hlf_grid_plots.items():
+                if fig is not None:
+                    wandb_log[name] = wandb.Image(fig)
+                    display(fig)
+                    plt.close(fig)
+
+            # A. Log overall Chi2 metrics
             for metric, values in all_chi2_metrics.items():
                 if metric.startswith('overall_'):
                     wandb_log[f"Chi2/{metric}_recon"] = values.get('recon', float('nan'))
                     wandb_log[f"Chi2/{metric}_sampled"] = values.get('sampled', float('nan'))
 
             # B. Log layer-wise Chi2 metrics
-            layer_chi2 = all_chi2_metrics.get('layer', {}) # Use .get for safety
-            for metric_name, pairs in layer_chi2.items(): # e.g., metric_name = 'energy_sum'
+            layer_chi2 = all_chi2_metrics.get('layer', {}) 
+            for metric_name, pairs in layer_chi2.items(): 
                 if 'recon' in pairs:
                     for layer_num, chi2_val in pairs['recon']:
                         wandb_log[f"Chi2/layer_{layer_num}_{metric_name}_recon"] = chi2_val
@@ -597,7 +689,7 @@ class Engine():
                     for layer_num, chi2_val in pairs['sampled']:
                         wandb_log[f"Chi2/layer_{layer_num}_{metric_name}_sampled"] = chi2_val
                     
-            # C. Log binned Chi2 metrics (as mean and as Table)
+            # C. Log binned Chi2 metrics
             for metric_name in ['binned_energy_sum', 'binned_incidence_ratio', 'binned_sparsity']:
                 if metric_name not in all_chi2_metrics: continue
                 
@@ -614,21 +706,22 @@ class Engine():
                 recon_dict = dict(all_chi2_metrics[metric_name].get('recon', []))
                 sampled_dict = dict(all_chi2_metrics[metric_name].get('sampled', []))
                 
-                # Get all unique energy bins that have data
                 all_bins = sorted(list(set(recon_dict.keys()) | set(sampled_dict.keys())))
                 
                 for energy_bin in all_bins:
                     binned_data.append([
                         energy_bin,
-                        recon_dict.get(energy_bin),   # .get() returns None if key is missing
+                        recon_dict.get(energy_bin),   
                         sampled_dict.get(energy_bin)
                     ])
                 
-                if binned_data: # Only log table if there is data
+                if binned_data:
                     wandb_log[f"Chi2_Tables/{metric_name}"] = wandb.Table(
                         data=binned_data,
                         columns=["Energy Bin Center", "Chi2 Recon", "Chi2 Sampled"]
                     )
+            
+            # Compute scalar HL metrics (if you still need the scalar values for optimization/tracking)
             hl_metrics = self._compute_high_level_metrics(
                         self.showers, 
                         self.showers_recon, 
@@ -636,35 +729,32 @@ class Engine():
                     )
             wandb_log.update(hl_metrics)
 
-            # --- Conditional Logging ---
+            # --- Conditional Logging (RBM & Sampled Calo) ---
             if key != "ae":
-                # RBM plots
                 rbm_hist = plot_rbm_histogram(self.RBM_energy_post, self.RBM_energy_prior)
                 rbm_params = plot_rbm_params(self)
                 rbm_floppy = plot_forward_output_v2(self)
             
-                # Add RBM plots to log
                 wandb_log.update({
                     "RBM histogram": wandb.Image(rbm_hist),
                     "RBM params": wandb.Image(rbm_params),
                     "RBM floppy": wandb.Image(rbm_floppy),
-                })
-                
-                # Add sampled calo plots (which are omitted for "ae")
-                wandb_log.update({
                     "calo_layer_sampled": wandb.Image(calo_sampled),
                     "calo_layer_sampled_avg": wandb.Image(calo_sampled_avg),
                 })
             
-            # The 'else' block for "ae" is now handled,
-            # because the "sampled" and "RBM" plots are only added if key != "ae".
-            
             # --- Final Log Call ---
             wandb.log(wandb_log)
+            
+            # Cleanup figures from vae_plots
+            plt.close(overall_fig)
+            plt.close(fig_energy_sum)
+            # ... (close others if needed)
+
             incidence_ratio_mean_chi2 = np.mean([val for _, val in all_chi2_metrics["binned_incidence_ratio"].get('recon', [])])
             geo_mean_chi2 = np.mean([val for key, val in hl_metrics.items() if ("center" in key or "width" in key) and "recon" in key])
+            
             return incidence_ratio_mean_chi2 + geo_mean_chi2
-
     
     @property
     def model_creator(self):

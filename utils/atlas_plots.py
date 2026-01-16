@@ -173,7 +173,7 @@ def get_bins(all_data, xscale='linear'):
     return bins
 
 # -----------------------------------------------------------------------------
-# Individual Plotting Function (Unchanged logic, just for completeness)
+# Individual Plotting Function
 # -----------------------------------------------------------------------------
 def plot_atlas_style_multi(data_ref, data_list, labels, xlabel, output_path, 
                            yscale='log', xscale='linear', 
@@ -207,7 +207,7 @@ def plot_atlas_style_multi(data_ref, data_list, labels, xlabel, output_path,
     ax0.step(bins, dup_last(ns_ref), color='black', alpha=0.8, 
              linewidth=1.5, where='post', label='Data')
     ax0.fill_between(bins, dup_last(ns_ref - ref_err), dup_last(ns_ref + ref_err),
-                     facecolor='blue', alpha=0.2, step='post', label='Data Stat. Err')
+                     facecolor='blue', alpha=0.2, step='post')
 
     # Models
     evaluator = AtlasEvaluator()
@@ -240,7 +240,7 @@ def plot_atlas_style_multi(data_ref, data_list, labels, xlabel, output_path,
     ax0.set_yscale(yscale)
     ax0.set_xscale(xscale)
     ax0.set_ylabel("Normalized Counts", fontsize=14)
-    ax0.legend(fontsize=11, loc='upper left', frameon=False)
+    ax0.legend(fontsize=8, loc='upper left', frameon=False)
     ax0.tick_params(labelbottom=False)
     
     ax1.set_ylabel("Ratio", fontsize=12)
@@ -257,14 +257,13 @@ def plot_atlas_style_multi(data_ref, data_list, labels, xlabel, output_path,
     plt.close(fig)
 
 # -----------------------------------------------------------------------------
-# 3. Combined Grid Plotter with Ratio Panels (UPDATED)
+# 3. Combined Grid Plotter
 # -----------------------------------------------------------------------------
 def plot_layer_grid(layer_data_dict, property_name, labels, output_dir, 
                     yscale='log', xscale='linear', pdf=None,
                     colors=None, linestyles=None):
     """
     Creates a single figure with subplots for each layer.
-    Each subplot has a Main Panel (Top) and Ratio Panel (Bottom).
     """
     if colors is None: colors = ['red', 'green', 'orange', 'purple', 'cyan']
     if linestyles is None: linestyles = ['-', '--', '-.', ':', '-']
@@ -277,17 +276,13 @@ def plot_layer_grid(layer_data_dict, property_name, labels, output_dir,
     n_cols = (n_layers + 1) // 2 
     n_rows = 2
     
-    # Increase figure height to accommodate ratio panels (e.g., 10 inches tall)
     fig = plt.figure(figsize=(5 * n_cols, 10)) 
-    
-    # Outer Grid (Layout of the Cells)
     outer_grid = GridSpec(n_rows, n_cols, figure=fig, hspace=0.3, wspace=0.3)
     
     for idx, layer in enumerate(layers):
         row = idx // n_cols
         col = idx % n_cols
         
-        # Inner Grid (Split Cell into Main + Ratio)
         inner_grid = GridSpecFromSubplotSpec(2, 1, 
                         subplot_spec=outer_grid[row, col], 
                         height_ratios=[3, 1], hspace=0.05)
@@ -295,7 +290,6 @@ def plot_layer_grid(layer_data_dict, property_name, labels, output_dir,
         ax_main = fig.add_subplot(inner_grid[0])
         ax_ratio = fig.add_subplot(inner_grid[1], sharex=ax_main)
         
-        # Data Retrieval & Cleaning
         data_ref = layer_data_dict[layer]['ref']
         data_models = layer_data_dict[layer]['models']
         
@@ -306,56 +300,43 @@ def plot_layer_grid(layer_data_dict, property_name, labels, output_dir,
         bins = get_bins(all_d, xscale)
         if bins is None: continue
 
-        # --- Plot Reference (Data) ---
-        # Normalize: density=True
+        # Reference
         ns_ref, _ = np.histogram(data_ref, bins=bins, density=True)
         counts_ref, _ = np.histogram(data_ref, bins=bins)
-
-        # Statistical Errors (Poisson)
         mask = counts_ref > 0
         ref_err = np.zeros_like(ns_ref)
         ref_err[mask] = ns_ref[mask] / np.sqrt(counts_ref[mask])
 
-        # Step Plot
         ax_main.step(bins, dup_last(ns_ref), color='black', alpha=0.8, lw=1.5, 
                      where='post', label='Data' if idx==0 else "")
-        # Error Fill
         ax_main.fill_between(bins, dup_last(ns_ref - ref_err), dup_last(ns_ref + ref_err),
                              facecolor='blue', alpha=0.2, step='post')
 
-        # --- Plot Models ---
+        # Models
         for i, (d_mod, lbl) in enumerate(zip(clean_models, labels)):
             ns_mod, _ = np.histogram(d_mod, bins=bins, density=True)
-            
-            # Main Step
             ax_main.step(bins, dup_last(ns_mod), color=colors[i], ls=linestyles[i], lw=1.5, 
                          where='post', label=lbl if idx==0 else "")
             
-            # Calculate Ratio (Model / Data)
             ratio = np.divide(ns_mod, ns_ref, out=np.zeros_like(ns_mod), where=ns_ref!=0)
-            
-            # Ratio Step
             ax_ratio.step(bins, dup_last(ratio), color=colors[i], ls=linestyles[i], lw=1.5, where='post')
 
-        # --- Styling ---
+        # Styling
         ax_main.set_yscale(yscale)
         ax_main.set_xscale(xscale)
         ax_main.set_title(f"Layer {layer}", fontsize=12, fontweight='bold')
-        ax_main.tick_params(labelbottom=False) # Hide x-ticks on main
+        ax_main.tick_params(labelbottom=False)
         
-        # Only show Y-labels on the first column to save space
         if col == 0:
             ax_main.set_ylabel("Norm. Counts", fontsize=10)
             ax_ratio.set_ylabel("Ratio", fontsize=9)
         
-        # X-Axis Styling
         ax_ratio.set_xscale(xscale)
         ax_ratio.set_xlabel(property_name, fontsize=10)
         ax_ratio.axhline(1, color='gray', linestyle='--', alpha=0.7)
         ax_ratio.set_ylim(0.5, 1.5)
         ax_ratio.grid(True, which='both', linestyle=':', alpha=0.5)
 
-    # Global Legend
     handles, legends = fig.axes[0].get_legend_handles_labels()
     fig.legend(handles, legends, loc='upper center', bbox_to_anchor=(0.5, 0.98), ncol=len(labels)+1, frameon=False)
 
@@ -370,7 +351,7 @@ def plot_layer_grid(layer_data_dict, property_name, labels, output_dir,
     plt.close(fig)
 
 # -----------------------------------------------------------------------------
-# 4. Main Driver (Same as before, just ensuring data collection)
+# 4. Main Driver (UPDATED: Fixed keys from 'r' to 'eta')
 # -----------------------------------------------------------------------------
 def make_validation_plots(hlf_ref, list_hlf_models, labels, output_dir="plots/"):
     print(f"Generating plots in {output_dir}...")
@@ -382,8 +363,8 @@ def make_validation_plots(hlf_ref, list_hlf_models, labels, output_dir="plots/")
 
     # Collections for Grid Plots
     grid_energy = {}
-    grid_mean_r = {}
-    grid_width_r = {}
+    grid_mean_eta = {}  # Changed from grid_mean_r
+    grid_width_eta = {} # Changed from grid_width_r
     grid_mean_phi = {}
     grid_width_phi = {}
 
@@ -429,27 +410,27 @@ def make_validation_plots(hlf_ref, list_hlf_models, labels, output_dir="plots/")
                     yscale='log', pdf=pdf
                 )
                 
-                # Mean R
-                ref_dat = to_np(hlf_ref.EC_rs[layer])
-                mod_dat = [to_np(hlf.EC_rs[layer]) for hlf in list_hlf_models]
-                grid_mean_r[layer] = {'ref': ref_dat, 'models': mod_dat}
+                # Mean Eta 
+                ref_dat = to_np(hlf_ref.EC_etas[layer])
+                mod_dat = [to_np(hlf.EC_etas[layer]) for hlf in list_hlf_models]
+                grid_mean_eta[layer] = {'ref': ref_dat, 'models': mod_dat}
                 
                 plot_atlas_style_multi(
                     ref_dat, mod_dat, labels,
-                    xlabel=f'$\langle r \\rangle_{{layer {layer}}}$ [mm]',
-                    output_path=f"{output_dir}/Layer{layer}_MeanR.png",
-                    yscale='log', pdf=pdf
+                    xlabel=f'$\langle \eta \\rangle_{{layer {layer}}}$',
+                    output_path=f"{output_dir}/Layer{layer}_MeanEta.png",
+                    yscale='log', pdf=pdf # Often linear for coordinates
                 )
                 
-                # Width R
-                ref_dat = to_np(hlf_ref.width_rs[layer])
-                mod_dat = [to_np(hlf.width_rs[layer]) for hlf in list_hlf_models]
-                grid_width_r[layer] = {'ref': ref_dat, 'models': mod_dat}
+                # Width Eta
+                ref_dat = to_np(hlf_ref.width_etas[layer])
+                mod_dat = [to_np(hlf.width_etas[layer]) for hlf in list_hlf_models]
+                grid_width_eta[layer] = {'ref': ref_dat, 'models': mod_dat}
 
                 plot_atlas_style_multi(
                     ref_dat, mod_dat, labels,
-                    xlabel=f'$\sigma_{{r, layer {layer}}}$ [mm]',
-                    output_path=f"{output_dir}/Layer{layer}_WidthR.png",
+                    xlabel=f'$\sigma_{{\eta, layer {layer}}}$',
+                    output_path=f"{output_dir}/Layer{layer}_WidthEta.png",
                     yscale='log', pdf=pdf
                 )
                 
@@ -460,7 +441,7 @@ def make_validation_plots(hlf_ref, list_hlf_models, labels, output_dir="plots/")
 
                 plot_atlas_style_multi(
                     ref_dat, mod_dat, labels,
-                    xlabel=f'$\langle \phi \\rangle_{{layer {layer}}}$ [mm]',
+                    xlabel=f'$\langle \phi \\rangle_{{layer {layer}}}$',
                     output_path=f"{output_dir}/Layer{layer}_MeanPhi.png",
                     yscale='log', pdf=pdf
                 )
@@ -472,7 +453,7 @@ def make_validation_plots(hlf_ref, list_hlf_models, labels, output_dir="plots/")
 
                 plot_atlas_style_multi(
                     ref_dat, mod_dat, labels,
-                    xlabel=f'$\sigma_{{\phi, layer {layer}}}$ [mm]',
+                    xlabel=f'$\sigma_{{\phi, layer {layer}}}$',
                     output_path=f"{output_dir}/Layer{layer}_WidthPhi.png",
                     yscale='log', pdf=pdf
                 )
@@ -484,41 +465,102 @@ def make_validation_plots(hlf_ref, list_hlf_models, labels, output_dir="plots/")
         # 4. Generate Grid Plots
         print("  Generating Grid Plots...")
         plot_layer_grid(grid_energy, 'Layer Energy [MeV]', labels, output_dir, yscale='log', pdf=pdf)
-        plot_layer_grid(grid_mean_r, 'Mean R [mm]', labels, output_dir, yscale='log', pdf=pdf)
-        plot_layer_grid(grid_width_r, 'Width R [mm]', labels, output_dir, yscale='log', pdf=pdf)
-        plot_layer_grid(grid_mean_phi, 'Mean Phi [mm]', labels, output_dir, yscale='log', pdf=pdf)
-        plot_layer_grid(grid_width_phi, 'Width Phi [mm]', labels, output_dir, yscale='log', pdf=pdf)
-
+        
+        # Updated calls for Eta grids
+        plot_layer_grid(grid_mean_eta, 'Mean Eta', labels, output_dir, yscale='log', pdf=pdf)
+        plot_layer_grid(grid_width_eta, 'Width Eta', labels, output_dir, yscale='log', pdf=pdf)
+        
+        plot_layer_grid(grid_mean_phi, 'Mean Phi', labels, output_dir, yscale='log', pdf=pdf)
+        plot_layer_grid(grid_width_phi, 'Width Phi', labels, output_dir, yscale='log', pdf=pdf)
     print("Done! PDF saved to", pdf_path)
 
 
 
-class FeatureAdapter:
-    """
-    Wraps the dictionary output from DifferentiableFeatureExtractor 
-    to mimic the interface of HighLevelFeatures_ATLAS_regular 
-    so existing plotting code works without changes.
-    """
-    def __init__(self, features_dict, relevant_layers, e_inc):
-        self.relevantLayers = relevant_layers
-        self.Einc = to_np(e_inc).flatten()
-        
-        # Unpack Tensor dict to Numpy arrays
-        self.E_tot = to_np(features_dict['E_tot'])
-        
-        # Initialize containers expected by plotting code
-        self.E_layers = {}
-        self.EC_rs = {}
-        self.EC_phis = {}
-        self.width_rs = {}
-        self.width_phis = {}
 
-        # Populate layer-wise stats
-        # features_dict['R_center'] is shape (Batch, Num_Layers)
-        # We need to map the column index 0...N back to the actual layer ID (e.g., 0, 1, 12...)
-        for i, layer_id in enumerate(self.relevantLayers):
-            self.E_layers[layer_id] = to_np(features_dict['E_layer'][:, i])
-            self.EC_rs[layer_id]    = to_np(features_dict['R_center'][:, i])
-            self.EC_phis[layer_id]  = to_np(features_dict['Phi_center'][:, i])
-            self.width_rs[layer_id] = to_np(features_dict['R_width'][:, i])
-            self.width_phis[layer_id] = to_np(features_dict['Phi_width'][:, i])
+def create_grid_figure(layer_data_dict, property_name, labels, yscale='log', xscale='linear'):
+    """
+    Creates a matplotlib Figure for WandB logging from layer-wise data.
+    """
+    # Define colors/styles for consistency
+    colors = ['red', 'green', 'orange', 'purple', 'cyan']
+    linestyles = ['-', '--', '-.', ':', '-']
+
+    layers = sorted(layer_data_dict.keys())
+    n_layers = len(layers)
+    if n_layers == 0: return None
+
+    # Calculate grid dimensions
+    n_cols = (n_layers + 1) // 2 
+    n_rows = 2
+    
+    fig = plt.figure(figsize=(5 * n_cols, 10)) 
+    outer_grid = GridSpec(n_rows, n_cols, figure=fig, hspace=0.3, wspace=0.3)
+    
+    for idx, layer in enumerate(layers):
+        row = idx // n_cols
+        col = idx % n_cols
+        
+        inner_grid = GridSpecFromSubplotSpec(2, 1, 
+                        subplot_spec=outer_grid[row, col], 
+                        height_ratios=[3, 1], hspace=0.05)
+        
+        ax_main = fig.add_subplot(inner_grid[0])
+        ax_ratio = fig.add_subplot(inner_grid[1], sharex=ax_main)
+        
+        data_ref = layer_data_dict[layer]['ref']
+        data_models = layer_data_dict[layer]['models']
+        
+        # Filter NaNs/Infs
+        data_ref = data_ref[np.isfinite(data_ref)]
+        clean_models = [d[np.isfinite(d)] for d in data_models]
+        all_d = [data_ref] + clean_models
+        
+        # Get bins (assumes get_bins is in scope)
+        bins = get_bins(all_d, xscale) 
+        if bins is None: continue
+
+        # Reference Plotting
+        ns_ref, _ = np.histogram(data_ref, bins=bins, density=True)
+        counts_ref, _ = np.histogram(data_ref, bins=bins)
+        mask = counts_ref > 0
+        ref_err = np.zeros_like(ns_ref)
+        ref_err[mask] = ns_ref[mask] / np.sqrt(counts_ref[mask])
+
+        # dup_last helper used for step plots
+        ax_main.step(bins, dup_last(ns_ref), color='black', alpha=0.8, lw=1.5, 
+                     where='post', label='Data' if idx==0 else "")
+        ax_main.fill_between(bins, dup_last(ns_ref - ref_err), dup_last(ns_ref + ref_err),
+                             facecolor='blue', alpha=0.2, step='post')
+
+        # Model Plotting
+        for i, (d_mod, lbl) in enumerate(zip(clean_models, labels)):
+            ns_mod, _ = np.histogram(d_mod, bins=bins, density=True)
+            ax_main.step(bins, dup_last(ns_mod), color=colors[i], ls=linestyles[i], lw=1.5, 
+                         where='post', label=lbl if idx==0 else "")
+            
+            # Ratio Plotting
+            ratio = np.divide(ns_mod, ns_ref, out=np.zeros_like(ns_mod), where=ns_ref!=0)
+            ax_ratio.step(bins, dup_last(ratio), color=colors[i], ls=linestyles[i], lw=1.5, where='post')
+
+        # Styling
+        ax_main.set_yscale(yscale)
+        ax_main.set_xscale(xscale)
+        ax_main.set_title(f"Layer {layer}", fontsize=12, fontweight='bold')
+        ax_main.tick_params(labelbottom=False)
+        
+        if col == 0:
+            ax_main.set_ylabel("Norm. Counts", fontsize=10)
+            ax_ratio.set_ylabel("Ratio", fontsize=9)
+        
+        ax_ratio.set_xscale(xscale)
+        ax_ratio.set_xlabel(property_name, fontsize=10)
+        ax_ratio.axhline(1, color='gray', linestyle='--', alpha=0.7)
+        ax_ratio.set_ylim(0.5, 1.5)
+        ax_ratio.grid(True, which='both', linestyle=':', alpha=0.5)
+
+    # Legend and Layout
+    handles, legends = fig.axes[0].get_legend_handles_labels()
+    fig.legend(handles, legends, loc='upper center', bbox_to_anchor=(0.5, 0.98), ncol=len(labels)+1, frameon=False)
+    plt.suptitle(f"Combined {property_name} across Layers", y=1.00, fontsize=16)
+    
+    return fig
