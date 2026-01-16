@@ -1,0 +1,23 @@
+model_name: ae_separate
+encoder: hierachicalencoder
+encoderblock: AtlasNew
+decoder: decoderfullgeoatlasclean
+
+output_smoothing_fct: 60
+mse_weight: 0.5
+coefficient: 0.01
+
+hidden_layer: 0
+cond_p_size: 53
+lin_bits: 19
+sqrt_bits: 17
+log_bits: 17
+
+loss_coeff:
+  ae_loss: 1.0
+  hit_loss: 1.0
+  mmd_loss: 0.0
+  feature_mae: 1.0
+  # focal_alpha: 0.588425
+  # focal_gamma: 2.0
+  
