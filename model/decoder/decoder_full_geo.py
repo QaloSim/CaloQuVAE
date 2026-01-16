@@ -268,3 +268,39 @@ class SubDecoder(nn.Module):
         else:
             x = self._subdecoder_layers(x)
         return x
+
+class SubdecoderClean(SubDecoder):
+    def __init__(self, cfg, first_subdecoder=False, last_subdecoder=False):
+        super().__init__(cfg, first_subdecoder, last_subdecoder)
+
+        # Common block structure to avoid repetition and enforce consistency
+        def make_block(in_channels, out_channels):
+            return nn.Sequential(
+                nn.ConvTranspose3d(in_channels, out_channels, (3, 3, 3), stride=(1, 1, 1), padding=(1, 1, 1)),
+                nn.BatchNorm3d(out_channels), # Consistent BatchNorm
+                nn.SiLU(),                    # Consistent SiLU
+                LinearAttention(out_channels, cylindrical=False)
+            )
+
+        # --- Architecture Definition ---
+        if self.last_subdecoder:
+            self._subdecoder_layers = nn.Sequential(
+                make_block(34, 32),
+                make_block(32, 32),
+                make_block(32, 32),
+                # Final projection: No activation, no Norm. Raw logits.
+                nn.ConvTranspose3d(32, 1, (3, 3, 3), stride=(1, 1, 1), padding=(1, 1, 1)),
+            )
+            
+            self._last_subdecoder_hits = nn.Sequential(
+                make_block(34, 32),
+                make_block(32, 32),
+                make_block(32, 32),
+                nn.ConvTranspose3d(32, 1, (3, 3, 3), stride=(1, 1, 1), padding=(1, 1, 1)),
+            )
+        else:
+            self._subdecoder_layers = nn.Sequential(
+                make_block(34, 32),
+                make_block(32, 32),
+                make_block(32, 32),
+            )

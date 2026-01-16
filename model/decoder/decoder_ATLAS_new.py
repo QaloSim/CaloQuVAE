@@ -184,3 +184,91 @@ class FirstSubDecoderATLASNew(FirstSubDecoder):
             nn.PReLU(32, 1.0),
         )
 
+class FirstSubdecoderAtlasClean(FirstSubDecoder):
+    def __init__(self, cfg):
+        super().__init__(cfg)
+        self.shower_size = (self._config.data.z, self._config.data.phi, self._config.data.r)
+
+        self._layers1 = nn.Sequential(
+            PeriodicConvTranspose3d(self.n_latent_nodes+1, 512, (3, 3, 3), stride=(1, 1, 1), padding=0),
+            nn.BatchNorm3d(512),
+            nn.SiLU(), # Standardized PReLU -> SiLU
+            
+            # Upscales to (512, 3, 3, 3)
+            PeriodicConvTranspose3d(512, 256, kernel_size=(3, 3, 3), stride=(1, 1, 1), padding=0),
+            nn.BatchNorm3d(256),
+            nn.SiLU(),
+            # Upscales to (256, 5, 5, 5)
+            nn.ConvTranspose3d(256, 128, (3, 3, 3), stride=(1, 1, 1), padding=(1, 0, 0)),
+            nn.BatchNorm3d(128),
+            # Upscales to (128, 5, 7, 7)
+        )
+
+        self._layers2 = nn.Sequential(
+            # Input 129 implies concatenation happened before this block (128 from layers1 + 1 extra)
+            nn.ConvTranspose3d(129, 64, (3, 5, 5), stride=(1, 1, 2), padding=(1, 0, 0)),
+            nn.BatchNorm3d(64), # GroupNorm -> BatchNorm
+            nn.SiLU(),
+            LinearAttention(64, cylindrical=False),
+            
+            # Upscales to (64, 5, 11, 17)
+            nn.ConvTranspose3d(64, 64, (3, 3, 5), stride=(1, 1, 1), padding=(1, 0, 0)),
+            nn.BatchNorm3d(64),
+            nn.SiLU(),
+            LinearAttention(64, cylindrical=False),
+            
+            # Upscales to (64, 5, 13, 21)
+            nn.ConvTranspose3d(64, 32, (3, 2, 4), stride=(1, 1, 1), padding=(1, 0, 0)),
+            nn.BatchNorm3d(32),
+            nn.SiLU(),
+            LinearAttention(32, cylindrical=False),
+        )
+
+        self._layers2_hits = nn.Sequential(
+            # Layer for hits
+            nn.ConvTranspose3d(129, 64, (3, 5, 5), stride=(1, 1, 2), padding=(1, 0, 0)),
+            nn.BatchNorm3d(64),
+            nn.SiLU(), # Standardized PReLU -> SiLU
+            
+            # Upscales to (64, 5, 15, 23)
+            nn.ConvTranspose3d(64, 64, (3, 3, 5), stride=(1, 1, 1), padding=(1, 0, 0)),
+            nn.BatchNorm3d(64),
+            nn.SiLU(),
+            
+            # Upscales to (64, 5, 11, 17)
+            nn.ConvTranspose3d(64, 32, (3, 2, 4), stride=(1, 1, 1), padding=(1, 0, 0)),
+            nn.BatchNorm3d(32),
+            # Removed final PReLU(32, 1.0) -> It was identity anyway.
+        )
+
+class DecoderFullGeoATLASClean(DecoderFullGeo):
+
+    def _create_hierarchy_networks(self):
+        self.subdecoders = nn.ModuleList()
+        for i in range(self.n_latent_hierarchy_lvls):
+            if i == 0:
+                subdecoder = FirstSubdecoderAtlasClean(self._config)
+            else:
+                subdecoder = SubdecoderClean(self._config, last_subdecoder=(i == self.n_latent_hierarchy_lvls - 1))
+            self.subdecoders.append(subdecoder)
+    
+    def _create_skip_connections(self):
+        self.skip_connections = nn.ModuleList()
+        if hasattr(self, 'cond_p_size'):
+            start = self.cond_p_size + self.p_size
+        else:
+            start = self.p_size * 2
+        for i in range(self.n_latent_hierarchy_lvls-1):
+            skip_connection = nn.Sequential(
+                nn.ConvTranspose3d(start + i * self.p_size, 64, (3, 5, 7), (1, 1, 1), padding=0),
+                nn.BatchNorm3d(64),
+                nn.SiLU(),
+                # upscales to (64, 3, 5, 7)
+                nn.ConvTranspose3d(64, 32, (3, 5, 7), (1, 1, 2), padding=0),
+                nn.BatchNorm3d(32),
+                nn.SiLU(),
+                # upscales to (32, 5, 8, 12)
+                nn.ConvTranspose3d(32, 1, (3, 6, 6), (1, 1, 1), padding=(1, 0, 0)),
+                nn.SiLU(),
+            ) #outputs (1, 5, 14, 24)
+            self.skip_connections.append(skip_connection)
