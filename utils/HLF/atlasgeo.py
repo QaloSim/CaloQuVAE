@@ -2,6 +2,7 @@ import torch
 import torch.nn as nn
 import h5py
 import numpy as np
+import math
 from utils.atlas_plots import to_np, make_validation_plots
 
 class AtlasGeometry:
@@ -27,9 +28,7 @@ class AtlasGeometry:
             r_c = self.binstart_radius[layer_str] + self.binsize_radius[layer_str] / 2.0
             alpha_c = self.binstart_alpha[layer_str] + self.binsize_alpha[layer_str] / 2.0
             
-            # 2. Project to Eta/Phi (This matches the legacy HighLevelFeatures)
-            # Legacy: eta = R * cos(alpha)
-            # Legacy: phi = R * sin(alpha)
+            # 2. Project to Eta/Phi
             eta_c = r_c * torch.cos(alpha_c)
             phi_c = r_c * torch.sin(alpha_c)
             
@@ -153,6 +152,263 @@ class FeatureAdapter:
             self.width_etas[layer_id] = to_np(features_dict['Eta_width'][:, i])
             self.width_phis[layer_id] = to_np(features_dict['Phi_width'][:, i])
 
+
+
+def compute_radial_overlap_area(min1, max1, min2, max2):
+    """
+    Computes the 'area' overlap in the radial dimension.
+    Corresponds to integral of r*dr -> 0.5 * (r_end^2 - r_start^2).
+    """
+    intersect_min = torch.max(min1, min2)
+    intersect_max = torch.min(max1, max2)
+    
+    valid_mask = (intersect_max > intersect_min)
+    r_sq_diff = (intersect_max ** 2 - intersect_min ** 2)
+    
+    return torch.where(valid_mask, 0.5 * r_sq_diff, torch.zeros_like(r_sq_diff))
+
+def compute_linear_overlap(min1, max1, min2, max2):
+    """
+    Computes simple linear overlap (max - min).
+    Used for the ANGULAR dimension (integral of d_alpha).
+    """
+    intersect_min = torch.max(min1, min2)
+    intersect_max = torch.min(max1, max2)
+    
+    overlap = torch.clamp(intersect_max - intersect_min, min=0.0)
+    return overlap
+
+def compute_periodic_overlap(min1, max1, min2, max2, period=2*math.pi):
+    """
+    Computes overlap for cyclic coordinates (phi).
+    Checks nominal overlap plus +/- period shifts.
+    USES LINEAR OVERLAP.
+    """
+    # Nominal overlap
+    ov_0 = compute_linear_overlap(min1, max1, min2, max2)
+    
+    # Target shifted +2pi 
+    ov_plus = compute_linear_overlap(min1, max1, min2 + period, max2 + period)
+    
+    # Target shifted -2pi
+    ov_minus = compute_linear_overlap(min1, max1, min2 - period, max2 - period)
+    
+    return ov_0 + ov_plus + ov_minus
+
+# --- 2. The Downsampler Class ---
+class CaloDownsampler(torch.nn.Module):
+    def __init__(self, source_geo, target_geo):
+        super().__init__()
+        
+        # 1. Flatten Geometries (Same as before)
+        src_r_min, src_r_max, src_a_min, src_a_max, src_layer_ids = self._flatten_geometry(source_geo)
+        tgt_r_min, tgt_r_max, tgt_a_min, tgt_a_max, tgt_layer_ids = self._flatten_geometry(target_geo)
+        
+        # ... [Layer matching logic stays the same] ...
+        layer_match = (tgt_layer_ids.unsqueeze(1) == src_layer_ids.unsqueeze(0)).float()
+        
+        # --- CORRECTED AREA CALCULATIONS ---
+        
+        # 2. Radial Area Overlap (Difference of Squares)
+        # Input shapes: (1, N_src) and (N_tgt, 1)
+        r_area_overlap = compute_radial_overlap_area(
+            src_r_min.unsqueeze(0), src_r_max.unsqueeze(0),
+            tgt_r_min.unsqueeze(1), tgt_r_max.unsqueeze(1)
+        )
+        
+        # 3. Angular Overlap (Linear) - Unchanged
+        # Angle behaves linearly in the area integral
+        a_overlap = compute_periodic_overlap(
+            src_a_min.unsqueeze(0), src_a_max.unsqueeze(0),
+            tgt_a_min.unsqueeze(1), tgt_a_max.unsqueeze(1)
+        )
+        
+        # 4. Intersection Area
+        intersection_area = r_area_overlap * a_overlap * layer_match
+        
+        # 5. Source Physical Area
+        # Area = 0.5 * (r_max^2 - r_min^2) * delta_alpha
+        src_r_factor = 0.5 * (src_r_max**2 - src_r_min**2)
+        src_a_factor = (src_a_max - src_a_min)
+        src_area = src_r_factor * src_a_factor
+        
+        # 6. Weight Matrix
+        W = intersection_area / torch.clamp(src_area.unsqueeze(0), min=1e-8)
+        
+        self.register_buffer('transfer_matrix', W.to_sparse())
+
+
+    def _flatten_geometry(self, geo):
+        r_mins, r_maxs = [], []
+        a_mins, a_maxs = [], []
+        layer_ids = []
+        
+        for layer_idx in geo.relevant_layers:
+            l_str = str(layer_idx)
+            
+            # Use data straight from the geometry class
+            r_start = geo.binstart_radius[l_str].float()
+            r_size  = geo.binsize_radius[l_str].float()
+            a_start = geo.binstart_alpha[l_str].float()
+            a_size  = geo.binsize_alpha[l_str].float()
+            
+            # Store edges
+            r_mins.append(r_start)
+            r_maxs.append(r_start + r_size)
+            a_mins.append(a_start)
+            a_maxs.append(a_start + a_size)
+            
+            # Layer ID
+            num_voxels = r_start.shape[0]
+            layer_ids.append(torch.full((num_voxels,), layer_idx, dtype=torch.float))
+            
+        return (
+            torch.cat(r_mins), torch.cat(r_maxs),
+            torch.cat(a_mins), torch.cat(a_maxs),
+            torch.cat(layer_ids)
+        )
+
+    def forward(self, source_showers):
+        """
+        Args:
+            source_showers: (Batch, N_source_voxels)
+        Returns:
+            target_showers: (Batch, N_target_voxels)
+        """
+        if source_showers.dim() == 3:
+             B, L, V = source_showers.shape
+             source_showers = source_showers.view(B, -1)
+             
+        # Sparse Matrix Multiplication
+        # (N_t, N_s) @ (N_s, B) -> (N_t, B)
+        # Note: PyTorch sparse mm requires (Sparse, Dense)
+        downsampled = torch.sparse.mm(self.transfer_matrix, source_showers.t()).t()
+        
+        return downsampled
+
+
+class VariableLayerFeatureExtractor(nn.Module):
+    """
+    A feature extractor that handles layers with different numbers of voxels.
+    Replaces DifferentiableFeatureExtractor for 'Optimal' binning schemes.
+    """
+    def __init__(self, geometry_handler):
+        super().__init__()
+        self.relevant_layers = geometry_handler.relevant_layers
+        self.epsilon = 1e-6
+        
+        # --- Pre-calculate slices and flatten grids ---
+        self.layer_slices = []
+        eta_centers_list = []
+        phi_centers_list = []
+        
+        current_idx = 0
+        for layer in self.relevant_layers:
+            # Get the grid for this specific layer
+            l_eta = geometry_handler.eta_centers[layer].float()
+            l_phi = geometry_handler.phi_centers[layer].float()
+            
+            # Record the size and create a slice for indexing the flat input
+            num_voxels = l_eta.size(0)
+            self.layer_slices.append(slice(current_idx, current_idx + num_voxels))
+            current_idx += num_voxels
+            
+            # Accumulate centers
+            eta_centers_list.append(l_eta)
+            phi_centers_list.append(l_phi)
+            
+        # Concatenate everything into 1D Buffers (Total_Voxels, )
+        # This avoids the RuntimeError from torch.stack on mismatched sizes
+        self.register_buffer('flat_eta_grid', torch.cat(eta_centers_list))
+        self.register_buffer('flat_phi_grid', torch.cat(phi_centers_list))
+
+    def forward(self, showers):
+        """
+        Args:
+            showers: (Batch, Total_Voxels) flattened input.
+        Returns:
+            Dict matching the structure of DifferentiableFeatureExtractor output.
+        """
+        # Ensure input is flat (Batch, Total_Voxels)
+        if showers.dim() == 3:
+            B, L, V = showers.shape
+            showers = showers.view(B, -1)
+            
+        B = showers.shape[0]
+        
+        # Storage for per-layer results
+        E_layers = []
+        Eta_centers = []
+        Phi_centers = []
+        Eta_widths = []
+        Phi_widths = []
+
+        # Iterate through layers using pre-calculated slices
+        # This replaces the vectorized operations over dim=1 from the old class
+        for i, slc in enumerate(self.layer_slices):
+            # 1. Extract data for this layer
+            # shape: (Batch, Voxels_In_This_Layer)
+            layer_shower = showers[:, slc]
+            layer_eta_grid = self.flat_eta_grid[slc].unsqueeze(0) # (1, V)
+            layer_phi_grid = self.flat_phi_grid[slc].unsqueeze(0) # (1, V)
+            
+            # 2. Energy
+            E_L = torch.sum(layer_shower, dim=1) # (B, )
+            E_layers.append(E_L)
+            
+            # Safe denominator for weighting
+            E_denom = torch.clamp(E_L, min=self.epsilon).unsqueeze(1) # (B, 1)
+
+            # 3. First Moments (Centers)
+            # sum(E_i * eta_i) / sum(E_i)
+            eta_weighted = torch.sum(layer_shower * layer_eta_grid, dim=1, keepdim=True)
+            phi_weighted = torch.sum(layer_shower * layer_phi_grid, dim=1, keepdim=True)
+            
+            mu_eta = eta_weighted / E_denom # (B, 1)
+            mu_phi = phi_weighted / E_denom # (B, 1)
+            
+            # Mask zero energy layers to avoid NaNs or junk data
+            mask = (E_L < self.epsilon).unsqueeze(1)
+            mu_eta = torch.where(mask, torch.zeros_like(mu_eta), mu_eta)
+            mu_phi = torch.where(mask, torch.zeros_like(mu_phi), mu_phi)
+            
+            Eta_centers.append(mu_eta.squeeze(1))
+            Phi_centers.append(mu_phi.squeeze(1))
+
+            # 4. Second Moments (Widths)
+            # sum(E_i * (eta_i - mu_eta)^2) / sum(E_i)
+            # Broadcast subtract: (1, V) - (B, 1) -> (B, V)
+            diff_eta = layer_eta_grid - mu_eta
+            diff_phi = layer_phi_grid - mu_phi
+            
+            var_eta = torch.sum(layer_shower * (diff_eta ** 2), dim=1) / E_denom.squeeze(1)
+            var_phi = torch.sum(layer_shower * (diff_phi ** 2), dim=1) / E_denom.squeeze(1)
+            
+            # Clamp for numerical stability (sqrt of negative is bad)
+            width_eta = torch.sqrt(torch.clamp(var_eta, min=1e-8))
+            width_phi = torch.sqrt(torch.clamp(var_phi, min=1e-8))
+
+            # Mask output
+            width_eta = torch.where(mask.squeeze(1), torch.zeros_like(width_eta), width_eta)
+            width_phi = torch.where(mask.squeeze(1), torch.zeros_like(width_phi), width_phi)
+            
+            Eta_widths.append(width_eta)
+            Phi_widths.append(width_phi)
+
+        # --- Stack results to match (Batch, Num_Layers) format ---
+        # This ensures compatibility with FeatureAdapter
+        output = {
+            "E_layer": torch.stack(E_layers, dim=1),       # (B, L)
+            "Eta_center": torch.stack(Eta_centers, dim=1), # (B, L)
+            "Phi_center": torch.stack(Phi_centers, dim=1), # (B, L)
+            "Eta_width": torch.stack(Eta_widths, dim=1),   # (B, L)
+            "Phi_width": torch.stack(Phi_widths, dim=1)    # (B, L)
+        }
+        
+        # Calculate Total Energy
+        output["E_tot"] = torch.sum(output["E_layer"], dim=1) # (B, )
+        
+        return output
             
 def evaluate_and_plot(data_dict, binning_path, output_dir="plots/", device="cpu"):
     """
