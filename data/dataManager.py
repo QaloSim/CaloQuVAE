@@ -48,37 +48,57 @@ class DataManager():
             self.load_dataset()
 
     def create_dataloaders(self):
-        total = self.f["showers"].shape[0]
-        frac_train = self._config.data.frac_train_dataset
-        frac_val = self._config.data.frac_val_dataset
+            total = self.f["showers"].shape[0]
+            frac_train = self._config.data.frac_train_dataset
+            frac_val = self._config.data.frac_val_dataset
 
-        tr = int(np.floor(total * frac_train))
-        va = int(np.floor(total * frac_val))
+            tr = int(np.floor(total * frac_train))
+            va = int(np.floor(total * frac_val))
+            
+            # Extract slices (h5py handles empty slices gracefully by returning empty arrays)
+            showers = self.f["showers"]
+            energies = self.f["incident_energies"]
+            
+            # --- Train Loader ---
+            if tr > 0:
+                self.train_loader = DataLoader(
+                    CaloDataset((showers[:tr, :], energies[:tr, :])),
+                    batch_size=self._config.data.batch_size_tr,
+                    shuffle=True,
+                    num_workers=self._config.data.num_workers
+                )
+                logger.info("{0}: {2} events, {1} batches".format(
+                    "Train", len(self.train_loader), len(self.train_loader.dataset)))
+            else:
+                self.train_loader = None
+                logger.info("Train Loader: 0 events (Skipped)")
 
-        showers = self.f["showers"]
-        energies = self.f["incident_energies"]
-        
-        self.train_loader = DataLoader(
-            CaloDataset((showers[:tr, :], energies[:tr, :])),
-            batch_size=self._config.data.batch_size_tr,
-            shuffle=True,
-            num_workers=self._config.data.num_workers
-        )
+            # --- Validation Loader ---
+            if va > 0:
+                self.val_loader = DataLoader(
+                    CaloDataset((showers[tr:tr + va, :], energies[tr:tr + va, :])),
+                    batch_size=self._config.data.batch_size_val,
+                    shuffle=False,
+                    num_workers=self._config.data.num_workers
+                )
+                logger.info("{0}: {2} events, {1} batches".format(
+                    "Val", len(self.val_loader), len(self.val_loader.dataset)))
+            else:
+                self.val_loader = None
+                logger.info("Val Loader: 0 events (Skipped)")
 
-        self.val_loader = DataLoader(
-            CaloDataset((showers[tr:tr + va, :], energies[tr:tr + va, :])),
-            batch_size=self._config.data.batch_size_val,
-            shuffle=False,
-            num_workers=self._config.data.num_workers
-        )
-
-        self.test_loader = DataLoader(
-            CaloDataset((showers[tr + va:, :], energies[tr + va:, :])),
-            batch_size=self._config.data.batch_size_test,
-            shuffle=False,
-            num_workers=self._config.data.num_workers
-        )
-        
-        logger.info("{0}: {2} events, {1} batches".format(self.train_loader, len(self.train_loader), len(self.train_loader.dataset)))
-        logger.info("{0}: {2} events, {1} batches".format(self.test_loader, len(self.test_loader), len(self.test_loader.dataset)))
-        logger.info("{0}: {2} events, {1} batches".format(self.val_loader, len(self.val_loader), len(self.val_loader.dataset)))
+            # --- Test Loader ---
+            # Calculate remaining items to avoid index errors
+            te_len = total - tr - va
+            if te_len > 0:
+                self.test_loader = DataLoader(
+                    CaloDataset((showers[tr + va:, :], energies[tr + va:, :])),
+                    batch_size=self._config.data.batch_size_test,
+                    shuffle=False,
+                    num_workers=self._config.data.num_workers
+                )
+                logger.info("{0}: {2} events, {1} batches".format(
+                    "Test", len(self.test_loader), len(self.test_loader.dataset)))
+            else:
+                self.test_loader = None
+                logger.info("Test Loader: 0 events (Skipped)")
