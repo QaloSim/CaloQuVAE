@@ -241,6 +241,8 @@ class FirstSubdecoderAtlasClean(FirstSubDecoder):
             # Removed final PReLU(32, 1.0) -> It was identity anyway.
         )
 
+
+
 class DecoderFullGeoATLASClean(DecoderFullGeo):
 
     def _create_hierarchy_networks(self):
@@ -271,4 +273,162 @@ class DecoderFullGeoATLASClean(DecoderFullGeo):
                 nn.ConvTranspose3d(32, 1, (3, 6, 6), (1, 1, 1), padding=(1, 0, 0)),
                 nn.SiLU(),
             ) #outputs (1, 5, 14, 24)
+            self.skip_connections.append(skip_connection)
+
+
+
+class CylindricalTranspose3D(nn.ConvTranspose3d):
+    """
+    A 3D Transpose Convolution that enforces circular (cylindrical) topology 
+    on the Phi dimension (Dimension 3: D, H, W -> Z, Phi, R).
+    
+    Robust to cases where padding > dimension size.
+    """
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        self.phi_axis = 3 # (Batch, C, Z, Phi, R) -> Index 3
+        self.kernel_phi = self.kernel_size[1]
+        self.stride_phi = self.stride[1]
+        
+        # Store original intended padding 
+        self.pad_z = self.padding[0]
+        self.pad_r = self.padding[2]
+        self.user_pad_phi = self.padding[1]
+
+    def forward(self, x):
+        # x shape: (Batch, Channel, Z, Phi, R)
+        
+        # --- 1. Robust Circular Padding ---
+        # We need to pad 'k' pixels on left and right. 
+        # F.pad(mode='circular') fails if k > dim_size. 
+        # We use index_select to manually wrap.
+        
+        k = self.kernel_phi
+        dim_size = x.shape[self.phi_axis]
+        
+        # Calculate indices for left and right padding
+        # Left pad: takes from the end (wrapping around)
+        # Right pad: takes from the start (wrapping around)
+        idx_left = torch.arange(-k, 0, device=x.device) % dim_size
+        idx_right = torch.arange(0, k, device=x.device) % dim_size
+        
+        # Extract the padding slices
+        left_pad = x.index_select(self.phi_axis, idx_left)
+        right_pad = x.index_select(self.phi_axis, idx_right)
+        
+        # Concatenate: [Left_Pad, Original, Right_Pad]
+        x_padded = torch.cat([left_pad, x, right_pad], dim=self.phi_axis)
+        
+        # --- 2. Adjust internal layer padding ---
+        # We want Z and R to use standard padding, but Phi to have 0 (handled manually above)
+        original_padding = self.padding
+        self.padding = (self.pad_z, 0, self.pad_r)
+        
+        # --- 3. Perform Transpose Conv ---
+        out = super().forward(x_padded)
+        
+        # --- 4. Restore internal state ---
+        self.padding = original_padding
+        
+        # --- 5. Crop the output ---
+        # Calculate expected output size based on original input size
+        in_phi = x.shape[self.phi_axis]
+        
+        # Standard Transpose Conv output size formula
+        expected_phi = (in_phi - 1) * self.stride_phi - 2 * self.user_pad_phi + self.kernel_phi + self.output_padding[1]
+        
+        # Center crop on dimension 3
+        curr_phi = out.shape[self.phi_axis]
+        start = (curr_phi - expected_phi) // 2
+        
+        # Safety check: ensure we don't slice out of bounds if something is off (rare)
+        if start < 0: start = 0
+        
+        out = out[:, :, :, start : start + expected_phi, :]
+        
+        return out
+        
+
+class FirstSubdecoderAtlasCylinder(FirstSubdecoderAtlasClean):
+    def __init__(self, cfg):
+        # We initialize the parent to get standard attributes, 
+        # but we will immediately overwrite the layers.
+        super().__init__(cfg)
+
+        # _layers1 is kept as is (PeriodicConvTranspose3d is already cylindrical-aware presumably).
+        # We redefine _layers2 to use CylindricalTranspose3D
+        self._layers2 = nn.Sequential(
+            # Input 129 implies concatenation happened before this block
+            CylindricalTranspose3D(129, 64, (3, 5, 5), stride=(1, 1, 2), padding=(1, 0, 0)),
+            nn.BatchNorm3d(64),
+            nn.SiLU(),
+            # UPDATED: cylindrical=True
+            LinearAttention(64, cylindrical=True),
+            
+            # Upscales to (64, 5, 11, 17)
+            CylindricalTranspose3D(64, 64, (3, 3, 5), stride=(1, 1, 1), padding=(1, 0, 0)),
+            nn.BatchNorm3d(64),
+            nn.SiLU(),
+            LinearAttention(64, cylindrical=True),
+            
+            # Upscales to (64, 5, 13, 21)
+            CylindricalTranspose3D(64, 32, (3, 2, 4), stride=(1, 1, 1), padding=(1, 0, 0)),
+            nn.BatchNorm3d(32),
+            nn.SiLU(),
+            LinearAttention(32, cylindrical=True),
+        )
+
+        self._layers2_hits = nn.Sequential(
+            # Layer for hits
+            CylindricalTranspose3D(129, 64, (3, 5, 5), stride=(1, 1, 2), padding=(1, 0, 0)),
+            nn.BatchNorm3d(64),
+            nn.SiLU(),
+            
+            # Upscales to (64, 5, 15, 23)
+            CylindricalTranspose3D(64, 64, (3, 3, 5), stride=(1, 1, 1), padding=(1, 0, 0)),
+            nn.BatchNorm3d(64),
+            nn.SiLU(),
+            
+            # Upscales to (64, 5, 11, 17)
+            CylindricalTranspose3D(64, 32, (3, 2, 4), stride=(1, 1, 1), padding=(1, 0, 0)),
+            nn.BatchNorm3d(32),
+        )
+
+
+class DecoderFullGeoATLASCylinder(DecoderFullGeoATLASClean):
+    def _create_hierarchy_networks(self):
+        self.subdecoders = nn.ModuleList()
+        for i in range(self.n_latent_hierarchy_lvls):
+            if i == 0:
+                # Use the new Cylindrical First Subdecoder
+                subdecoder = FirstSubdecoderAtlasCylinder(self._config)
+            else:
+                # Assuming SubdecoderClean handles standard logic, 
+                # or you might need a Cylindrical version of SubdecoderClean too
+                # if the later stages also need cylindrical transpose.
+                # For now, we use the standard one as requested for the hierarchy.
+                subdecoder = SubdecoderClean(self._config, last_subdecoder=(i == self.n_latent_hierarchy_lvls - 1))
+            self.subdecoders.append(subdecoder)
+    
+    def _create_skip_connections(self):
+        self.skip_connections = nn.ModuleList()
+        if hasattr(self, 'cond_p_size'):
+            start = self.cond_p_size + self.p_size
+        else:
+            start = self.p_size * 2
+            
+        for i in range(self.n_latent_hierarchy_lvls-1):
+            # Updated to use CylindricalTranspose3D
+            skip_connection = nn.Sequential(
+                CylindricalTranspose3D(start + i * self.p_size, 64, (3, 5, 7), (1, 1, 1), padding=0),
+                nn.BatchNorm3d(64),
+                nn.SiLU(),
+                # upscales to (64, 3, 5, 7)
+                CylindricalTranspose3D(64, 32, (3, 5, 7), (1, 1, 2), padding=0),
+                nn.BatchNorm3d(32),
+                nn.SiLU(),
+                # upscales to (32, 5, 8, 12)
+                CylindricalTranspose3D(32, 1, (3, 6, 6), (1, 1, 1), padding=(1, 0, 0)),
+                nn.SiLU(),
+            ) 
             self.skip_connections.append(skip_connection)
