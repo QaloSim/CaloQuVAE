@@ -74,133 +74,131 @@ class AutoEncoderSeparate(AutoEncoderBase):
 
 
     def decode(self, post_samples, x, x0, beta=5, act_fct_slope=0.02):
-        """
-        Overridden decode method from autoencoderbase.
-        Returns raw components needed for differentiable physics loss.
-        """
-        output_hits, output_activations = self.decoder(torch.cat(post_samples, 1), x0)
-        
-        # Initialize placeholders for the new returns
-        activations_raw = None
-        hit_mask_attached = None
+            """
+            Overridden decode method. 
+            Always returns raw components in training to allow physics losses
+            to backpropagate through the hit mask.
+            """
+            output_hits, output_activations = self.decoder(torch.cat(post_samples, 1), x0)
+            
+            # Initialize placeholders
+            activations_raw = None
+            hit_mask_attached = None
 
-        if self.training:
-            if hasattr(self._config, "separate_hits") and self._config.separate_hits:
+            if self.training:
                 # 1. Get the Soft (Gumbel) Mask with gradients attached
+                # This allows physics losses to push the mask towards "1" if energy is needed
                 hit_mask_attached = self._hit_smoothing_dist_mod(output_hits, beta=beta)
         
-                # 2. Get Raw Activations
+                # 2. Get Raw Activations (unmasked energy)
                 activations_raw = self._activation_fct(act_fct_slope, output_activations)
                 
                 # 3. Create the "Safe" output for MSE (Detached Mask)
-                # This prevents the MSE loss from collapsing the mask to zero
+                # We detach the mask here so MSE focuses purely on energy amplitude 
+                # where the model thinks a hit exists, without trying to collapse the mask.
                 output_activations = activations_raw * hit_mask_attached.detach() 
             else:
-                # Fallback for standard training (fixed geometry or no separate hits)
-                output_activations = self._activation_fct(act_fct_slope, output_activations) * torch.where(x > 0, 1., 0.)
-        else:
-            # Evaluation mode
-            output_activations = self._activation_fct(0.0, output_activations) * self._hit_smoothing_dist_mod(output_hits)
-       
-        # Return 4 values now (update your training loop unpacking to match this!)
-        return output_hits, output_activations, activations_raw, hit_mask_attached
+                # Evaluation mode: Hard masking for cleaner evaluation
+                output_activations = self._activation_fct(0.0, output_activations) * self._hit_smoothing_dist_mod(output_hits)
+        
+            return output_hits, output_activations, activations_raw, hit_mask_attached
 
     def loss(self, input_data, x0, args):
-        """
-        Child class loss with Focal Loss + Differentiable Physics Loss.
-        """
-        logger.debug("loss")
-        
-        # Unpack the 4 values returned by the new decode method
-        beta, post_logits, post_samples, output_activations, output_hits, activations_raw, hit_mask_attached = args
+            """
+            Child class loss with Focal Loss + Differentiable Physics Loss.
+            """
+            # Unpack the 4 values returned by the new decode method
+            beta, post_logits, post_samples, output_activations, output_hits, activations_raw, hit_mask_attached = args
 
-        # 1. --- Standard Reconstruction Loss ---
-        # Uses output_activations (which has the detached mask).
-        ae_loss = torch.pow((input_data - output_activations), 2) * torch.exp(self._config.model.mse_weight * input_data)
-        ae_loss = torch.mean(torch.sum(ae_loss, dim=1), dim=0) * self._config.model.coefficient
-
-        # 2. --- Hit Loss with Focal Support ---
-        targets = torch.where(input_data > 0, 1., 0.)
-        
-        # Calculate raw unreduced BCE first. This is -log(pt).
-        bce_raw = binary_cross_entropy_with_logits(output_hits, targets, reduction='none')
-
-        # Check if Focal Loss parameters exist in config
-        if hasattr(self._config.model, "focal_alpha") and hasattr(self._config.model, "focal_gamma"):
-            alpha = self._config.model.focal_alpha
-            gamma = self._config.model.focal_gamma
-            
-            # Calculate pt (probability of the true class)
-            pt = torch.exp(-bce_raw)
-            
-            # Calculate alpha_t: alpha for class 1, (1-alpha) for class 0
-            alpha_t = alpha * targets + (1 - alpha) * (1 - targets)
-            
-            # Apply Focal Loss factors
-            focal_loss = alpha_t * (1 - pt).pow(gamma) * bce_raw
-            hit_loss = torch.mean(torch.sum(focal_loss, dim=1), dim=0)
-        else:
-            # Revert to standard BCE reduction
-            hit_loss = torch.mean(torch.sum(bce_raw, dim=1), dim=0)
-
-        # 3. --- Feature Extraction Setup (The Fix) ---
-        mmd_weight = getattr(self._config.model.loss_coeff, "mmd_loss", 0.0)
-        mae_weight = getattr(self._config.model.loss_coeff, "feature_mae", 0.0) 
-
-        feat_gt = None
-        feat_recon = None
-        
-        if mmd_weight > 0.0 or mae_weight > 0.0:
-            # Construct the Differentiable Reconstruction
-            if activations_raw is not None and hit_mask_attached is not None:
-                # This path allows gradients to flow into the mask (hits head)
-                physics_recon = activations_raw * hit_mask_attached
+            # --- [1. Setup Spatial Weights] ---
+            r_weight_coeff = getattr(self._config.model.loss_coeff, "r_loss_coeff", 0.0)
+            if r_weight_coeff > 0.0:
+                spatial_map = self.feature_extractor.r_grid_norm.view(1, -1)
+                pixel_weights = 1.0 + (r_weight_coeff * spatial_map)
             else:
-                # Fallback if raw components aren't available
-                physics_recon = output_activations
+                pixel_weights = 1.0
 
-            feat_gt = self.feature_extractor(input_data)
-            feat_recon = self.feature_extractor(physics_recon)
+            # --- [2. Standard Reconstruction Loss] ---
+            # output_activations uses the DETACHED mask, so this only trains energy values
+            squared_diff = torch.pow((input_data - output_activations), 2)
+            energy_weighting = torch.exp(self._config.model.mse_weight * input_data)
+            
+            ae_loss = squared_diff * energy_weighting * pixel_weights
+            ae_loss = torch.mean(torch.sum(ae_loss, dim=1), dim=0) * self._config.model.coefficient
 
-        # 4. --- Conditional MMD Feature Loss ---
-        mmd_loss_total = torch.tensor(0.0, device=input_data.device)            
-        if mmd_weight > 0.0:
-            norm_energy = self.cond_normalizer(x0)
-            for key in feat_gt.keys():
-                val_gt = feat_gt[key].view(input_data.size(0), -1)
-                val_recon = feat_recon[key].view(input_data.size(0), -1)
-                mmd_loss_total += compute_cmmd(val_gt, norm_energy, val_recon, norm_energy)
+            # --- [3. Hit Loss with Focal Support] ---
+            targets = torch.where(input_data > 0, 1., 0.)
+            bce_raw = binary_cross_entropy_with_logits(output_hits, targets, reduction='none')
 
-        # 5. --- Physics Feature MAE Loss ---
-        mae_loss_total = torch.tensor(0.0, device=input_data.device)
-        if mae_weight > 0.0:
-            for key in feat_gt.keys():
-                val_gt = feat_gt[key].view(input_data.size(0), -1)
-                val_recon = feat_recon[key].view(input_data.size(0), -1)
-                mae_loss_total += torch.abs(val_gt - val_recon).mean()
+            if hasattr(self._config.model.loss_coeff, "focal_alpha") and hasattr(self._config.model.loss_coeff, "focal_gamma"):
+                alpha = self._config.model.loss_coeff.focal_alpha
+                gamma = self._config.model.loss_coeff.focal_gamma
+                pt = torch.exp(-bce_raw)
+                alpha_t = alpha * targets + (1 - alpha) * (1 - targets)
+                focal_loss = alpha_t * (1 - pt).pow(gamma) * bce_raw
+                hit_loss = torch.mean(torch.sum(focal_loss * pixel_weights, dim=1), dim=0)
+            else:
+                hit_loss = torch.mean(torch.sum(bce_raw * pixel_weights, dim=1), dim=0)
 
-        # 6. --- Aggregate and Return ---
-        total_loss_dict = {
-            "ae_loss": ae_loss,
-            "hit_loss": hit_loss,
-            "mmd_loss": mmd_loss_total,
-            "feature_mae": mae_loss_total
-        }
+            # --- [4. Feature Extraction Setup] ---
+            mmd_weight = getattr(self._config.model.loss_coeff, "mmd_loss", 0.0)
+            mae_weight = getattr(self._config.model.loss_coeff, "feature_mae", 0.0) 
 
-        # Add RBM specific terms if configured (Standard Boilerplate)
-        if hasattr(self._config.model.loss_coeff, 'pos_energy') and hasattr(self._config.model.loss_coeff, 'logit_distance'):
-            l_dist = torch.pow(torch.cat(post_logits, 1) - torch.cat(self.logit_distance(post_samples, post_logits), 1), 2).mean()
-            pos_energy = self.pos_energy(post_samples)
-            entropy_loss = -1 * self.posterior_entropy(post_logits)        
+            mmd_loss_total = torch.tensor(0.0, device=input_data.device)
+            mae_loss_total = torch.tensor(0.0, device=input_data.device)
 
-            total_loss_dict.update({
-                "entropy": entropy_loss,
-                "pos_energy": pos_energy,
-                "logit_distance": l_dist
-            })
+            if mmd_weight > 0.0 or mae_weight > 0.0:
+                # CRITICAL CHANGE: Construct reconstruction with gradients flowing to mask
+                if activations_raw is not None and hit_mask_attached is not None:
+                    # This product allows gradients to flow: Loss -> Mask -> Hits Head
+                    physics_recon = activations_raw * hit_mask_attached
+                else:
+                    # Fallback for Eval mode (activations_raw is None)
+                    physics_recon = output_activations
 
-        return total_loss_dict
+                feat_gt = self.feature_extractor(input_data)
+                feat_recon = self.feature_extractor(physics_recon)
 
+                # --- [5. Conditional MMD Feature Loss] ---
+                if mmd_weight > 0.0:
+                    norm_energy = self.cond_normalizer(x0)
+                    for key in feat_gt.keys():
+                        val_gt = feat_gt[key].view(input_data.size(0), -1)
+                        val_recon = feat_recon[key].view(input_data.size(0), -1)
+                        mmd_loss_total += compute_cmmd(val_gt, norm_energy, val_recon, norm_energy)
+
+                # --- [6. Physics Feature MAE Loss] ---
+                if mae_weight > 0.0:
+                    for key in feat_gt.keys():
+                        val_gt = feat_gt[key].view(input_data.size(0), -1)
+                        val_recon = feat_recon[key].view(input_data.size(0), -1)
+                        if "E_" in key:
+                            val_gt = torch.log1p(val_gt)
+                            val_recon = torch.log1p(val_recon)
+                        scale = torch.clamp(torch.mean(torch.abs(val_gt)).detach(), min=1e-5)
+                        mae_loss_total += torch.abs(val_gt - val_recon).mean() / scale
+
+            # --- [7. Aggregate and Return] ---
+            total_loss_dict = {
+                "ae_loss": ae_loss,
+                "hit_loss": hit_loss,
+                "mmd_loss": mmd_loss_total,
+                "feature_mae": mae_loss_total
+            }
+
+            if hasattr(self._config.model.loss_coeff, 'pos_energy') and hasattr(self._config.model.loss_coeff, 'logit_distance'):
+                l_dist = torch.pow(torch.cat(post_logits, 1) - torch.cat(self.logit_distance(post_samples, post_logits), 1), 2).mean()
+                pos_energy = self.pos_energy(post_samples)
+                entropy_loss = -1 * self.posterior_entropy(post_logits)        
+
+                total_loss_dict.update({
+                    "entropy": entropy_loss,
+                    "pos_energy": pos_energy,
+                    "logit_distance": l_dist
+                })
+
+            return total_loss_dict
+            
     def forward(self, xx, beta_smoothing_fct=5, act_fct_slope=0.02):
         """
         - Overrides forward in autoencoderbase to unpack  and return more values for loss calculation.
