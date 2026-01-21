@@ -1,4 +1,4 @@
-dataset_name: AtlasCustom1
+dataset_name: AtlasCustom100GeV
 path:  /fast_scratch_1/caloqvae/data/calo_custom_fixed_e_cat/100GeV//dataset_cat.hdf5
 
 binning_path: /fast_scratch_1/caloqvae/data/calo_custom_fixed_e/100GeV/dataset_combined_positive.hdf5
