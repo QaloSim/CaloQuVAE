@@ -17,23 +17,27 @@ class AtlasGeometry:
         
         self._load_h5_data()
         
-        # Changed from r_centers to eta_centers to match legacy logic
         self.eta_centers = {}
         self.phi_centers = {}
+        self.r_centers = {}  # Store raw r
         
         for layer in self.relevant_layers:
             layer_str = str(layer)
             
-            # 1. Calculate Midpoints
+            # Calculate r_c
             r_c = self.binstart_radius[layer_str] + self.binsize_radius[layer_str] / 2.0
             alpha_c = self.binstart_alpha[layer_str] + self.binsize_alpha[layer_str] / 2.0
             
-            # 2. Project to Eta/Phi
+            # Save raw r
+            self.r_centers[layer] = r_c.float()
+
+            # Project to Eta/Phi
             eta_c = r_c * torch.cos(alpha_c)
             phi_c = r_c * torch.sin(alpha_c)
             
             self.eta_centers[layer] = eta_c.float()
             self.phi_centers[layer] = phi_c.float()
+
 
     def _load_h5_data(self):
         self.binsize_alpha = {}
@@ -66,6 +70,20 @@ class DifferentiableFeatureExtractor(nn.Module):
         # Buffers
         self.register_buffer('eta_grid', torch.stack(eta_grid_list))   # (L, V)
         self.register_buffer('phi_grid', torch.stack(phi_grid_list))   # (L, V)
+
+        r_grid_list = [geometry_handler.r_centers[l] for l in self.relevant_layers]
+        raw_r_stack = torch.stack(r_grid_list) # Shape: (Num_Layers, Voxels_Per_Layer)
+
+        # 1. Compute Min and Max per layer (dim=1)
+        # keepdim=True ensures shape remains (Num_Layers, 1) for broadcasting
+        r_min = raw_r_stack.min(dim=1, keepdim=True)[0]
+        r_max = raw_r_stack.max(dim=1, keepdim=True)[0]
+
+        # 2. Normalize to 0-1 range
+        # Added epsilon to prevent div/0 if a layer happens to have constant r (unlikely but safe)
+        r_norm = (raw_r_stack - r_min) / (r_max - r_min + 1e-6)
+
+        self.register_buffer('r_grid_norm', r_norm)
         
         self.epsilon = 1e-6
 

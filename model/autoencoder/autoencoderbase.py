@@ -19,7 +19,7 @@ from model.decoder.decoder_full_geo import DecoderFullGeo
 from model.decoder.decoderhierarchy0 import DecoderHierarchy0, DecoderHierarchyv3, DecoderHierarchy0Hidden
 from model.decoder.decoderhierarchy0ca import DecoderHierarchy0CA
 from model.decoder.decoderhierarchytf import DecoderHierarchyTF, DecoderHierarchyTFv2
-from model.decoder.decoder_ATLAS_new import DecoderATLASNew, DecoderFullGeoATLASNew, DecoderFullGeoATLASClean
+from model.decoder.decoder_ATLAS_new import DecoderATLASNew, DecoderFullGeoATLASNew, DecoderFullGeoATLASClean, DecoderFullGeoATLASCylinder
 from model.rbm.rbm import RBM, RBM_Hidden
 from model.rbm.rbm_torch import RBMtorch, RBM_Hiddentorch
 from model.rbm.rbm_fulltorch import RBMTorchFull
@@ -37,7 +37,7 @@ class AutoEncoderBase(nn.Module):
         self._bce_loss = nn.BCEWithLogitsLoss(reduction="none")
 
     def _activation_fct(self, slope, x):
-        if "clean" in self._config.model.decoder:
+        if "clean" or "cylinder" in self._config.model.decoder:
                 # Softplus for the new model (Strictly positive, smooth)
                 return F.softplus(x, beta=1)
         else:
@@ -90,6 +90,8 @@ class AutoEncoderBase(nn.Module):
             return DecoderFullGeoATLASNew(self._config)
         elif self._config.model.decoder == "decoderfullgeoatlasclean":
             return DecoderFullGeoATLASClean(self._config)
+        elif self._config.model.decoder == "decoderfullgeoatlascylinder":
+            return DecoderFullGeoATLASCylinder(self._config)
         elif self._config.model.decoder == "decoderhierachytfv2":
             return DecoderHierarchyTFv2(self._config)
         elif self._config.model.decoder == "decoderhierachy0ca":
@@ -175,9 +177,9 @@ class AutoEncoderBase(nn.Module):
         bce_raw = binary_cross_entropy_with_logits(output_hits, targets, reduction='none')
 
         # Check if Focal Loss parameters exist in config
-        if hasattr(self._config.model, "focal_alpha") and hasattr(self._config.model, "focal_gamma"):
-            alpha = self._config.model.focal_alpha
-            gamma = self._config.model.focal_gamma
+        if hasattr(self._config.model.loss_coeff, "focal_alpha") and hasattr(self._config.model.loss_coeff, "focal_gamma"):
+            alpha = self._config.model.loss_coeff.focal_alpha
+            gamma = self._config.model.loss_coeff.focal_gamma
             
             # Calculate pt (probability of the true class)
             pt = torch.exp(-bce_raw)
