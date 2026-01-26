@@ -49,13 +49,19 @@ class DataManager():
 
     def create_dataloaders(self):
             total = self.f["showers"].shape[0]
-            frac_train = self._config.data.frac_train_dataset
-            frac_val = self._config.data.frac_val_dataset
-
-            tr = int(np.floor(total * frac_train))
-            va = int(np.floor(total * frac_val))
             
-            # Extract slices (h5py handles empty slices gracefully by returning empty arrays)
+            # Check if the dataset loader provided explicit split lengths
+            if "split_lengths" in self.f:
+                tr, va = self.f["split_lengths"]
+                logger.info(f"Using pre-calculated stratified splits: Tr={tr}, Val={va}")
+            else:
+                # Fallback for generic datasets (Global floor)
+                frac_train = self._config.data.frac_train_dataset
+                frac_val = self._config.data.frac_val_dataset
+                tr = int(np.floor(total * frac_train))
+                va = int(np.floor(total * frac_val))
+            
+            # Extract slices 
             showers = self.f["showers"]
             energies = self.f["incident_energies"]
             

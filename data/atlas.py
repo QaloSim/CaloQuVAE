@@ -13,14 +13,12 @@ def get_atlas_dataset(cfg):
 
     energies_np = energies.numpy()
     unique_energies = np.unique(energies_np)
-    is_discrete = len(unique_energies) < 20 # only ~15 unique so just a val bigger
+    is_discrete = len(unique_energies) < 20 
 
     if is_discrete:
         bin_ids = np.digitize(energies_np, unique_energies, right=False)
-    else: # using smeared logic
+    else: 
         if "Custom" in cfg.data.dataset_name:
-            logger.info("Using Linear Binning for Custom ATLAS Dataset")
-            logger
             min_e = energies_np.min()
             max_e = energies_np.max()
             num_bins = 15
@@ -37,16 +35,30 @@ def get_atlas_dataset(cfg):
         bin_to_indices[b].append(i)
 
     train_idx, val_idx, test_idx = [], [], []
+    
+    # accumulate actual lengths
+    total_tr_len = 0
+    total_val_len = 0
+
     for indices in bin_to_indices.values():
         n = len(indices)
         n_train = int(cfg.data.frac_train_dataset * n)
         n_val = int(cfg.data.frac_val_dataset * n)
-        n_test = n - n_train - n_val
+        # n_test is implicit
+        
+        # Track the actual sizes
+        total_tr_len += n_train
+        total_val_len += n_val
 
         train_idx.extend(indices[:n_train])
         val_idx.extend(indices[n_train:n_train + n_val])
         test_idx.extend(indices[n_train + n_val:])
 
     ordered_indices = np.concatenate([train_idx, val_idx, test_idx])
-    return { "showers": showers[ordered_indices],
-             "incident_energies": energies[ordered_indices].unsqueeze(1)}
+    
+    # Return the exact split lengths along with the data
+    return { 
+        "showers": showers[ordered_indices],
+        "incident_energies": energies[ordered_indices].unsqueeze(1),
+        "split_lengths": (total_tr_len, total_val_len) 
+    }
