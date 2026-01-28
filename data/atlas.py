@@ -3,13 +3,63 @@ import h5py
 import numpy as np
 from collections import defaultdict
 from CaloQuVAE import logging
-logger = logging.getLogger(__name__)
 
+logger = logging.getLogger(__name__)
+def filter_anomalies(showers, energies, cfg):
+    """
+    Filters out events where incident energy > 10,000 but Layer 2 has zero hits.
+    
+    Args:
+        showers (torch.Tensor): Shape [batch_size, num_voxels]
+        energies (torch.Tensor): Shape [batch_size]
+        cfg: Configuration object containing data.phi and data.r
+        
+    Returns:
+        tuple: (filtered_showers, filtered_energies)
+    """
+    # 1. Determine the voxel range for Layer 2 (3rd layer, index 2)
+    voxels_per_layer = cfg.data.phi * cfg.data.r
+    layer_idx = 2
+    
+    start_idx = layer_idx * voxels_per_layer
+    end_idx = (layer_idx + 1) * voxels_per_layer
+    
+    # Safety check to ensure the tensor is large enough
+    if showers.shape[1] < end_idx:
+        logger.warning(f"Cannot filter anomalies: Shower dim {showers.shape[1]} is too small for Layer 2 index range {start_idx}-{end_idx}.")
+        return showers, energies
+
+    # 2. Extract Layer 2 data
+    layer_2_data = showers[:, start_idx:end_idx]
+    
+    # 3. Create the filter masks
+    # "No hits" implies the sum of energy in that layer is 0
+    has_no_hits_l2 = layer_2_data.sum(dim=1) == 0
+    
+    # Incident energy > 10,000
+    is_high_energy = energies > 10000
+    
+    # Identify anomalies: High Energy AND No Layer 2 Hits
+    is_anomaly = is_high_energy & has_no_hits_l2
+    
+    # 4. Filter the data
+    num_anomalies = is_anomaly.sum().item()
+    if num_anomalies > 0:
+        logger.info(f"Filtering {num_anomalies} anomalous events (Energy > 10k & No Layer 2 hits).")
+        
+        # Keep only non-anomalous events
+        keep_mask = ~is_anomaly
+        return showers[keep_mask], energies[keep_mask]
+    
+    return showers, energies
 
 def get_atlas_dataset(cfg):
     with h5py.File(cfg.data.path, 'r') as f:
         showers = torch.tensor(f["showers"][:]).float()
         energies = torch.tensor(f["incident_energies"][:]).float().squeeze()
+
+#   Filter anomalies before processing
+    showers, energies = filter_anomalies(showers, energies, cfg)
 
     energies_np = energies.numpy()
     unique_energies = np.unique(energies_np)
