@@ -37,12 +37,7 @@ class AutoEncoderBase(nn.Module):
         self._bce_loss = nn.BCEWithLogitsLoss(reduction="none")
 
     def _activation_fct(self, slope, x):
-        if "clean" or "cylinder" in self._config.model.decoder:
-                # Softplus for the new model (Strictly positive, smooth)
-                return F.softplus(x, beta=1)
-        else:
-            # Legacy behavior for old models
-            return F.leaky_relu(x, negative_slope=slope)
+        return F.leaky_relu(x, negative_slope=slope)
 
 
     def type(self):
