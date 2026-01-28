@@ -182,9 +182,11 @@ class AutoEncoderSeparate(AutoEncoderBase):
             total_loss_dict = {
                 "ae_loss": ae_loss,
                 "hit_loss": hit_loss,
-                "mmd_loss": mmd_loss_total,
-                "feature_mae": mae_loss_total
             }
+            if hasattr(self._config.model.loss_coeff, "mmd_loss"):
+                total_loss_dict["mmd_loss"] = mmd_loss_total
+            if hasattr(self._config.model.loss_coeff, "feature_mae"):
+                total_loss_dict["feature_mae"] = mae_loss_total
 
             if hasattr(self._config.model.loss_coeff, 'pos_energy') and hasattr(self._config.model.loss_coeff, 'logit_distance'):
                 l_dist = torch.pow(torch.cat(post_logits, 1) - torch.cat(self.logit_distance(post_samples, post_logits), 1), 2).mean()
