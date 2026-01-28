@@ -11,6 +11,7 @@ from model.gumbel import GumbelMod
 import torch.nn.functional as F
 import numpy as np
 from model.encoder.balancedgraycodes import BalancedGrayCodeCodec
+from model.encoder.offsetgraycodes import GrayCodeOffset
 
 class HierarchicalEncoder(nn.Module):
     def __init__(self, cfg):
@@ -30,7 +31,7 @@ class HierarchicalEncoder(nn.Module):
             network=self._create_hierarchy_network(level=lvl)
             self._networks.append(network)
         
-        self.gray_codec = BalancedGrayCodeCodec()
+        self.gray_codec = GrayCodeOffset()
         
 
     def _create_hierarchy_network(self, level=0):
@@ -78,7 +79,7 @@ class HierarchicalEncoder(nn.Module):
 
         # --- Gray Code Encoding Method ---
 
-    def gray_energy_encoding(self, x, lin_bits=19, sqrt_bits=17, log_bits=17):
+    def gray_energy_encoding(self, x, lin_bits=19, sqrt_bits=16, log_bits=15):
         """
         Encodes incidence energy using Balanced Gray Codes via lookup table.
         Replicates the structure/repetition logic of binary_energy_refactored.
@@ -95,11 +96,11 @@ class HierarchicalEncoder(nn.Module):
         # Linear: direct int cast
         lin_enc = self.gray_codec.lookup(x.int(), lin_bits)
         
-        # Sqrt: * 200 scaling
-        sqrt_enc = self.gray_codec.lookup((x.sqrt() * 200).int(), sqrt_bits)
+        # Sqrt: * 100 scaling
+        sqrt_enc = self.gray_codec.lookup((x.sqrt() * 100).int(), sqrt_bits)
         
-        # Log: * 1e4 scaling
-        log_enc = self.gray_codec.lookup((x.log() * 1e4).int(), log_bits)
+        # Log: * 2500 scaling
+        log_enc = self.gray_codec.lookup((x.log() * 2500).int(), log_bits)
 
         x_encoded = torch.cat((lin_enc, sqrt_enc, log_enc), dim=1)
 
@@ -112,7 +113,9 @@ class HierarchicalEncoder(nn.Module):
         # 3. Repeat and Pad
         padding = torch.zeros(x.shape[0], residual, device=x.device, dtype=x.dtype)
         
-        return torch.cat((x_encoded.repeat(1, reps), padding), 1)    
+        return torch.cat((x_encoded.repeat(1, reps), padding), 1)  
+
+        
     def binary(self, x, bits):
         mask = 2**torch.arange(bits).to(x.device, x.dtype)
         return x.bitwise_and(mask).ne(0).byte().to(dtype=torch.float)
