@@ -43,12 +43,45 @@ class BalancedGrayCodeCodec(nn.Module):
         self.tables[key] = p
         return p.to(device)
 
+    def _ensure_permutation(self, bits, device):
+        """
+        Regenerates the permutation deterministically. 
+        Safe to call even if table is already loaded.
+        """
+        key = str(bits)
+        if key in self.inv_perms:
+            return
+
+        # Deterministic Seed based on bit-width
+        seed = int(hashlib.md5(str(bits).encode()).hexdigest(), 16) % (2**32)
+        g_cpu = torch.Generator()
+        g_cpu.manual_seed(seed)
+        
+        perm = torch.randperm(bits, generator=g_cpu)
+        inv_perm = torch.argsort(perm)
+        
+        self.perms[key] = perm.to(device)
+        self.inv_perms[key] = inv_perm.to(device)
+        
     def lookup(self, x_indices, bits):
+        """
+        Retrieves Gray codes. 
+        Auto-squeezes (Batch, 1) inputs to (Batch) to ensure output is (Batch, Bits).
+        """
         table = self._get_or_create_table(bits, x_indices.device)
         max_idx = table.shape[0] - 1
-        indices = x_indices.long().clamp(0, max_idx)
-        return table[indices]
+        
+        # --- FIX START ---
+        # If input is (Batch, 1), squeeze it to (Batch).
+        # Otherwise, lookup returns (Batch, 1, Bits), breaking concat and decode.
+        if x_indices.dim() > 1 and x_indices.shape[-1] == 1:
+            indices = x_indices.squeeze(-1)
+        else:
+            indices = x_indices
+        # --- FIX END ---
 
+        indices = indices.long().clamp(0, max_idx)
+        return table[indices]
     def _gray_to_binary_int(self, gray_val):
         """
         Parallel Prefix XOR algorithm to convert Gray to Binary in O(log N).
@@ -70,8 +103,7 @@ class BalancedGrayCodeCodec(nn.Module):
         key = str(bits)
         
         # Ensure table/perms exist on this device
-        if key not in self.inv_perms:
-            self._get_or_create_table(bits, device)
+        self._ensure_permutation(bits, device)
             
         # 1. Un-shuffle (Balance -> Standard Gray)
         # We index the columns using the inverse permutation
