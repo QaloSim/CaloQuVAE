@@ -29,7 +29,14 @@ class Engine():
         super(Engine,self).__init__()
 
         self._config = cfg
-        self.beta = self._config.engine.beta_gumbel_start
+        if hasattr(self._config.engine, "beta_latent_start") and hasattr(self._config.engine, "beta_hits_start"):
+            self.beta_latent = self._config.engine.beta_latent_start
+            self.beta_hits = self._config.engine.beta_hits_start
+            logger.info(f"Using separate beta annealing: beta_latent starts at {self.beta_latent}, beta_hits starts at {self.beta_hits}")
+        else:
+            self.beta_latent = self._config.engine.beta_gumbel_start
+            self.beta_hits = self._config.engine.beta_gumbel_start
+        
         self.slope = self._config.engine.slope_act_fct_start 
         
         self._model = None
@@ -110,15 +117,39 @@ class Engine():
         self._device=device
     
     def _anneal_params(self, num_batches, batch_idx, epoch):
-        if epoch > self._config.engine.beta_gumbel_epoch_start:
-            delta_beta = self._config.engine.beta_gumbel_end - self._config.engine.beta_gumbel_start
-            delta_slope = 0.0 - self._config.engine.slope_act_fct_start
+        if epoch >= self._config.engine.beta_gumbel_epoch_start:
+            
+            total_anneal_steps = self._config.engine.beta_gumbel_duration * num_batches
 
-            delta = (self._config.engine.beta_gumbel_epoch_end - self._config.engine.beta_gumbel_epoch_start)*num_batches
+            steps_since_start = (epoch - self._config.engine.beta_gumbel_epoch_start) * num_batches + batch_idx
 
-            self.beta = min(self._config.engine.beta_gumbel_start + delta_beta/delta * ((epoch-1)*num_batches + batch_idx), self._config.engine.beta_gumbel_end)
-            self.slope = max(self._config.engine.slope_act_fct_start + delta_slope/delta * ((epoch-1)*num_batches + batch_idx), 0.0)
+            # Calculate a progress ratio (0.0 to 1.0)
+            progress = min(steps_since_start / total_anneal_steps, 1.0)
 
+            # Update Beta (Exponential)
+            # Math: start * (ratio ^ progress)
+            if hasattr(self._config.engine, "beta_latent_start") and hasattr(self._config.engine, "beta_hits_start"):
+                start_beta_latent = self._config.engine.beta_latent_start
+                end_beta_latent = self._config.engine.beta_latent_end
+                
+                self.beta_latent = start_beta_latent * ((end_beta_latent / start_beta_latent) ** progress)
+                
+                start_beta_hits = self._config.engine.beta_hits_start
+                end_beta_hits = self._config.engine.beta_hits_end
+                
+                self.beta_hits = start_beta_hits * ((end_beta_hits / start_beta_hits) ** progress)
+            else:
+                start_beta = self._config.engine.beta_gumbel_start
+                end_beta = self._config.engine.beta_gumbel_end
+                
+                self.beta_latent = start_beta * ((end_beta / start_beta) ** progress)
+                self.beta_hits = start_beta * ((end_beta / start_beta) ** progress)
+
+
+            # Update Slope
+            delta_slope = self._config.engine.slope_act_fct_end - self._config.engine.slope_act_fct_start
+            self.slope = max(self._config.engine.slope_act_fct_start + (delta_slope * progress), 0.0)
+            
     def fit_vae(self, epoch):
         log_batch_idx = max(len(self.data_mgr.train_loader)//self._config.engine.n_batches_log_train, 1)
         self.model.train()
@@ -163,7 +194,7 @@ class Engine():
             x0 = x0.to(self.device).to(dtype=torch.float32)
             x = self._reduce(x, x0)
             # Forward pass
-            output = self.model((x, x0), self.beta, self.slope)
+            output = self.model((x, x0), beta_latent=self.beta_latent, beta_hits=self.beta_hits, act_fct_slope=self.slope)
             # Compute loss
             loss_dict = self.model.loss(x, x0, output)
             loss_dict["loss"] = torch.stack([loss_dict[key] * self._config.model.loss_coeff[key]  for key in loss_dict.keys() if "loss" != key]).sum()
@@ -174,9 +205,9 @@ class Engine():
             self.optimiser.step()
 
             if (i % log_batch_idx) == 0:
-                    logger.info('Epoch: {} [{}/{} ({:.0f}%)]\t beta: {:.3f}, slope: {:.3f} \t Batch Loss: {:.4f}'.format(epoch,
+                    logger.info('Epoch: {} [{}/{} ({:.0f}%)]\t beta_latent: {:.3f}, beta_hits: {:.3f}, slope: {:.3f} \t Batch Loss: {:.4f}'.format(epoch,
                         i, len(self.data_mgr.train_loader),100.*i/len(self.data_mgr.train_loader),
-                        self.beta, self.slope, loss_dict["loss"]))
+                        self.beta_latent, self.beta_hits, self.slope, loss_dict["loss"]))
                     wandb.log(loss_dict)
 
     def fit_rbm(self, epoch):
@@ -765,9 +796,9 @@ class Engine():
         assert model_creator is not None
         self._model_creator = model_creator
 
-    def _save_model(self, name="blank"):
+    def _save_model(self, name="blank", override_path=None):
         config_string = "_".join(str(i) for i in [self._config.model.model_name,f'{name}'])
-        config_path = self._model_creator.save_state(config_string, vae_opt=self.optimiser, rbm_opt=self.model.prior.opt)
+        config_path = self._model_creator.save_state(config_string, vae_opt=self.optimiser, rbm_opt=self.model.prior.opt, override_path=override_path)
         return config_path
     
     def load_best_model(self, epoch):

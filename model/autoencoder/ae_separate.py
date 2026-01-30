@@ -201,7 +201,7 @@ class AutoEncoderSeparate(AutoEncoderBase):
 
             return total_loss_dict
             
-    def forward(self, xx, beta_smoothing_fct=5, act_fct_slope=0.02):
+    def forward(self, xx, beta_latent=5, beta_hits=5, act_fct_slope=0.02):
         """
         - Overrides forward in autoencoderbase to unpack  and return more values for loss calculation.
         """
@@ -209,9 +209,9 @@ class AutoEncoderSeparate(AutoEncoderBase):
         
         x, x0 = xx
         
-        beta, post_logits, post_samples = self.encoder(x, x0, beta_smoothing_fct)
+        beta, post_logits, post_samples = self.encoder(x, x0, beta_latent)
 
-        output_hits, output_activations, activations_raw, hit_mask_attached = self.decode(post_samples, x, x0, beta, act_fct_slope)
+        output_hits, output_activations, activations_raw, hit_mask_attached = self.decode(post_samples, x, x0, beta_hits, act_fct_slope)
 
         return beta, post_logits, post_samples, output_activations, output_hits, activations_raw, hit_mask_attached
 

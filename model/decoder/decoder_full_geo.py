@@ -18,12 +18,10 @@ class DecoderFullGeo(nn.Module):
         super(DecoderFullGeo, self).__init__()
         self._config = cfg
         if hasattr(self._config.model, 'cond_p_size'):
-            print("Using conditional latent size in decoder")
             self.n_latent_nodes = self._config.model.cond_p_size + (self._config.rbm.partitions - 1) * self._config.rbm.latent_nodes_per_p
             self.cond_p_size = self._config.model.cond_p_size
             self.p_size = self._config.rbm.latent_nodes_per_p
         elif hasattr(self._config.model, 'hidden_layer') and self._config.model.hidden_layer:
-            print("Using hidden layer in decoder")
             self.n_latent_nodes = self._config.rbm.latent_nodes_per_p * (self._config.rbm.partitions - 1)
             self.p_size = int(self._config.rbm.latent_nodes_per_p * 3/4)
         else:
