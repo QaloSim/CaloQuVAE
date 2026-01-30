@@ -52,9 +52,10 @@ class ModelCreator():
         self._model=model
     
         
-    def save_state(self, cfg_string='test', vae_opt=None, rbm_opt=None):
-        # Use wandb.run.dir if available, else fallback to local directory
-        if wandb.run is not None and self._config.wandb.mode != "disabled" and self._config.load_state == 0:
+    def save_state(self, cfg_string='test', vae_opt=None, rbm_opt=None, override_path=None):
+        if override_path:
+            save_dir = override_path
+        elif wandb.run is not None and self._config.wandb.mode != "disabled" and self._config.load_state == 0:
             save_dir = wandb.run.dir
             logger.info(f"Using WandB run directory: {save_dir}")
         elif wandb.run is not None and self._config.wandb.mode != "disabled" and self._config.load_state == 1:
