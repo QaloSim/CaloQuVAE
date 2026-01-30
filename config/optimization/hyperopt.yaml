@@ -1,0 +1,83 @@
+defaults:
+  - _self_
+
+# Pointer to the model config you want to optimize
+base_model_config: "config" # The name of your existing model config file
+
+experiment:
+  name: "CaloQVAE_Hyperopt_Photons"
+  total_trials: 32
+  save_dir_root: "/home/leozhu/CaloQuVAE/wandb-outputs"
+  resume: true
+
+resources:
+  gpus: [0, 1, 2]
+  max_parallelism: 3
+
+
+fixed_data_settings:
+  data_config_name: "AtlasCustom2"
+
+  
+  # This overwrites the validation loop list
+  validation_datasets:
+    - AtlasCustom1GeV
+    - AtlasCustom10GeV
+    - AtlasCustom50GeV
+    - AtlasCustom100GeV
+    - AtlasCustom250GeV
+
+
+# Training overrides specific to optimization (faster/shorter runs)
+training:
+  n_epochs: 25
+  eval_window: 3
+  epoch_start: 0
+
+# The Search Space (Parsed dynamically in main.py)
+search_space:
+  - name: "model.mse_weight"
+    type: "range"
+    bounds: [0.1, 1.0]
+    log_scale: true
+
+  - name: "model.loss_coeff.mmd_loss"
+    type: "range"
+    bounds: [0.0, 3.0]
+
+  - name: "model.loss_coeff.r_loss"
+    type: "range"
+    bounds: [0.0, 10.0]
+
+  - name: "model.loss_coeff.focal_gamma"
+    type: "range"
+    bounds: [0.0, 4.0]
+  
+  - name: "model.loss_coeff.hit_loss"
+    type: "range"
+    bounds: [0.2, 5.0]
+    log_scale: true
+    
+  - name: "engine.beta_latent_end"
+    type: "choice"
+    values: [2.0, 100.0]
+
+  - name: "engine.beta_hits_end"
+    type: "choice"
+    values: [2.0, 100.0]
+
+  
+# Metrics
+objectives:
+  loss_metric:
+    minimize: true
+
+# Manual Seeds
+manual_seeds:
+  - model.mse_weight: 0.5
+    model.loss_coeff.hit_loss: 1.0
+    model.loss_coeff.mmd_loss: 0.0
+    model.loss_coeff.r_loss: 0.0
+    model.loss_coeff.focal_gamma: 0.0
+    engine.beta_latent_end: 2.0
+    engine.beta_hits_end: 100.0
