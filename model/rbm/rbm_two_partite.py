@@ -593,6 +593,132 @@ class RBM_TwoPartite:
             
             return original_nonzero_to_be_pruned
 
+    def remove_visible_node_at_index(self, index: int) -> None:
+        """
+        Removes the visible node at the specified index from the RBM's parameters 
+        and persistent chains.
+        
+        Args:
+            index (int): The index of the visible node to remove.
+        """
+        if index < 0 or index >= self.num_visible:
+            raise ValueError(f"Index {index} is out of bounds for num_visible={self.num_visible}")
+
+        logger.warning(f"Removing visible node at index {index}. Old num_visible: {self.num_visible}")
+
+        # Helper to remove an element/row/col from a tensor at a specific index
+        def delete_index(tensor, dim, idx):
+            # Split into before and after the index
+            start = tensor.index_select(dim, torch.arange(idx, device=tensor.device))
+            end = tensor.index_select(dim, torch.arange(idx + 1, tensor.size(dim), device=tensor.device))
+            return torch.cat([start, end], dim=dim)
+
+        # 1. Update Parameters
+        # Weight matrix: (num_visible, num_hidden) -> remove row at 'index'
+        self.params["weight_matrix"] = delete_index(self.params["weight_matrix"], dim=0, idx=index)
+        
+        # Visible bias: (num_visible,) -> remove element at 'index'
+        self.params["vbias"] = delete_index(self.params["vbias"], dim=0, idx=index)
+
+        # 2. Update Persistent Chains
+        # Chains v/mv: (num_chains, num_visible) -> remove column at 'index'
+        if "v" in self.chains:
+            self.chains["v"] = delete_index(self.chains["v"], dim=1, idx=index)
+        if "mv" in self.chains:
+            self.chains["mv"] = delete_index(self.chains["mv"], dim=1, idx=index)
+
+        # 3. Update State
+        self.num_visible -= 1
+        
+        logger.info(f"Successfully removed node {index}. New num_visible: {self.num_visible}")
+
+    def sample_v_given_v_clamped_negative_only(
+        self,
+        clamped_v: torch.Tensor,
+        n_clamped: int,
+        gibbs_steps: int,
+        beta: float = 1.0
+    ) -> torch.Tensor:
+        """
+        Performs clamped sampling using ONLY the negative (anti-ferromagnetic) weights.
+        Positive weights are temporarily masked to 0.
+        """
+        # Create a temporary tensor with positives zeroed out
+        # .clamp(max=0) keeps negative values and turns positive values to 0.
+        w_negative = self.params["weight_matrix"].clamp(max=0.0)
+        
+        return self._sample_with_custom_weights(
+            clamped_v, n_clamped, gibbs_steps, w_negative, beta
+        )
+
+    def sample_v_given_v_clamped_positive_only(
+        self,
+        clamped_v: torch.Tensor,
+        n_clamped: int,
+        gibbs_steps: int,
+        beta: float = 1.0
+    ) -> torch.Tensor:
+        """
+        Performs clamped sampling using ONLY the positive (ferromagnetic) weights.
+        Negative weights are temporarily masked to 0.
+        """
+        # Create a temporary tensor with negatives zeroed out
+        # .clamp(min=0) keeps positive values and turns negative values to 0.
+        w_positive = self.params["weight_matrix"].clamp(min=0.0)
+
+        return self._sample_with_custom_weights(
+            clamped_v, n_clamped, gibbs_steps, w_positive, beta
+        )
+
+    def _sample_with_custom_weights(
+        self,
+        clamped_v: torch.Tensor,
+        n_clamped: int,
+        gibbs_steps: int,
+        W: torch.Tensor,
+        beta: float
+    ) -> torch.Tensor:
+        """
+        Internal helper to run clamped Gibbs sampling with an arbitrary weight matrix W.
+        Does not modify self.chains or self.params.
+        """
+        clamped_v = clamped_v.to(self.device)
+        num_samples = clamped_v.shape[0]
+        num_visibles = self.params["vbias"].shape[0]
+        num_unclamped = num_visibles - n_clamped
+
+        # Basic validation
+        if n_clamped >= num_visibles or n_clamped <= 0:
+            raise ValueError(f"n_clamped ({n_clamped}) must be > 0 and < num_visibles ({num_visibles})")
+        if clamped_v.shape[1] != n_clamped:
+             raise ValueError(f"clamped_v shape[1] ({clamped_v.shape[1]}) does not match n_clamped ({n_clamped})")
+
+        # Initialize visible state: Clamped part + Random part
+        v_sample = torch.zeros(num_samples, num_visibles, device=self.device, dtype=torch.float32)
+        v_sample[:, :n_clamped] = clamped_v
+        v_sample[:, n_clamped:] = torch.randint(
+            0, 2, (num_samples, num_unclamped), device=self.device, dtype=torch.float32
+        )
+        
+        # Pre-fetch biases (we assume biases remain valid even with masked weights)
+        hbias = self.params["hbias"]
+        vbias = self.params["vbias"]
+
+        for _ in range(gibbs_steps):
+            # Sample Hidden given Visible (using custom W)
+            mh = torch.sigmoid(beta * (hbias + v_sample @ W))
+            h_sample = torch.bernoulli(mh)
+            
+            # Sample Visible given Hidden (using custom W)
+            mv = torch.sigmoid(beta * (vbias + h_sample @ W.T))
+            v_sample_new = torch.bernoulli(mv)
+            
+            # Enforce Clamp
+            v_sample_new[:, :n_clamped] = clamped_v
+            v_sample = v_sample_new
+            
+        return v_sample
+
 
 
 
