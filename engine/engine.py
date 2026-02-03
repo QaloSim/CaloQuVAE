@@ -197,13 +197,19 @@ class Engine():
             output = self.model((x, x0), beta_latent=self.beta_latent, beta_hits=self.beta_hits, act_fct_slope=self.slope)
             # Compute loss
             loss_dict = self.model.loss(x, x0, output)
-            loss_dict["loss"] = torch.stack([loss_dict[key] * self._config.model.loss_coeff[key]  for key in loss_dict.keys() if "loss" != key]).sum()
+            total_loss = torch.stack([loss_dict[key] * self._config.model.loss_coeff[key]  for key in loss_dict.keys() if "loss" != key]).sum()
+            loss_dict["loss"] = total_loss            
+            if torch.isnan(total_loss):
+                logger.error(f"NaN Loss detected at Epoch {epoch}, Batch {i}. Params: beta_latent={self.beta_latent}, slope={self.slope}")
+                # Raising ValueError here triggers the failure handling in 'train_and_evaluate'
+                raise ValueError("NaN detected in training loop")
             
             # Backward pass and optimization
             self.optimiser.zero_grad()
             loss_dict["loss"].backward()
+            torch.nn.utils.clip_grad_norm_(self.model.parameters(), max_norm=1.0)
             self.optimiser.step()
-
+        
             if (i % log_batch_idx) == 0:
                     logger.info('Epoch: {} [{}/{} ({:.0f}%)]\t beta_latent: {:.3f}, beta_hits: {:.3f}, slope: {:.3f} \t Batch Loss: {:.4f}'.format(epoch,
                         i, len(self.data_mgr.train_loader),100.*i/len(self.data_mgr.train_loader),
@@ -386,7 +392,8 @@ class Engine():
                     samples_split = list(torch.split(rbm_batch, ar_latent_size, dim=1))
                     
                     # Pass None for x_reduce since we are generating from prior
-                    _, shower_reduce = self.model.decode(samples_split, None, energy_batch)
+                    outputs = self.model.decode(samples_split, None, energy_batch)
+                    shower_reduce = outputs[1]
                     
                     # Inverse reduction to get physical energy
                     shower_full = self._reduceinv(shower_reduce, energy_batch)
@@ -641,8 +648,10 @@ class Engine():
         return figs
 
 
-    def generate_plots(self, epoch, key):
+    def generate_plots(self, epoch, key, close_plots=True):
         if self._config.wandb.mode != "disabled": # Only log if wandb is enabled
+
+            figs_to_close = []
             
             # --- Calorimeter Plots ---
             calo_input, calo_recon, calo_sampled, calo_input_avg, calo_recon_avg, calo_sampled_avg = plot_calorimeter_shower(
@@ -653,6 +662,8 @@ class Engine():
                 epoch=epoch,
                 save_dir=None
             )
+
+            figs_to_close.extend([calo_input, calo_recon, calo_input_avg, calo_recon_avg, calo_sampled, calo_sampled_avg])
             
             # --- VAE Plots & Chi2 Metrics ---
             (overall_fig, fig_energy_sum, fig_incidence_ratio, fig_target_recon_ratio, 
@@ -661,11 +672,15 @@ class Engine():
              all_chi2_metrics) = vae_plots(self._config,
                                           self.incident_energy, self.showers, 
                                           self.showers_recon, self.showers_prior)
+            figs_to_close.extend([overall_fig, fig_energy_sum, fig_incidence_ratio, fig_target_recon_ratio, 
+                                  fig_sparsity, energy_sum_layer_fig, incidence_ratio_layer_fig, 
+                                  target_recon_ratio_layer_fig, sparsity_layer_fig])
             
             # --- Corr Plots ---
             post_corr, prior_corr, post_partition, prior_partition = corr_plots(
                 self._config, self.post_logits, self.post_samples, self.prior_samples
             )
+            figs_to_close.extend([post_corr, prior_corr, post_partition, prior_partition])
 
             # --- High Level Feature Grid Plots (NEW) ---
             # Call the internal method using the existing feature extractor
@@ -701,8 +716,7 @@ class Engine():
             for name, fig in hlf_grid_plots.items():
                 if fig is not None:
                     wandb_log[name] = wandb.Image(fig)
-                    display(fig)
-                    plt.close(fig)
+                    figs_to_close.append(fig)
 
             # A. Log overall Chi2 metrics
             for metric, values in all_chi2_metrics.items():
@@ -773,14 +787,18 @@ class Engine():
                     "calo_layer_sampled": wandb.Image(calo_sampled),
                     "calo_layer_sampled_avg": wandb.Image(calo_sampled_avg),
                 })
+                figs_to_close.extend([rbm_hist, rbm_params, rbm_floppy])
             
             # --- Final Log Call ---
             wandb.log(wandb_log)
             
             # Cleanup figures from vae_plots
-            plt.close(overall_fig)
-            plt.close(fig_energy_sum)
-            # ... (close others if needed)
+            if close_plots:
+                for fig in figs_to_close:
+                    try:
+                        plt.close(fig) 
+                    except Exception:
+                        pass
 
             incidence_ratio_mean_chi2 = np.mean([val for _, val in all_chi2_metrics["binned_incidence_ratio"].get('recon', [])])
             geo_mean_chi2 = np.mean([val for key, val in hl_metrics.items() if ("center" in key or "width" in key) and "recon" in key])
