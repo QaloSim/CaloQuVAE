@@ -193,6 +193,155 @@ def build_expanded_embedding(conditioning_sets, left_chains, right_chains, num_v
 
     return expanded_embedding, fragment_map
 
+
+def build_expanded_embedding_rotation(
+    conditioning_sets, 
+    left_chains, 
+    right_chains, 
+    num_visible, 
+    hidden_side='right', 
+    vis_shift=0,   # NEW: Offset for standard visible chains
+    hid_shift=0    # NEW: Offset for hidden chains
+):
+    expanded_embedding = {}
+    fragment_map = {} 
+    
+    # 1. Dynamic Assignment
+    if hidden_side == 'right':
+        visible_chain_source = left_chains
+        hidden_chain_source = right_chains
+    elif hidden_side == 'left':
+        visible_chain_source = right_chains
+        hidden_chain_source = left_chains
+    else:
+        raise ValueError(f"hidden_side must be 'left' or 'right', got {hidden_side}")
+
+    sorted_vis_keys = sorted(visible_chain_source.keys())
+    sorted_hid_keys = sorted(hidden_chain_source.keys())
+    
+    # Pre-calculate counts for modulo arithmetic
+    n_avail_vis_chains = len(sorted_vis_keys)
+    n_avail_hid_chains = len(sorted_hid_keys)
+
+    # 2. Conditioning Nodes (Logical 0 to n_cond-1)
+    # NOTE: Conditioning nodes are tied to specific heuristic sets (neighbors), so we usually do NOT rotate these physically
+    for logical_id, phys_set in enumerate(conditioning_sets):
+        fragments = []
+        for phys_q in phys_set:
+            frag_id = f"C{logical_id}_{phys_q}"
+            expanded_embedding[frag_id] = [phys_q]
+            fragments.append(frag_id)
+        fragment_map[logical_id] = fragments
+
+    # 3. Standard Visible Nodes (Logical n_cond to num_visible-1)
+    n_cond = len(conditioning_sets)
+    
+    for logical_id in range(n_cond, num_visible):
+        # Base index (0, 1, 2...)
+        base_idx = logical_id - n_cond
+        
+        # Apply ROTATION (Modulo)
+        chain_idx = (base_idx + vis_shift) % n_avail_vis_chains
+        
+        # Validation: Ensure we aren't wrapping around into used chains 
+        # if the number of needed chains == number of available chains.
+        # (This check is soft; if you have spare chains, modulo is safe and desirable).
+        if base_idx >= n_avail_vis_chains:
+             raise IndexError(
+                f"Not enough standard visible chains! "
+                f"RBM needs {num_visible - n_cond} standard chains, "
+                f"but embedding only has {n_avail_vis_chains}."
+            )
+            
+        actual_key = sorted_vis_keys[chain_idx]
+        expanded_embedding[logical_id] = list(visible_chain_source[actual_key])
+
+    # 4. Hidden Nodes (Logical num_visible to end)
+    for k, key in enumerate(sorted_hid_keys):
+        global_id = num_visible + k
+        
+        # Apply ROTATION (Modulo)
+        chain_idx = (k + hid_shift) % n_avail_hid_chains
+        
+        actual_key = sorted_hid_keys[chain_idx]
+        expanded_embedding[global_id] = list(hidden_chain_source[actual_key])
+
+    return expanded_embedding, fragment_map
+
+
+def build_expanded_embedding_arbitrary(
+    conditioning_sets, 
+    left_chains, 
+    right_chains, 
+    num_visible, 
+    hidden_side='right', 
+    vis_mapping=None,   # List[int]: Indices mapping logical_vis -> physical_chain_index
+    hid_mapping=None    # List[int]: Indices mapping logical_hid -> physical_chain_index
+):
+    expanded_embedding = {}
+    fragment_map = {} 
+    
+    # 1. Determine Source Chains
+    if hidden_side == 'right':
+        visible_chain_source = left_chains
+        hidden_chain_source = right_chains
+    elif hidden_side == 'left':
+        visible_chain_source = right_chains
+        hidden_chain_source = left_chains
+    else:
+        raise ValueError(f"hidden_side must be 'left' or 'right', got {hidden_side}")
+
+    # Sort keys to ensure index 0 always refers to the same physical chain
+    sorted_vis_keys = sorted(visible_chain_source.keys())
+    sorted_hid_keys = sorted(hidden_chain_source.keys())
+    
+    # 2. Handle Conditioning Nodes (Fixed, usually spatial)
+    for logical_id, phys_set in enumerate(conditioning_sets):
+        fragments = []
+        for phys_q in phys_set:
+            frag_id = f"C{logical_id}_{phys_q}"
+            expanded_embedding[frag_id] = [phys_q]
+            fragments.append(frag_id)
+        fragment_map[logical_id] = fragments
+
+    # 3. Handle Standard Visible Nodes (Permutable)
+    n_cond = len(conditioning_sets)
+    n_standard_vis = num_visible - n_cond
+    
+    # Default to Identity if no mapping provided
+    if vis_mapping is None:
+        vis_mapping = list(range(len(sorted_vis_keys)))
+        
+    if len(vis_mapping) < n_standard_vis:
+        raise ValueError(f"vis_mapping length ({len(vis_mapping)}) < needed visible nodes ({n_standard_vis})")
+
+    for i in range(n_standard_vis):
+        logical_id = n_cond + i
+        
+        # Use the mapping to select the physical chain index
+        phys_chain_idx = vis_mapping[i]
+        
+        actual_key = sorted_vis_keys[phys_chain_idx]
+        expanded_embedding[logical_id] = list(visible_chain_source[actual_key])
+
+    # 4. Handle Hidden Nodes (Permutable)
+    # Default to Identity
+    if hid_mapping is None:
+        hid_mapping = list(range(len(sorted_hid_keys)))
+
+    for k, phys_chain_idx in enumerate(hid_mapping):
+        # Stop if we have mapped all logical hidden nodes required by the RBM?
+        # Typically RBM hidden size == number of hidden chains available.
+        # If RBM is smaller, we break.
+        # Assuming here we map all available in the permutation list:
+        logical_id = num_visible + k
+        
+        actual_key = sorted_hid_keys[phys_chain_idx]
+        expanded_embedding[logical_id] = list(hidden_chain_source[actual_key])
+
+    return expanded_embedding, fragment_map
+    
+
     
 def get_expanded_flux_biases(
     logical_clamps, 

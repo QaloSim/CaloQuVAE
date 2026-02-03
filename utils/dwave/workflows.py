@@ -19,7 +19,9 @@ from .graphs import (
     build_manual_embedded_ising,
     get_physical_flux_biases_manual,
     build_expanded_embedding,
-    get_expanded_flux_biases
+    get_expanded_flux_biases,
+    build_expanded_embedding_rotation,
+    build_expanded_embedding_arbitrary
 )
 from .sampling_backend import (
     sample_logical_ising,
@@ -551,11 +553,15 @@ def sample_expanded_flux_conditioned_rigorous_srt(
     clamp_strength_h=50.0,
     source=None,
     save_dir="/home/leozhu/CaloQuVAE/wandb-outputs/dwave_misc/",
-    use_srt=True # <--- Enable by default for gauge averaging
+    use_srt=True,
+    additive_flux_offsets=None, # Tensor or List of shape [total_qubits]
+    # --- NEW ORBIT ARGUMENTS ---
+    vis_shift=0, # Cyclic shift for visible chains
+    hid_shift=0 # Cyclic shift for hidden chains
 ):
     """
-    Samples from the D-Wave QPU using expanded embedding.
-    Supports Partial Spin Reversal Transformations.
+    Samples from the D-Wave QPU using expanded embedding with ORBIT ROTATION support.
+    
     """
     batch_size = binary_patterns_batch.shape[0]
     total_qubits = raw_sampler.properties['num_qubits']
@@ -563,7 +569,7 @@ def sample_expanded_flux_conditioned_rigorous_srt(
     n_hid = rbm.params["hbias"].shape[0]
     n_cond = len(conditioning_sets)
 
-    # 1. Determine Sides
+    # 1. Determine Sides (for logging/logic)
     if hidden_side == 'right':
         visible_side = 'left' 
     elif hidden_side == 'left':
@@ -571,16 +577,22 @@ def sample_expanded_flux_conditioned_rigorous_srt(
     else:
         raise ValueError("hidden_side must be 'left' or 'right'")
 
-    # 2. Graph Construction
-    exp_embedding, fragment_map = build_expanded_embedding(
+    print(f"--- Orbit Config: VisShift={vis_shift}, HidShift={hid_shift} ---")
+
+    # 2. Graph Construction (WITH ROTATION)
+    # Replaced 'build_expanded_embedding' with your new function
+    exp_embedding, fragment_map = build_expanded_embedding_rotation(
         conditioning_sets, 
         left_chains, 
         right_chains, 
         num_visible=n_vis, 
-        hidden_side=hidden_side
+        hidden_side=hidden_side,
+        vis_shift=vis_shift,
+        hid_shift=hid_shift
     )
     
     # 3. Ising Formulation
+    # This automatically uses the rotated 'exp_embedding' to map logical h/J to physical QPU
     h_exp, J_exp = rbm_to_expanded_ising(
         rbm, fragment_map, exp_embedding, raw_sampler.adjacency, beta
     )    
@@ -589,33 +601,44 @@ def sample_expanded_flux_conditioned_rigorous_srt(
     row_np = binary_patterns_batch[0].detach().cpu().numpy()
     logical_clamps = {i: (1 if v > 0.5 else -1) for i, v in enumerate(row_np) if i < n_cond}
 
+    # This also respects rotation because it looks up 'logical_id' in 'exp_embedding'
     raw_fb = get_expanded_flux_biases(
         logical_clamps, fragment_map, exp_embedding, total_qubits, clamp_strength_h
     )
+
+    # --- INJECT CALIBRATION SHIMS ---
+    if additive_flux_offsets is not None:
+        if hasattr(additive_flux_offsets, 'cpu'):
+            additive_flux_offsets = additive_flux_offsets.cpu().numpy()
+        
+        if len(additive_flux_offsets) != total_qubits:
+             raise ValueError(f"Shim dimension {len(additive_flux_offsets)} != QPU qubits {total_qubits}")
+        
+        # Additive application: Final = Logical + Calibration
+        raw_fb = [r + s for r, s in zip(raw_fb, additive_flux_offsets)]
+    # --------------------------------
     
     safe_limit = 0.01
     safe_fb = [max(-1*safe_limit, min(v, safe_limit)) for v in raw_fb]
 
     if chain_strength is None:
             calc_strength = calculate_rms_chain_strength(J_exp, rho=rho)
+            # Use 'extended_j_range' if available, otherwise default to typical 2.0
             max_j = raw_sampler.properties.get('extended_j_range', [None, 2.0])[1]
             chain_strength = min(calc_strength, max_j)
             print(f"Dynamic Chain Strength calculated: {chain_strength:.2f} (rho={rho:.2f})")
     
     run_metadata = {
         'timestamp': str(datetime.now()),
-        'n_vis': n_vis,
-        'n_hid': n_hid,
-        'n_cond': n_cond,
-        'beta': beta,
-        'hidden_side': hidden_side,
-        'use_srt': use_srt, # Record in metadata
-        "chain_strength": chain_strength,
+        'chain_strength': chain_strength,
+        'calibrated': (additive_flux_offsets is not None),
+        'vis_shift': vis_shift,
+        'hid_shift': hid_shift
     }
     if source is not None:
         run_metadata['source'] = source
 
-    # 5. Sample with Analysis
+    # 5. Sample
     print(f"Submitting Batch: (n={batch_size}, SRT={use_srt})...")    
     analysis_result = sample_physical_with_analysis_srt(
         raw_sampler=raw_sampler,
@@ -628,10 +651,109 @@ def sample_expanded_flux_conditioned_rigorous_srt(
         device=rbm.device,
         metadata=run_metadata,
         save_dir=save_dir,
-        use_srt=use_srt # <--- Pass flag
+        use_srt=use_srt 
     )
     
-    print(f"Clean samples: {analysis_result.total_clean_fraction:.2%}")
+    return analysis_result
+
+
+def sample_expanded_flux_arbitrary(
+    rbm,
+    raw_sampler,
+    conditioning_sets,
+    left_chains,
+    right_chains,
+    binary_patterns_batch,
+    hidden_side='right',
+    beta=1.0,
+    chain_strength=1.0,
+    rho = 28.0,
+    clamp_strength_h=50.0,
+    source=None,
+    save_dir="/home/leozhu/CaloQuVAE/wandb-outputs/dwave_misc/",
+    use_srt=True,
+    additive_flux_offsets=None, # Tensor or List of shape [total_qubits]
+    vis_mapping=None, 
+    hid_mapping=None,
+    perm_seed=None # For logging purposes
+):
+    """
+    Samples using arbitrary permutations (shuffles) of chain assignments.
+    """
+    batch_size = binary_patterns_batch.shape[0]
+    total_qubits = raw_sampler.properties['num_qubits']
+    n_vis = rbm.params["vbias"].shape[0]
+    
+    # 1. Build Embedding using the NEW Arbitrary function
+    exp_embedding, fragment_map = build_expanded_embedding_arbitrary(
+        conditioning_sets, 
+        left_chains, 
+        right_chains, 
+        num_visible=n_vis, 
+        hidden_side=hidden_side,
+        vis_mapping=vis_mapping,
+        hid_mapping=hid_mapping
+    )
+
+    h_exp, J_exp = rbm_to_expanded_ising(
+        rbm, fragment_map, exp_embedding, raw_sampler.adjacency, beta
+    )    
+
+    # 4. Flux Calculation
+    row_np = binary_patterns_batch[0].detach().cpu().numpy()
+    n_cond = len(conditioning_sets)
+    logical_clamps = {i: (1 if v > 0.5 else -1) for i, v in enumerate(row_np) if i < n_cond}
+    # This also respects rotation because it looks up 'logical_id' in 'exp_embedding'
+    raw_fb = get_expanded_flux_biases(
+        logical_clamps, fragment_map, exp_embedding, total_qubits, clamp_strength_h
+    )
+
+    # --- INJECT CALIBRATION SHIMS ---
+    if additive_flux_offsets is not None:
+        if hasattr(additive_flux_offsets, 'cpu'):
+            additive_flux_offsets = additive_flux_offsets.cpu().numpy()
+        
+        if len(additive_flux_offsets) != total_qubits:
+             raise ValueError(f"Shim dimension {len(additive_flux_offsets)} != QPU qubits {total_qubits}")
+        
+        # Additive application: Final = Logical + Calibration
+        raw_fb = [r + s for r, s in zip(raw_fb, additive_flux_offsets)]
+    # --------------------------------
+    
+    safe_limit = 0.01
+    safe_fb = [max(-1*safe_limit, min(v, safe_limit)) for v in raw_fb]
+
+    if chain_strength is None:
+            calc_strength = calculate_rms_chain_strength(J_exp, rho=rho)
+            # Use 'extended_j_range' if available, otherwise default to typical 2.0
+            max_j = raw_sampler.properties.get('extended_j_range', [None, 2.0])[1]
+            chain_strength = min(calc_strength, max_j)
+            print(f"Dynamic Chain Strength calculated: {chain_strength:.2f} (rho={rho:.2f})")
+    
+    run_metadata = {
+        'timestamp': str(datetime.now()),
+        'chain_strength': chain_strength,
+        'calibrated': (additive_flux_offsets is not None),
+        'perm_seed': perm_seed # Log the seed so we can reproduce this shuffle
+    }
+    if source is not None:
+        run_metadata['source'] = source
+
+    # 5. Sample
+    analysis_result = sample_physical_with_analysis_srt(
+        raw_sampler=raw_sampler,
+        h_logical=h_exp,
+        J_logical=J_exp,
+        embedding=exp_embedding,
+        flux_biases=safe_fb,
+        num_samples=batch_size,
+        chain_strength=chain_strength,
+        device=rbm.device,
+        metadata=run_metadata,
+        save_dir=save_dir,
+        use_srt=use_srt 
+    )
+    
     return analysis_result
 
 

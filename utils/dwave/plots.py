@@ -1,6 +1,7 @@
 from __future__ import annotations  # 1. Must be the very first line!
 
 import matplotlib.pyplot as plt
+from matplotlib.gridspec import GridSpec
 import dwave_networkx as dnx
 import numpy as np
 import torch
@@ -860,4 +861,981 @@ def plot_expanded_j_distribution(
         plt.savefig(save_path)
         print(f"Plot saved to {save_path}")
     
+    plt.show()
+
+def plot_hamming_energies(results: dict):
+    energies = list(results.keys())
+    e1, e2 = energies[0], energies[1]
+    
+    fig, axes = plt.subplots(1, 2, figsize=(16, 6), sharey=True)
+    fig.suptitle("Impact of Hamming Cliff on Energy Distributions (Raw QPU)", fontsize=16)
+
+    def _plot_hist(ax, energy_key):
+        data = results[energy_key]
+        
+        # Classical (Black line)
+        sns.histplot(
+            data['classical_energies'], color="black", stat="density", kde=True,
+            element="step", fill=False, linewidth=2.5, ax=ax, label="_nolegend_"
+        )
+        
+        # QPU (Red fill)
+        sns.histplot(
+            data['qpu_energies'], color="firebrick", stat="density", kde=True,
+            element="step", alpha=0.3, linewidth=1.5, ax=ax, label="_nolegend_"
+        )
+        
+        ax.set_title(f"Incidence Energy = {energy_key} MeV", fontsize=14)
+        ax.set_xlabel("Joint Energy", fontsize=12)
+
+    # Plot both sides
+    _plot_hist(axes[0], e1)
+    _plot_hist(axes[1], e2)
+    
+    axes[0].set_ylabel("Density", fontsize=12)
+
+    # Legend
+    legend_handles = [
+        mlines.Line2D([], [], color='black', linewidth=2.5, label='Classical RBM'),
+        mpatches.Patch(color='firebrick', alpha=0.3, label='QPU (Raw)'),
+    ]
+    fig.legend(handles=legend_handles, loc='upper right', bbox_to_anchor=(0.95, 0.95), fontsize=12)
+    
+    plt.tight_layout()
+    plt.show()
+
+
+def plot_hamming_correlations(results: dict, n_cond: int = 53):
+    energies = list(results.keys())
+    e1, e2 = energies[0], energies[1]
+    
+    # 3 Rows (E1, E2, Difference), 2 Cols (Solvers)
+    # Increased height to accommodate the 3rd row
+    fig, axes = plt.subplots(3, 2, figsize=(14, 16), sharex=True, sharey=True)
+    
+    # --- Headers & Labels ---
+    
+    # Col Labels (Solver)
+    axes[0, 0].set_title("Classical RBM", fontsize=14, fontweight='bold')
+    axes[0, 1].set_title("QPU (Raw)", fontsize=14, fontweight='bold')
+    
+    # Row Labels (Energy / Diff)
+    axes[0, 0].set_ylabel(f"E = {e1}\nLatent Index", fontsize=14, fontweight='bold')
+    axes[1, 0].set_ylabel(f"E = {e2}\nLatent Index", fontsize=14, fontweight='bold')
+    axes[2, 0].set_ylabel(f"Diff (E{e2} - E{e1})\nLatent Index", fontsize=14, fontweight='bold')
+
+    # --- Helper Functions ---
+
+    def _get_corr_matrix(samples):
+        """ Computes and processes correlation matrix without plotting. """
+        if isinstance(samples, torch.Tensor):
+            samples = samples.float().cpu()
+            
+        # Compute Correlation
+        corr = torch.corrcoef(samples.T).numpy()
+        
+        # Slice off clamped bits
+        corr = corr[n_cond:, n_cond:]
+        
+        # Zero diagonal & fix NaNs
+        np.fill_diagonal(corr, 0)
+        return np.nan_to_num(corr, nan=0.0)
+
+    def _plot_matrix(ax, data):
+        """ Plots the pre-computed matrix. """
+        # Using vmin=-1, vmax=1 ensures the difference plot uses the same scale
+        # (i.e. if the difference is small, the map will look faint/white, which is correct)
+        im = ax.imshow(data, cmap='seismic', vmin=-1, vmax=1, origin='lower')
+        return im
+
+    # --- 1. Compute Matrices ---
+    
+    # Classical
+    c_e1 = _get_corr_matrix(results[e1]['classical_samples'])
+    c_e2 = _get_corr_matrix(results[e2]['classical_samples'])
+    c_diff = c_e2 - c_e1  # Difference
+    
+    # QPU
+    q_e1 = _get_corr_matrix(results[e1]['qpu_samples'])
+    q_e2 = _get_corr_matrix(results[e2]['qpu_samples'])
+    q_diff = q_e2 - q_e1  # Difference
+
+    # --- 2. Plotting ---
+
+    # Row 1: Energy 1
+    im1 = _plot_matrix(axes[0, 0], c_e1)
+    im2 = _plot_matrix(axes[0, 1], q_e1)
+    
+    # Row 2: Energy 2
+    im3 = _plot_matrix(axes[1, 0], c_e2)
+    im4 = _plot_matrix(axes[1, 1], q_e2)
+    
+    # Row 3: Difference
+    im5 = _plot_matrix(axes[2, 0], c_diff)
+    im6 = _plot_matrix(axes[2, 1], q_diff)
+
+    # --- 3. Formatting ---
+
+    # Axis Labels
+    for ax in axes.flat:
+        ax.set_xlabel("Latent Node Index")
+
+    # Shared Colorbar
+    fig.subplots_adjust(right=0.9)
+    # Adjusted position for the taller figure
+    cbar_ax = fig.add_axes([0.92, 0.15, 0.02, 0.7]) 
+    fig.colorbar(im1, cax=cbar_ax, label="Pearson Correlation")
+
+    fig.suptitle(f"Correlations & Drift: Hamming Cliff ({e1} vs {e2})", fontsize=16)
+    plt.show()
+
+
+def plot_hamming_magnetization_diagnostics(results: dict, n_clamped=53):
+    """
+    Plots the Magnetization <sigma_z> diagnostics.
+    
+    Top Plot: 
+      - Compares RBM vs QPU profiles using a "Dashed (E1) vs Solid (E2)" logic.
+      - Uses High-Contrast colors (Greyscale for RBM, Blue/Orange for QPU).
+      
+    Bottom Plot:
+      - RBM Diff (Bar): The "Required Jump" (RBM E2 - RBM E1).
+      - QPU Diff (Line): The "Actual Jump" (QPU E2 - QPU E1).
+    """
+    energies = list(results.keys())
+    e1, e2 = energies[0], energies[1]
+    
+    # --- 1. Extract & Compute Means ---
+    def get_mag(samples):
+        # Convert to float cpu, take mean across batch (dim 0), slice off clamped
+        return samples.float().cpu().mean(dim=0)[n_clamped:].numpy()
+
+    # Classical
+    mag_rbm1 = get_mag(results[e1]['classical_samples'])
+    mag_rbm2 = get_mag(results[e2]['classical_samples'])
+    
+    # QPU
+    mag_qpu1 = get_mag(results[e1]['qpu_samples'])
+    mag_qpu2 = get_mag(results[e2]['qpu_samples'])
+
+    # X-axis indices
+    indices = np.arange(n_clamped, n_clamped + len(mag_rbm1))
+
+    # --- 2. Setup Plot ---
+    fig, axes = plt.subplots(2, 1, figsize=(15, 10), sharex=True)
+    fig.suptitle(f"Hamming Cliff Diagnostics: {e1} vs {e2}", fontsize=16)
+
+    # --- Subplot 1: Absolute Magnetization Profiles ---
+    # Visual Logic: 
+    #   - Greyscale = RBM (Ground Truth)
+    #   - Color = QPU (Experiment)
+    #   - Dashed = Energy 1 (Pre-Cliff)
+    #   - Solid = Energy 2 (Post-Cliff)
+    
+    ax = axes[0]
+    
+    # RBM Baselines
+    ax.plot(indices, mag_rbm1, color='gray', linestyle='--', alpha=0.6, linewidth=1.5, label=f'RBM E={e1} (Anchor)')
+    ax.plot(indices, mag_rbm2, color='black', linestyle='-', linewidth=2, label=f'RBM E={e2} (Target)')
+    
+    # QPU Experiment (Blue for E1, Orange for E2 - Colorblind friendly contrast)
+    ax.plot(indices, mag_qpu1, color='#648FFF', linestyle='--', linewidth=2, label=f'QPU E={e1}') # Soft Blue
+    ax.plot(indices, mag_qpu2, color='#DC267F', linestyle='-', linewidth=2, alpha=0.9, label=f'QPU E={e2}') # Magenta/Pink
+    
+    ax.set_ylabel(r"Magnetization $\langle \sigma_z \rangle$", fontsize=12)
+    ax.set_title("Absolute Profiles (Dashed=Pre-Cliff, Solid=Post-Cliff)", fontsize=12)
+    ax.legend(loc='upper right', ncol=2)
+    ax.grid(True, alpha=0.3)
+    ax.set_ylim(0, 1.05)
+
+
+    # --- Subplot 2: The "Jump" Comparison ---
+    # Question: Did the QPU jump (Red Line) match the RBM jump (Grey Bars)?
+    
+    ax = axes[1]
+    
+    # 1. The Ideal Jump (RBM E2 - RBM E1)
+    # We plot this as bars to serve as the "background truth"
+    diff_rbm = mag_rbm2 - mag_rbm1
+    ax.bar(indices, diff_rbm, color='black', alpha=0.2, label=f'Required Jump (RBM Diff)')
+    
+    # 2. The Actual Jump (QPU E2 - QPU E1)
+    # We plot this as a bright line
+    diff_qpu = mag_qpu2 - mag_qpu1
+    ax.plot(indices, diff_qpu, color='#DC267F', linewidth=2.5, marker='o', markersize=3, label=f'Actual Jump (QPU Diff)')
+
+    ax.set_ylabel(r"$\Delta \langle \sigma_z \rangle$ (Post - Pre)", fontsize=12)
+    ax.set_xlabel("Latent Node Index", fontsize=12)
+    ax.set_title("Tunneling Success: Does the Line (QPU) follow the Bars (RBM)?", fontsize=12)
+    ax.legend(loc='upper right')
+    ax.grid(True, alpha=0.3)
+    
+    # Zero line
+    ax.axhline(0, color='black', linewidth=1, alpha=0.5)
+
+    plt.tight_layout()
+    plt.show()
+
+def plot_correlation_comparison(experiment_result: dict, n_cond: int = 53):
+    """
+    Plots a 1x3 grid comparing Classical vs QPU correlations and their difference.
+    
+    Args:
+        experiment_result: The dictionary output from 'run_spin_gauge_experiment_discretized'
+        n_cond: Number of conditioning bits to slice off (to focus on latent correlations)
+    """
+    
+    # --- 1. Data Preparation ---
+    incidence_energy = experiment_result.get("incidence_energy", "Unknown")
+    n_steps = experiment_result.get("stats", {}).get("n_quantization_steps", "Unknown")
+
+    # Classical Samples
+    c_samples = experiment_result['classical_samples']
+
+    # QPU Samples (Combine Clean + Dirty)
+    # We check for existence just in case one set is empty
+    q_parts = []
+    if experiment_result['clean_samples'] is not None:
+        q_parts.append(experiment_result['clean_samples'])
+    if experiment_result['dirty_samples'] is not None:
+        q_parts.append(experiment_result['dirty_samples'])
+    
+    if q_parts:
+        q_samples = torch.cat(q_parts, dim=0)
+    else:
+        # Fallback if no samples exist
+        q_samples = torch.zeros((1, c_samples.shape[1]))
+
+    # --- 2. Helper Function ---
+    def _compute_corr_matrix(samples):
+        """ Computes Pearson correlation, slices n_cond, zeroes diagonal. """
+        if isinstance(samples, torch.Tensor):
+            samples = samples.float().cpu()
+        
+        # Edge case: If batch size is 0 or 1, correlation is undefined/NaN
+        if samples.shape[0] < 2:
+            return np.zeros((samples.shape[1] - n_cond, samples.shape[1] - n_cond))
+
+        # Compute Correlation (Rows=Variables, so we transpose)
+        corr = torch.corrcoef(samples.T).numpy()
+        
+        # Slice off conditioning bits (focus on latent)
+        corr = corr[n_cond:, n_cond:]
+        
+        # Zero diagonal (auto-correlation is always 1, distracting in plots)
+        np.fill_diagonal(corr, 0)
+        
+        # Handle NaNs (e.g., constant columns have 0 std dev -> NaN correlation)
+        return np.nan_to_num(corr, nan=0.0)
+
+    # --- 3. Compute Matrices ---
+    mat_c = _compute_corr_matrix(c_samples)
+    mat_q = _compute_corr_matrix(q_samples)
+    mat_diff = mat_q - mat_c  # (QPU - Classical)
+
+    # --- 4. Plotting ---
+    fig, axes = plt.subplots(1, 3, figsize=(20, 6))
+    
+    # Shared plotting helper
+    def _plot_heatmap(ax, data, title):
+        im = ax.imshow(data, cmap='seismic', vmin=-1, vmax=1, origin='lower')
+        ax.set_title(title, fontsize=14, fontweight='bold')
+        ax.set_xlabel("Latent Node Index")
+        ax.set_ylabel("Latent Node Index")
+        return im
+
+    # Plot 1: Classical
+    im1 = _plot_heatmap(axes[0], mat_c, "Classical RBM (Baseline)")
+    
+    # Plot 2: QPU (Aggregate)
+    im2 = _plot_heatmap(axes[1], mat_q, "QPU (Clean + Dirty)")
+    
+    # Plot 3: Difference
+    im3 = _plot_heatmap(axes[2], mat_diff, "Difference (QPU - Classical)")
+
+    # --- 5. Formatting ---
+    
+    # Main Title
+    fig.suptitle(f"Correlation Analysis: E={incidence_energy} | Quantization Steps={n_steps}", fontsize=16, y=0.98)
+
+    # Shared Colorbar
+    fig.subplots_adjust(right=0.9)
+    cbar_ax = fig.add_axes([0.92, 0.15, 0.015, 0.7]) 
+    cbar = fig.colorbar(im1, cax=cbar_ax)
+    cbar.set_label("Pearson Correlation", fontsize=12)
+
+    plt.show()
+
+
+
+
+def plot_calibration_history(history, save_path=None):
+    """
+    Generates diagnostic plots matching Figure 6 of the D-Wave Shimming Tutorial.
+    """
+    shims = np.array(history['shims'])           # [iter, n_qubits]
+    mags = np.array(history['magnetizations'])   # [iter, n_qubits]
+    stds = np.array(history['std_dev'])          # [iter]
+    iterations = len(history['rmse'])
+    
+    fig, axes = plt.subplots(3, 1, figsize=(10, 12), sharex=False)
+    
+    # --- Plot 1: Flux Bias Offsets Evolution ---
+    # Shows the "random walk" or convergence of the shims
+    axes[0].plot(shims)
+    axes[0].set_ylabel(r"Flux-bias offsets ($\Phi_i / \Phi_0$)")
+    axes[0].set_xlabel("Iteration")
+    axes[0].set_title("Evolution of Flux-Bias Offsets")
+    # Add safe limit lines for reference
+    axes[0].axhline(y=0, color='black', linestyle='--', linewidth=0.5)
+
+    # --- Plot 2: Magnetization Distributions (First 5 vs Last 5) ---
+    # Compares the spread of biases before and after calibration
+    first_5_mags = mags[:5].flatten()
+    last_5_mags = mags[-5:].flatten()
+    
+    axes[1].hist(first_5_mags, bins=50, alpha=0.5, label='First 5 Iterations', density=True, color='skyblue')
+    axes[1].hist(last_5_mags, bins=50, alpha=0.5, label='Last 5 Iterations', density=True, color='orange')
+    axes[1].set_xlabel(r"Magnetization $\langle s_i \rangle$")
+    axes[1].set_ylabel("Prob. Density")
+    axes[1].set_title("Magnetization Distribution (Before vs After)")
+    axes[1].legend()
+    axes[1].set_xlim(-0.75, 0.75)
+
+    # --- Plot 3: Standard Deviation of Magnetizations ---
+    # Measures the "tightness" of the distribution over time.
+    axes[2].plot(stds, color='steelblue')
+    axes[2].set_ylabel(r"$\sigma$ of qubit magnetizations")
+    axes[2].set_xlabel("Iteration")
+    axes[2].set_title("Standard Deviation of Magnetizations over Time")
+    axes[2].grid(True, linestyle='--', alpha=0.6)
+    
+    plt.tight_layout()
+    
+    if save_path:
+        plt.savefig(save_path, dpi=300)
+        print(f"Plot saved to {save_path}")
+    
+    plt.show()
+
+
+
+
+def plot_shim_verification(experiment_data, n_cond=53):
+    """
+    Plots a 2x3 matrix comparison:
+    Row 1: Classical, No Shims, Shimmed (Correlations)
+    Row 2: Empty, Error (No Shims), Error (Shimmed)
+    """
+    
+    # 1. Unpack Samples
+    s_classical = experiment_data["classical_samples"]
+    s_no_shim = experiment_data["no_shim_samples"]
+    s_shimmed = experiment_data["shimmed_samples"]
+    energy = experiment_data["incidence_energy"]
+
+    # 2. Helper to get Latent Correlations
+    def get_latent_corr(samples):
+        if isinstance(samples, torch.Tensor):
+            samples = samples.float().cpu()
+        
+        # Calculate full correlation
+        corr = torch.corrcoef(samples.T).numpy()
+        
+        # Slice off conditioning units (rows and cols 0 to n_cond)
+        latent_corr = corr[n_cond:, n_cond:]
+        
+        # Zero diagonal for better contrast
+        np.fill_diagonal(latent_corr, 0)
+        return np.nan_to_num(latent_corr, nan=0.0)
+
+    # 3. Compute Matrices
+    mat_classical = get_latent_corr(s_classical)
+    mat_no_shim = get_latent_corr(s_no_shim)
+    mat_shimmed = get_latent_corr(s_shimmed)
+    
+    # Compute Differences (Error Maps)
+    mat_diff_shim = mat_shimmed - mat_classical
+    mat_diff_no_shim = mat_no_shim - mat_classical
+
+    # 4. Plotting Setup (2 rows, 3 columns)
+    fig, axes = plt.subplots(2, 3, figsize=(18, 12))
+    
+    # Helper to plot individual matrices
+    def plot_mat(ax, data, title, is_diff=False):
+        cmap = 'seismic' if not is_diff else 'bwr'
+        # Differences often have smaller ranges, but keeping fixed scales helps comparison
+        vmin, vmax = (-1, 1) if not is_diff else (-0.5, 0.5)
+        
+        im = ax.imshow(data, cmap=cmap, vmin=vmin, vmax=vmax, origin='lower')
+        ax.set_title(title, fontsize=12, fontweight='bold')
+        ax.axis('off')
+        return im
+
+    # --- ROW 1: Correlations ---
+    # 1. Classical (Top Left)
+    plot_mat(axes[0, 0], mat_classical, "Classical RBM (Target)")
+
+    # 2. No Shim (Top Center)
+    plot_mat(axes[0, 1], mat_no_shim, "QPU Raw (No Shims)")
+
+    # 3. Shimmed (Top Right)
+    im_main = plot_mat(axes[0, 2], mat_shimmed, "QPU Calibrated (With Shims)")
+
+    # --- ROW 2: Errors ---
+    # 4. Empty Slot (Bottom Left) -> Hide this axis
+    axes[1, 0].axis('off')
+
+    # 5. Error No Shim (Bottom Center)
+    # We use is_diff=True here
+    plot_mat(axes[1, 1], mat_diff_no_shim, "Error: No Shim - Classical", is_diff=True)
+
+    # 6. Error Shimmed (Bottom Right)
+    im_diff = plot_mat(axes[1, 2], mat_diff_shim, "Error: Shimmed - Classical", is_diff=True)
+
+    # Titles and Layout
+    fig.suptitle(f"Flux Shim Verification: {energy} MeV", fontsize=18, y=0.96)
+    
+    # --- Colorbars ---
+    # Since we have 3 columns, we position colorbars on the far right
+    
+    # Colorbar for Row 1 (Correlations)
+    cbar_ax = fig.add_axes([0.92, 0.53, 0.015, 0.35]) # [left, bottom, width, height]
+    fig.colorbar(im_main, cax=cbar_ax, label="Pearson Correlation")
+    
+    # Colorbar for Row 2 (Errors)
+    cbar_diff_ax = fig.add_axes([0.92, 0.11, 0.015, 0.35])
+    fig.colorbar(im_diff, cax=cbar_diff_ax, label="Correlation Error (Delta)")
+
+    # Adjust spacing to prevent overlap with titles
+    plt.subplots_adjust(wspace=0.1, hspace=0.2, right=0.9)
+    plt.show()
+
+    # Quantitative Metric
+    err_no_shim = np.linalg.norm(mat_diff_no_shim)
+    err_shimmed = np.linalg.norm(mat_diff_shim)
+    
+    print("\n--- Quantitative Improvement (Matrix Norm Distance from Classical) ---")
+    print(f"Error (No Shim): {err_no_shim:.4f}")
+    print(f"Error (Shimmed): {err_shimmed:.4f}")
+    print(f"Improvement:     {((err_no_shim - err_shimmed)/err_no_shim)*100:.2f}%")
+
+
+
+
+def plot_orbit_verification(experiment_data, n_cond=53):
+    """
+    Plots a 2x3 matrix comparison for Orbit Rotation:
+    Row 1: Classical, No Orbits, With Orbits (Correlations)
+    Row 2: Empty, Error (No Orbits), Error (With Orbits)
+    """
+    
+    # 1. Unpack Samples
+    s_classical = experiment_data["classical_samples"]
+    s_no_orbit = experiment_data["no_orbit_samples"]
+    s_with_orbit = experiment_data["with_orbit_samples"]
+    energy = experiment_data["incidence_energy"]
+    n_orbits = experiment_data.get("num_orbits_used", "?")
+
+    # 2. Helper to get Latent Correlations
+    def get_latent_corr(samples):
+        if isinstance(samples, torch.Tensor):
+            samples = samples.float().cpu()
+        
+        # Calculate full correlation
+        corr = torch.corrcoef(samples.T).numpy()
+        
+        # Slice off conditioning units (rows and cols 0 to n_cond)
+        latent_corr = corr[n_cond:, n_cond:]
+        
+        # Zero diagonal for better contrast
+        np.fill_diagonal(latent_corr, 0)
+        return np.nan_to_num(latent_corr, nan=0.0)
+
+    # 3. Compute Matrices
+    mat_classical = get_latent_corr(s_classical)
+    mat_no_orbit = get_latent_corr(s_no_orbit)
+    mat_with_orbit = get_latent_corr(s_with_orbit)
+    
+    # Compute Differences (Error Maps)
+    mat_diff_with_orbit = mat_with_orbit - mat_classical
+    mat_diff_no_orbit = mat_no_orbit - mat_classical
+
+    # 4. Plotting Setup (2 rows, 3 columns)
+    fig, axes = plt.subplots(2, 3, figsize=(18, 12))
+    
+    # Helper to plot individual matrices
+    def plot_mat(ax, data, title, is_diff=False):
+        cmap = 'seismic' if not is_diff else 'bwr'
+        # Differences often have smaller ranges, but keeping fixed scales helps comparison
+        vmin, vmax = (-1, 1) if not is_diff else (-0.5, 0.5)
+        
+        im = ax.imshow(data, cmap=cmap, vmin=vmin, vmax=vmax, origin='lower')
+        ax.set_title(title, fontsize=12, fontweight='bold')
+        ax.axis('off')
+        return im
+
+    # --- ROW 1: Correlations ---
+    # 1. Classical (Top Left)
+    plot_mat(axes[0, 0], mat_classical, "Classical RBM (Target)")
+
+    # 2. No Orbit (Top Center)
+    plot_mat(axes[0, 1], mat_no_orbit, "QPU Static (No Orbits)")
+
+    # 3. With Orbit (Top Right)
+    im_main = plot_mat(axes[0, 2], mat_with_orbit, f"QPU Rotated ({n_orbits} Orbits)")
+
+    # --- ROW 2: Errors ---
+    # 4. Empty Slot (Bottom Left) -> Hide this axis
+    axes[1, 0].axis('off')
+
+    # 5. Error No Orbit (Bottom Center)
+    plot_mat(axes[1, 1], mat_diff_no_orbit, "Error: No Orbits - Classical", is_diff=True)
+
+    # 6. Error With Orbit (Bottom Right)
+    im_diff = plot_mat(axes[1, 2], mat_diff_with_orbit, "Error: With Orbits - Classical", is_diff=True)
+
+    # Titles and Layout
+    fig.suptitle(f"Orbit Rotation Verification: {energy} MeV", fontsize=18, y=0.96)
+    
+    # --- Colorbars ---
+    # Position colorbars on the far right
+    
+    # Colorbar for Row 1 (Correlations)
+    cbar_ax = fig.add_axes([0.92, 0.53, 0.015, 0.35]) # [left, bottom, width, height]
+    fig.colorbar(im_main, cax=cbar_ax, label="Pearson Correlation")
+    
+    # Colorbar for Row 2 (Errors)
+    cbar_diff_ax = fig.add_axes([0.92, 0.11, 0.015, 0.35])
+    fig.colorbar(im_diff, cax=cbar_diff_ax, label="Correlation Error (Delta)")
+
+    # Adjust spacing to prevent overlap with titles
+    plt.subplots_adjust(wspace=0.1, hspace=0.2, right=0.9)
+    plt.show()
+
+    # Quantitative Metric
+    err_no_orbit = np.linalg.norm(mat_diff_no_orbit)
+    err_with_orbit = np.linalg.norm(mat_diff_with_orbit)
+    
+    print("\n--- Quantitative Improvement (Matrix Norm Distance from Classical) ---")
+    print(f"Error (No Orbit):   {err_no_orbit:.4f}")
+    print(f"Error (With Orbit): {err_with_orbit:.4f}")
+    improvement = ((err_no_orbit - err_with_orbit)/err_no_orbit)*100
+    print(f"Improvement:        {improvement:.2f}%")
+
+
+
+def plot_orbit_sweep_analysis(sweep_results):
+    """
+    Visualizes the results of the Orbit Sweep.
+    1. Bar chart of Error vs Shift.
+    2. Matrix comparison: Classical vs Best Orbit vs Worst Orbit.
+    """
+    metrics = sweep_results["orbit_metrics"]
+    mat_classical = sweep_results["classical_matrix"]
+    best = sweep_results["best_orbit"]
+    worst = sweep_results["worst_orbit"]
+    
+    # Extract data for bar chart
+    shifts = [m['shift'] for m in metrics]
+    errors = [m['error_norm'] for m in metrics]
+    
+    fig = plt.figure(figsize=(20, 10))
+    gs = fig.add_gridspec(2, 4) # 2 rows, 4 cols
+
+    # --- 1. Error Landscape (Top Row, spanning 2 cols) ---
+    ax_bar = fig.add_subplot(gs[0, 1:3])
+    bars = ax_bar.bar(shifts, errors, color='skyblue', width=3)
+    
+    # Highlight Best and Worst
+    best_idx = shifts.index(best['shift'])
+    worst_idx = shifts.index(worst['shift'])
+    bars[best_idx].set_color('forestgreen')
+    bars[worst_idx].set_color('firebrick')
+    
+    ax_bar.set_xlabel("Orbit Shift Amount")
+    ax_bar.set_ylabel("Matrix Error Norm (Lower is Better)")
+    ax_bar.set_title("Orbit Quality Spectrum")
+    ax_bar.grid(axis='y', alpha=0.3)
+    
+    # --- 2. Matrix Visualization (Bottom Row) ---
+    # Helper
+    def plot_mat(ax, data, title, diff=False):
+        cmap = 'seismic' if not diff else 'bwr'
+        vmin, vmax = (-1, 1) if not diff else (-0.5, 0.5)
+        im = ax.imshow(data, cmap=cmap, vmin=vmin, vmax=vmax, origin='lower')
+        ax.set_title(title, fontweight='bold')
+        ax.axis('off')
+        return im
+
+    # Classical
+    ax_clas = fig.add_subplot(gs[1, 0])
+    plot_mat(ax_clas, mat_classical, "Target (Classical)")
+    
+    # Best Orbit
+    ax_best = fig.add_subplot(gs[1, 1])
+    plot_mat(ax_best, best['matrix'], f"Best Orbit (Shift {best['shift']})\nError: {best['error_norm']:.2f}")
+
+    # Worst Orbit
+    ax_worst = fig.add_subplot(gs[1, 2])
+    plot_mat(ax_worst, worst['matrix'], f"Worst Orbit (Shift {worst['shift']})\nError: {worst['error_norm']:.2f}")
+    
+    # Difference (Best - Worst) -> Shows what artifacts the bad orbit introduces
+    ax_diff = fig.add_subplot(gs[1, 3])
+    diff_mat = worst['matrix'] - best['matrix']
+    im_diff = plot_mat(ax_diff, diff_mat, "Diff: Worst - Best", diff=True)
+    
+    # Colorbar
+    cbar_ax = fig.add_axes([0.92, 0.15, 0.01, 0.3])
+    fig.colorbar(im_diff, cax=cbar_ax, label="Correlation Delta")
+
+    plt.tight_layout(rect=[0, 0, 0.9, 1])
+    plt.show()
+
+
+def plot_permutation_sweep_analysis(sweep_results):
+    """
+    Visualizes Monte Carlo Permutation Sweep.
+    
+    Row 1: [Error Hist] | [Chain Break Hist] | [Scatter: Error vs Breaks]
+    Row 2: Classical    | Default            | Best
+    Row 3: [Empty]      | Diff (Default-Cl)  | Diff (Best-Cl)
+    """
+    metrics = sweep_results["perm_metrics"]
+    mat_classical = sweep_results["classical_matrix"]
+    
+    default_run = sweep_results["default_orbit"]
+    best_run = sweep_results["best_orbit"]
+    
+    # Extract data arrays
+    all_errors = [m['error_norm'] for m in metrics]
+    all_breaks = [m['chain_break_frac'] for m in metrics]
+    
+    # Create Figure
+    fig = plt.figure(figsize=(18, 15)) 
+    
+    # Grid: 3 Rows, 3 Cols
+    gs = fig.add_gridspec(3, 3, height_ratios=[0.25, 0.4, 0.4]) 
+
+    # --- TOP ROW: STATS ---
+    
+    # 1. Error Histogram (Top Left)
+    ax_hist_err = fig.add_subplot(gs[0, 0])
+    ax_hist_err.hist(all_errors, bins=15, color='lightgray', edgecolor='white', alpha=0.8)
+    ax_hist_err.axvline(default_run['error_norm'], color='firebrick', ls='--', lw=2, label='Default')
+    ax_hist_err.axvline(best_run['error_norm'], color='forestgreen', ls='--', lw=2, label='Best')
+    ax_hist_err.set_title("Distribution of Error Norms", fontweight='bold')
+    ax_hist_err.set_xlabel("Euclidean Error")
+    ax_hist_err.legend()
+
+    # 2. Chain Break Histogram (Top Center)
+    ax_hist_brk = fig.add_subplot(gs[0, 1])
+    ax_hist_brk.hist(all_breaks, bins=15, color='peachpuff', edgecolor='white', alpha=0.8)
+    ax_hist_brk.axvline(default_run['chain_break_frac'], color='firebrick', ls='--', lw=2)
+    ax_hist_brk.axvline(best_run['chain_break_frac'], color='forestgreen', ls='--', lw=2)
+    ax_hist_brk.set_title("Distribution of Chain Breaks", fontweight='bold')
+    ax_hist_brk.set_xlabel("Fraction of Broken Chains")
+
+    # 3. Scatter: Error vs Breaks (Top Right)
+    ax_scatter = fig.add_subplot(gs[0, 2])
+    ax_scatter.scatter(all_errors, all_breaks, alpha=0.6, c='gray')
+    # Highlight specific points
+    ax_scatter.scatter(default_run['error_norm'], default_run['chain_break_frac'], c='firebrick', s=100, marker='*', label='Default')
+    ax_scatter.scatter(best_run['error_norm'], best_run['chain_break_frac'], c='forestgreen', s=100, marker='*', label='Best')
+    ax_scatter.set_title("Correlation: Error vs Stability", fontweight='bold')
+    ax_scatter.set_xlabel("Error Norm")
+    ax_scatter.set_ylabel("Chain Break Fraction")
+    ax_scatter.legend()
+    
+    # --- MATRIX SECTIONS (Helper) ---
+    def plot_mat(ax, data, title, diff=False):
+        cmap = 'seismic' if not diff else 'bwr'
+        vmin, vmax = (-1, 1) if not diff else (-0.5, 0.5)
+        im = ax.imshow(data, cmap=cmap, vmin=vmin, vmax=vmax, origin='lower')
+        ax.set_title(title, fontsize=11, fontweight='bold')
+        ax.axis('off')
+        return im
+
+    # -- ROW 2: Absolute Matrices --
+    ax_cl = fig.add_subplot(gs[1, 0])
+    plot_mat(ax_cl, mat_classical, "Target (Classical RBM)")
+
+    ax_def = fig.add_subplot(gs[1, 1])
+    plot_mat(ax_def, default_run['matrix'], f"Default Embedding\nErr: {default_run['error_norm']:.3f}")
+
+    ax_best = fig.add_subplot(gs[1, 2])
+    im_main = plot_mat(ax_best, best_run['matrix'], f"Best Permutation\nErr: {best_run['error_norm']:.3f}")
+    
+    # -- ROW 3: Differences --
+    ax_empty = fig.add_subplot(gs[2, 0])
+    ax_empty.axis('off')
+
+    diff_default = default_run['matrix'] - mat_classical
+    ax_diff_def = fig.add_subplot(gs[2, 1])
+    plot_mat(ax_diff_def, diff_default, "Error: Default - Classical", diff=True)
+
+    diff_best = best_run['matrix'] - mat_classical
+    ax_diff_best = fig.add_subplot(gs[2, 2])
+    im_diff = plot_mat(ax_diff_best, diff_best, "Error: Best - Classical", diff=True)
+
+    # --- Colorbars ---
+    cbar_ax_main = fig.add_axes([0.92, 0.45, 0.015, 0.25])
+    fig.colorbar(im_main, cax=cbar_ax_main, label="Pearson Correlation")
+
+    cbar_ax_diff = fig.add_axes([0.92, 0.12, 0.015, 0.25])
+    fig.colorbar(im_diff, cax=cbar_ax_diff, label="Correlation Delta")
+
+    plt.tight_layout(rect=[0, 0, 0.9, 1])
+    plt.show()
+
+
+
+def plot_orbit_sensitivity_analysis(data):
+    """
+    Produces the final 4x3 Figure + Summary Stats described.
+    
+    Layout:
+    Row 0: Histograms/Scatter Stats
+    Row 1: Spacer
+    Row 2: Classical Baselines
+    Row 3: QPU Default Orbit
+    Row 4: QPU Best Orbit
+    Row 5: Error (Best Orbit - Classical)
+    """
+    
+    orbits = data["orbits"]
+    baselines = data["baselines"]
+    best_idx = data["best_orbit_index"]
+    
+    default_orb = orbits[0]
+    best_orb = orbits[best_idx]
+    
+    # Extract lists for plotting stats
+    modes = ['normal', 'ferro', 'anti']
+    colors = {'normal': 'black', 'ferro': 'firebrick', 'anti': 'royalblue'}
+    labels = {'normal': 'Normal', 'ferro': 'Ferro (+)', 'anti': 'Anti-Ferro (-)'}
+    
+    stats = {m: {'errors': [], 'breaks': []} for m in modes}
+    
+    for o in orbits:
+        for m in modes:
+            stats[m]['errors'].append(o["modes"][m]["error"])
+            stats[m]['breaks'].append(o["modes"][m]["breaks"])
+
+    # --- Setup Figure ---
+    fig = plt.figure(figsize=(20, 25)) # Increased height slightly for the extra row
+    
+    # FIX: Increase nrows to 6 and add a height ratio for the 4th matrix row
+    # Ratios: [Stats, Spacer, Mat1, Mat2, Mat3, Mat4]
+    gs = GridSpec(6, 3, figure=fig, height_ratios=[0.2, 0.02, 0.19, 0.19, 0.19, 0.19])
+    
+    # === ROW 0: SUMMARY STATISTICS ===
+    
+    # 1. Histogram of Errors
+    ax_hist_err = fig.add_subplot(gs[0, 0])
+    for m in modes:
+        ax_hist_err.hist(stats[m]['errors'], bins=15, alpha=0.5, color=colors[m], label=labels[m])
+    ax_hist_err.set_title("Distribution of Error Norms", fontweight='bold')
+    ax_hist_err.set_xlabel("Euclidean Error vs Classical Baseline")
+    ax_hist_err.legend()
+    
+    # 2. Histogram of Chain Breaks
+    ax_hist_brk = fig.add_subplot(gs[0, 1])
+    for m in modes:
+        ax_hist_brk.hist(stats[m]['breaks'], bins=15, alpha=0.5, color=colors[m], label=labels[m])
+    ax_hist_brk.set_title("Distribution of Chain Breaks", fontweight='bold')
+    ax_hist_brk.set_xlabel("Chain Break Fraction")
+    
+    # 3. Scatter Plot
+    ax_scat = fig.add_subplot(gs[0, 2])
+    for m in modes:
+        ax_scat.scatter(stats[m]['errors'], stats[m]['breaks'], c=colors[m], alpha=0.6, label=labels[m])
+        
+        # Highlight Best Orbit
+        ax_scat.scatter(best_orb["modes"][m]["error"], best_orb["modes"][m]["breaks"], 
+                        facecolors='none', edgecolors=colors[m], s=150, linewidth=2, marker='s')
+
+    ax_scat.set_title("Error vs Stability (Square = Best Orbit)", fontweight='bold')
+    ax_scat.set_xlabel("Error Norm")
+    ax_scat.set_ylabel("Break Fraction")
+    
+    # === MATRIX GRID ===
+    
+    def plot_mat(ax, mat, title, is_diff=False):
+        cmap = 'seismic'
+        if is_diff:
+            vmin, vmax = -0.5, 0.5 
+        else:
+            vmin, vmax = -1.0, 1.0
+            
+        im = ax.imshow(mat, cmap=cmap, vmin=vmin, vmax=vmax, origin='lower')
+        ax.set_title(title, fontsize=10)
+        ax.axis('off')
+        return im
+
+    # Iterate over Columns (Modes)
+    for col_idx, m in enumerate(modes):
+        
+        # Row 1 (GS Row 2): Classical RBM
+        ax_cl = fig.add_subplot(gs[2, col_idx])
+        plot_mat(ax_cl, baselines[m], f"Classical ({labels[m]})")
+        if col_idx == 0: ax_cl.set_ylabel("Classical RBM", fontsize=12, fontweight='bold')
+
+        # Row 2 (GS Row 3): QPU Default Orbit
+        ax_def = fig.add_subplot(gs[3, col_idx])
+        err_def = default_orb["modes"][m]["error"]
+        plot_mat(ax_def, default_orb["modes"][m]["matrix"], f"QPU Default (Err: {err_def:.3f})")
+        if col_idx == 0: ax_def.set_ylabel("QPU Default", fontsize=12, fontweight='bold')
+
+        # Row 3 (GS Row 4): QPU Best Orbit
+        ax_best = fig.add_subplot(gs[4, col_idx])
+        err_best = best_orb["modes"][m]["error"]
+        im = plot_mat(ax_best, best_orb["modes"][m]["matrix"], f"QPU Best (Err: {err_best:.3f})")
+        if col_idx == 0: ax_best.set_ylabel("QPU Best", fontsize=12, fontweight='bold')
+
+        # Row 4 (GS Row 5): Difference (Best - Classical)
+        ax_diff = fig.add_subplot(gs[5, col_idx])
+        diff_mat = best_orb["modes"][m]["matrix"] - baselines[m]
+        plot_mat(ax_diff, diff_mat, "Diff: Best - Classical", is_diff=True)
+        if col_idx == 0: ax_diff.set_ylabel("Difference", fontsize=12, fontweight='bold')
+
+    # Add Colorbar for Matrices
+    cbar_ax = fig.add_axes([0.92, 0.15, 0.02, 0.4])
+    fig.colorbar(im, cax=cbar_ax, label="Correlation / Difference")
+    
+    plt.suptitle("Orbit Sensitivity Analysis: Weight Polarity Impact", fontsize=16, fontweight='bold', y=0.99)
+    plt.show()
+
+
+
+
+def plot_hamming_correlations_classical(results: dict, n_cond: int = 52):
+    energies = list(results.keys())
+    e1, e2 = energies[0], energies[1]
+    use_gray = results[e1].get('use_gray', False)
+    
+    # 1 Row, 3 Columns (E1, E2, Difference)
+    # Changed figsize to be wide (20, 6)
+    fig, axes = plt.subplots(1, 3, figsize=(20, 6), sharey=True)
+    
+    # --- Helper Functions ---
+    def _get_corr_matrix(samples):
+        if isinstance(samples, torch.Tensor):
+            samples = samples.float().cpu()
+        
+        # Compute Correlation
+        corr = torch.corrcoef(samples.T).numpy()
+        
+        # Slice off clamped bits (visible conditioning units)
+        corr = corr[n_cond:, n_cond:]
+        
+        # Zero diagonal & fix NaNs
+        np.fill_diagonal(corr, 0)
+        return np.nan_to_num(corr, nan=0.0)
+
+    # --- 1. Compute Matrices ---
+    c_e1 = _get_corr_matrix(results[e1]['samples'])
+    c_e2 = _get_corr_matrix(results[e2]['samples'])
+    c_diff = c_e2 - c_e1
+
+    # --- 2. Plotting ---
+    
+    # Plot E1 (Left)
+    im1 = axes[0].imshow(c_e1, cmap='seismic', vmin=-1, vmax=1, origin='lower')
+    axes[0].set_title(f"Correlation: Energy {e1}", fontsize=14, fontweight='bold')
+    axes[0].set_ylabel("Latent Index", fontsize=12)
+    axes[0].set_xlabel("Latent Index", fontsize=12)
+
+    # Plot E2 (Middle)
+    im2 = axes[1].imshow(c_e2, cmap='seismic', vmin=-1, vmax=1, origin='lower')
+    axes[1].set_title(f"Correlation: Energy {e2}", fontsize=14, fontweight='bold')
+    # No y-label needed due to sharey=True
+    axes[1].set_xlabel("Latent Index", fontsize=12)
+
+    # Plot Difference (Right)
+    im3 = axes[2].imshow(c_diff, cmap='seismic', vmin=-1, vmax=1, origin='lower')
+    axes[2].set_title(f"Difference (E{e2} - E{e1})", fontsize=14, fontweight='bold')
+    axes[2].set_xlabel("Latent Index", fontsize=12)
+
+    # --- 3. Formatting ---
+    
+    # Adjust subplots to make room for colorbar on the right
+    plt.subplots_adjust(right=0.9)
+    
+    # Add a vertical colorbar on the far right
+    # [left, bottom, width, height] relative to figure size
+    cbar_ax = fig.add_axes([0.92, 0.15, 0.015, 0.7]) 
+    fig.colorbar(im1, cax=cbar_ax, label="Pearson Correlation")
+    if use_gray:
+        rbm_type = "Gray Code RBM"
+    else:
+        rbm_type = "Binary Code RBM"
+
+    fig.suptitle(f"{rbm_type} Correlation Drift: Hamming Cliff ({e1} vs {e2})", fontsize=16)
+    plt.show()
+
+
+def plot_hamming_magnetization_classical(results: dict, n_cond: int = 52):
+    energies = list(results.keys())
+    e1, e2 = energies[0], energies[1]
+    use_gray = results[e1].get('use_gray', False)
+
+    
+    # --- 1. Extract & Compute Means ---
+    def get_mag(samples):
+        # Mean across batch, slice off clamped nodes
+        return samples.float().cpu().mean(dim=0)[n_cond:].numpy()
+
+    mag_e1 = get_mag(results[e1]['samples'])
+    mag_e2 = get_mag(results[e2]['samples'])
+    
+    indices = np.arange(n_cond, n_cond + len(mag_e1))
+
+    # --- 2. Setup Plot ---
+    fig, axes = plt.subplots(2, 1, figsize=(14, 10), sharex=True)
+    if use_gray:
+        rbm_type = "Gray Code RBM"
+    else:
+        rbm_type = "Binary Code RBM"
+    
+     # Overall Title
+    fig.suptitle(f"{rbm_type} Transition: {e1} $\\to$ {e2}", fontsize=16)
+
+    # --- Subplot 1: Absolute Profiles ---
+    ax = axes[0]
+    
+    # Plot E1 (Pre-Cliff)
+    ax.plot(indices, mag_e1, color='black', linestyle='--', alpha=0.6, linewidth=2, label=f'Energy {e1} (Pre-Cliff)')
+    # Plot E2 (Post-Cliff)
+    ax.fill_between(indices, mag_e1, mag_e2, color='red', alpha=0.1, label='Drift Region')
+    ax.plot(indices, mag_e2, color='#DC267F', linestyle='-', linewidth=2.5, label=f'Energy {e2} (Post-Cliff)')
+    
+    ax.set_ylabel(r"Magnetization $\langle \sigma_z \rangle$", fontsize=12)
+    ax.set_title("Magnetization Profile Shift", fontsize=12)
+    ax.legend(loc='upper right')
+    ax.grid(True, alpha=0.3)
+    ax.set_ylim(-0.05, 1.05)
+
+    # --- Subplot 2: The "Jump" (Difference) ---
+    ax = axes[1]
+    
+    diff = mag_e2 - mag_e1
+    
+    # Use stem plot to highlight specific bits that changed
+    markerline, stemlines, baseline = ax.stem(indices, diff, basefmt=" ")
+    plt.setp(stemlines, 'color', 'black', 'linewidth', 1, 'alpha', 0.5)
+    plt.setp(markerline, 'color', '#DC267F', 'markersize', 6)
+    
+    # Add a fill for better visibility of magnitude
+    ax.fill_between(indices, 0, diff, color='#DC267F', alpha=0.2)
+
+    ax.set_ylabel(r"$\Delta \langle \sigma_z \rangle$ (E2 - E1)", fontsize=12)
+    ax.set_xlabel("Latent Node Index", fontsize=12)
+    ax.set_title("Bit Difference Magnitude", fontsize=12)
+    ax.grid(True, alpha=0.3)
+    
+    # Zero line
+    ax.axhline(0, color='black', linewidth=1)
+
+    plt.tight_layout()
     plt.show()
