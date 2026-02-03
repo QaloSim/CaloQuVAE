@@ -115,8 +115,9 @@ def setup_model(config=None):
     #instantiate and register optimisation algorithm
     params = list(model.encoder.parameters()) + list(model.decoder.parameters())
     params = [p for p in params if p.requires_grad]
-    engine.optimiser = torch.optim.Adam(params,
-                                        lr=config.engine.learning_rate)
+    engine.optimiser = torch.optim.AdamW(params,
+                                        lr=config.engine.learning_rate,
+                                        weight_decay=config.engine.weight_decay)
     model.prior.initOpt()
     #add the model instance to the engine namespace
     engine.model = model
@@ -138,7 +139,7 @@ def run(engine, _callback=lambda _: False):
 
             total_loss_dict = engine.evaluate_ae(engine.data_mgr.val_loader, epoch)
             chi2 = engine.generate_plots(epoch, "ae")
-            if epoch > 50:
+            if epoch > 10:
                 engine.track_best_val_loss(total_loss_dict, chi2, epoch)
 
             

@@ -1,13 +1,14 @@
 _target_: engine.engine.Engine
-learning_rate: 0.00005
+learning_rate: 3e-4
+weight_decay: 0.01
 
 n_batches_log_train: 10
 n_batches_log_val: 1
 
 beta_latent_start: 1.0
-beta_latent_end: 2.0
+beta_latent_end: 3.0
 beta_hits_start: 1.0
-beta_hits_end: 100.0
+beta_hits_end: 3.0
 beta_gumbel_epoch_start: 0
 beta_gumbel_end: 2.0
 beta_gumbel_duration: 25     # Duration in epochs (replaces epoch_end)
