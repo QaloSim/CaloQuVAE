@@ -75,7 +75,7 @@ def get_binning(data1, data2, data3, num_bins=30):
     # Use linspace for num_bins + 1 edges (which gives num_bins)
     return np.linspace(min_value, max_value, num_bins + 1)
 
-def layer_plots(cfg, incident_energies, target_showers, recon_showers, sampled_showers):
+def layer_plots(cfg, incident_energies, target_showers, recon_showers, sampled_showers, incidence_energy_sampled=None):
     """
     Plot the energy sums, ratios, and sparsity for each layer,
     and calculate Chi-Squared distances.
@@ -125,7 +125,11 @@ def layer_plots(cfg, incident_energies, target_showers, recon_showers, sampled_s
         # --- Incidence Ratio ---
         target_data = (torch.sum(target_layer, dim=1) / (incident_energies.view(-1) + epsilon)).numpy()
         recon_data = (torch.sum(recon_layer, dim=1) / (incident_energies.view(-1) + epsilon)).numpy()
-        sampled_data = (torch.sum(sampled_layer, dim=1) / (incident_energies.view(-1) + epsilon)).numpy()
+        
+        if incidence_energy_sampled is not None:
+            sampled_data = (torch.sum(sampled_layer, dim=1) / (incidence_energy_sampled.view(-1) + epsilon)).numpy()
+        else:
+            sampled_data = (torch.sum(sampled_layer, dim=1) / (incident_energies.view(-1) + epsilon)).numpy()
 
         binning = get_binning(target_data, recon_data, sampled_data)
         plot_histograms(fig_set['incidence_ratio'][1][row, col], target_data, recon_data, sampled_data,
@@ -393,7 +397,7 @@ def vae_plots(cfg, incident_energies, target_showers, recon_showers, sampled_sho
     # --- Layer Plots ---
     (energy_sum_layer_fig, incidence_ratio_layer_fig, 
      target_recon_ratio_layer_fig, sparsity_layer_fig, 
-     layer_chi2_metrics) = layer_plots(cfg, incident_energies, target_showers, recon_showers, sampled_showers)
+     layer_chi2_metrics) = layer_plots(cfg, incident_energies, target_showers, recon_showers, sampled_showers, incidence_energy_sampled)
     
     all_chi2_metrics['layer'] = layer_chi2_metrics
 
