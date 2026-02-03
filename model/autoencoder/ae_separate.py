@@ -90,13 +90,9 @@ class AutoEncoderSeparate(AutoEncoderBase):
                 # This allows physics losses to push the mask towards "1" if energy is needed
                 hit_mask_attached = self._hit_smoothing_dist_mod(output_hits, beta=beta)
         
-                # 2. Get Raw Activations (unmasked energy)
-                activations_raw = self._activation_fct(act_fct_slope, output_activations)
+                output_activations = self._activation_fct(act_fct_slope, output_activations) * torch.where(x > 0, 1., 0.)
                 
-                # 3. Create the "Safe" output for MSE (Detached Mask)
-                # We detach the mask here so MSE focuses purely on energy amplitude 
-                # where the model thinks a hit exists, without trying to collapse the mask.
-                output_activations = activations_raw * hit_mask_attached.detach() 
+                activations_raw = self._activation_fct(act_fct_slope, output_activations)
             else:
                 # Evaluation mode: Hard masking for cleaner evaluation
                 output_activations = self._activation_fct(0.0, output_activations) * self._hit_smoothing_dist_mod(output_hits)
@@ -119,12 +115,13 @@ class AutoEncoderSeparate(AutoEncoderBase):
                 pixel_weights = 1.0
 
             # --- [2. Standard Reconstruction Loss] ---
-            # output_activations uses the DETACHED mask, so this only trains energy values
+            # output_activations uses the ground truth mask
             squared_diff = torch.pow((input_data - output_activations), 2)
-            energy_weighting = torch.exp(self._config.model.mse_weight * input_data)
-            
+            arg = self._config.model.mse_weight * input_data
+            # Clamp to avoid overflow (approx 80 is safe for float32)
+            energy_weighting = torch.exp(torch.clamp(arg, max=80))            
             ae_loss = squared_diff * energy_weighting * pixel_weights
-            ae_loss = torch.mean(torch.sum(ae_loss, dim=1), dim=0) * self._config.model.coefficient
+            ae_loss = torch.clamp(torch.mean(torch.sum(ae_loss, dim=1), dim=0) * self._config.model.coefficient, max=1e30)
 
             # --- [3. Hit Loss with Focal Support] ---
             targets = torch.where(input_data > 0, 1., 0.)
@@ -174,7 +171,7 @@ class AutoEncoderSeparate(AutoEncoderBase):
                         val_recon = feat_recon[key].view(input_data.size(0), -1)
                         if "E_" in key:
                             val_gt = torch.log1p(val_gt)
-                            val_recon = torch.log1p(val_recon)
+                            val_recon = torch.log1p(torch.nn.functional.relu(val_recon))
                         scale = torch.clamp(torch.mean(torch.abs(val_gt)).detach(), min=1e-5)
                         mae_loss_total += torch.abs(val_gt - val_recon).mean() / scale
 
@@ -198,6 +195,14 @@ class AutoEncoderSeparate(AutoEncoderBase):
                     "pos_energy": pos_energy,
                     "logit_distance": l_dist
                 })
+            if torch.isnan(ae_loss):
+                print("FAIL: AE Loss is NaN. Check energy_weighting exp() overflow.")
+                
+            if torch.isnan(mae_loss_total):
+                print("FAIL: MAE Loss is NaN. Check for negative inputs to log1p.")
+
+            if torch.isnan(mmd_loss_total):
+                print("FAIL: MMD Loss is NaN. Check kernel bandwidth or division by zero in cmmd.")
 
             return total_loss_dict
             
