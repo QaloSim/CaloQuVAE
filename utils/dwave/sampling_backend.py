@@ -95,7 +95,7 @@ class ChainAnalysisResult:
     physical_response: dimod.SampleSet = None
     
     # --- 5. Spin Reversal Transform Data (New) ---
-    srt_active: bool = False
+    srt_active: bool = True
     srt_mask: np.ndarray = None  # The boolean array defining the transform g_i
     
     def __post_init__(self):
@@ -229,7 +229,7 @@ def sample_physical_with_analysis_srt(
     h_logical, 
     J_logical, 
     embedding, 
-    flux_biases, 
+    flux_biases,  # This is the ORIGINAL bias list
     num_samples=1, 
     chain_strength=None,
     device='cpu',
@@ -254,41 +254,49 @@ def sample_physical_with_analysis_srt(
     # --- 2. Construct BQM ---
     bqm_phys = dimod.BinaryQuadraticModel.from_ising(h_phys, J_phys)
 
-    # --- 3. Prepare Sampler & SRT Mask ---
-    sample_kwargs = {
-        'num_reads': num_samples, 
-        'answer_mode': 'raw', 
-        'auto_scale': False,
-        'flux_biases': flux_biases, 
-        'flux_drift_compensation': False
-    }
-
-    final_srt_mask = None # Default if no SRT used
+    # --- 3. Prepare Sampler & SRT ---
+    # We create a COPY of flux_biases to modify, preserving the original
+    # (assuming flux_biases is a list of floats)
+    active_flux_biases = list(flux_biases) 
+    final_srt_mask = None 
 
     if use_srt:
         active_sampler = SpinReversalTransformComposite(raw_sampler)
         
+        # 3a. Generate Random Mask
+        # We no longer protect biased qubits; we apply SRT to everything
         mask_list = []
-        for var_label in bqm_phys.variables:
-            
-            # Check for flux bias protection
-            is_protected = False
-            if var_label < len(flux_biases):
-                if abs(flux_biases[var_label]) > 1e-5:
-                    is_protected = True
-            
-            if is_protected:
-                mask_list.append(False) # Protected: DO NOT FLIP
-            else:
-                mask_list.append(bool(np.random.choice([True, False])))
+        for _ in bqm_phys.variables:
+            mask_list.append(bool(np.random.choice([True, False])))
         
-        # Create the array for the sampler
         final_srt_mask = np.array([mask_list], dtype=bool)
+
+        # 3b. Flip Flux Biases
+        # Iterate through the mask and flip the sign of the bias where mask is True
+        # bqm_phys.variables is typically 0...N, matching the flux_biases index
+        for idx, var_label in enumerate(bqm_phys.variables):
+            if mask_list[idx]: # If this qubit is being flipped
+                if var_label < len(active_flux_biases):
+                    active_flux_biases[var_label] = -active_flux_biases[var_label]
         
-        # Pass the mask to kwargs
-        sample_kwargs['srts'] = final_srt_mask
+        # 3c. Update kwargs
+        sample_kwargs = {
+            'num_reads': num_samples, 
+            'answer_mode': 'raw', 
+            'auto_scale': False,
+            'flux_biases': active_flux_biases,  # <--- PASS MODIFIED BIASES
+            'flux_drift_compensation': False,
+            'srts': final_srt_mask              # <--- PASS MASK
+        }
     else:
         active_sampler = raw_sampler
+        sample_kwargs = {
+            'num_reads': num_samples, 
+            'answer_mode': 'raw', 
+            'auto_scale': False,
+            'flux_biases': flux_biases,         # <--- PASS ORIGINAL BIASES
+            'flux_drift_compensation': False
+        }
 
     # --- 4. Sample ---
     physical_response = active_sampler.sample(bqm_phys, **sample_kwargs)
@@ -335,7 +343,6 @@ def sample_physical_with_analysis_srt(
         physical_labels = phys_labels,
         embedding = embedding,
         physical_response = physical_response,
-        # --- Store SRT Metadata ---
         srt_active = use_srt,
         srt_mask = final_srt_mask
     )
