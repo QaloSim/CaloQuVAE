@@ -4,6 +4,7 @@ import h5py
 import numpy as np
 import math
 from utils.atlas_plots import to_np, make_validation_plots
+import copy
 
 class AtlasGeometry:
     """
@@ -308,7 +309,7 @@ class CaloDownsampler(torch.nn.Module):
 class VariableLayerFeatureExtractor(nn.Module):
     """
     A feature extractor that handles layers with different numbers of voxels.
-    Replaces DifferentiableFeatureExtractor for 'Optimal' binning schemes.
+    Includes safety checks to ensure input showers match the geometry dimensions.
     """
     def __init__(self, geometry_handler):
         super().__init__()
@@ -335,10 +336,36 @@ class VariableLayerFeatureExtractor(nn.Module):
             eta_centers_list.append(l_eta)
             phi_centers_list.append(l_phi)
             
+        # Store the total expected size for safety checking
+        self.expected_total_voxels = current_idx
+            
         # Concatenate everything into 1D Buffers (Total_Voxels, )
-        # This avoids the RuntimeError from torch.stack on mismatched sizes
         self.register_buffer('flat_eta_grid', torch.cat(eta_centers_list))
         self.register_buffer('flat_phi_grid', torch.cat(phi_centers_list))
+
+    def _validate_input(self, showers):
+        """
+        Ensures the input tensor has exactly the number of voxels this geometry expects.
+        Raises a ValueError with helpful debug info if they mismatch.
+        """
+        # Calculate voxels per event based on input shape
+        if showers.dim() == 2:
+            input_voxels = showers.shape[1]
+        elif showers.dim() == 3:
+            # If (Batch, Layers, Voxels), total is L * V
+            input_voxels = showers.shape[1] * showers.shape[2]
+        else:
+            raise ValueError(f"Input must be 2D or 3D, got shape {showers.shape}")
+
+        if input_voxels != self.expected_total_voxels:
+            raise ValueError(
+                f"Dimension Mismatch! \n"
+                f"The geometry expects exactly {self.expected_total_voxels} flattened voxels.\n"
+                f"The input showers contain {input_voxels} voxels (Shape: {showers.shape}).\n"
+                f"Did you forget to downsample the showers before passing them to this extractor?"
+            )
+        else:
+            print("Input validation passed: correct number of voxels.")
 
     def forward(self, showers):
         """
@@ -347,7 +374,10 @@ class VariableLayerFeatureExtractor(nn.Module):
         Returns:
             Dict matching the structure of DifferentiableFeatureExtractor output.
         """
-        # Ensure input is flat (Batch, Total_Voxels)
+        # 1. Safety Check
+        self._validate_input(showers)
+
+        # 2. Flatten Input if needed
         if showers.dim() == 3:
             B, L, V = showers.shape
             showers = showers.view(B, -1)
@@ -362,30 +392,28 @@ class VariableLayerFeatureExtractor(nn.Module):
         Phi_widths = []
 
         # Iterate through layers using pre-calculated slices
-        # This replaces the vectorized operations over dim=1 from the old class
         for i, slc in enumerate(self.layer_slices):
-            # 1. Extract data for this layer
+            # Extract data for this layer
             # shape: (Batch, Voxels_In_This_Layer)
             layer_shower = showers[:, slc]
             layer_eta_grid = self.flat_eta_grid[slc].unsqueeze(0) # (1, V)
             layer_phi_grid = self.flat_phi_grid[slc].unsqueeze(0) # (1, V)
             
-            # 2. Energy
+            # --- Energy ---
             E_L = torch.sum(layer_shower, dim=1) # (B, )
             E_layers.append(E_L)
             
-            # Safe denominator for weighting
+            # Safe denominator
             E_denom = torch.clamp(E_L, min=self.epsilon).unsqueeze(1) # (B, 1)
 
-            # 3. First Moments (Centers)
-            # sum(E_i * eta_i) / sum(E_i)
+            # --- First Moments ---
             eta_weighted = torch.sum(layer_shower * layer_eta_grid, dim=1, keepdim=True)
             phi_weighted = torch.sum(layer_shower * layer_phi_grid, dim=1, keepdim=True)
             
-            mu_eta = eta_weighted / E_denom # (B, 1)
-            mu_phi = phi_weighted / E_denom # (B, 1)
+            mu_eta = eta_weighted / E_denom 
+            mu_phi = phi_weighted / E_denom 
             
-            # Mask zero energy layers to avoid NaNs or junk data
+            # Mask zero energy
             mask = (E_L < self.epsilon).unsqueeze(1)
             mu_eta = torch.where(mask, torch.zeros_like(mu_eta), mu_eta)
             mu_phi = torch.where(mask, torch.zeros_like(mu_phi), mu_phi)
@@ -393,41 +421,260 @@ class VariableLayerFeatureExtractor(nn.Module):
             Eta_centers.append(mu_eta.squeeze(1))
             Phi_centers.append(mu_phi.squeeze(1))
 
-            # 4. Second Moments (Widths)
-            # sum(E_i * (eta_i - mu_eta)^2) / sum(E_i)
-            # Broadcast subtract: (1, V) - (B, 1) -> (B, V)
+            # --- Second Moments ---
             diff_eta = layer_eta_grid - mu_eta
             diff_phi = layer_phi_grid - mu_phi
             
             var_eta = torch.sum(layer_shower * (diff_eta ** 2), dim=1) / E_denom.squeeze(1)
             var_phi = torch.sum(layer_shower * (diff_phi ** 2), dim=1) / E_denom.squeeze(1)
             
-            # Clamp for numerical stability (sqrt of negative is bad)
             width_eta = torch.sqrt(torch.clamp(var_eta, min=1e-8))
             width_phi = torch.sqrt(torch.clamp(var_phi, min=1e-8))
 
-            # Mask output
             width_eta = torch.where(mask.squeeze(1), torch.zeros_like(width_eta), width_eta)
             width_phi = torch.where(mask.squeeze(1), torch.zeros_like(width_phi), width_phi)
             
             Eta_widths.append(width_eta)
             Phi_widths.append(width_phi)
 
-        # --- Stack results to match (Batch, Num_Layers) format ---
-        # This ensures compatibility with FeatureAdapter
+        # --- Output Formatting ---
         output = {
-            "E_layer": torch.stack(E_layers, dim=1),       # (B, L)
-            "Eta_center": torch.stack(Eta_centers, dim=1), # (B, L)
-            "Phi_center": torch.stack(Phi_centers, dim=1), # (B, L)
-            "Eta_width": torch.stack(Eta_widths, dim=1),   # (B, L)
-            "Phi_width": torch.stack(Phi_widths, dim=1)    # (B, L)
+            "E_layer": torch.stack(E_layers, dim=1),       
+            "Eta_center": torch.stack(Eta_centers, dim=1), 
+            "Phi_center": torch.stack(Phi_centers, dim=1), 
+            "Eta_width": torch.stack(Eta_widths, dim=1),   
+            "Phi_width": torch.stack(Phi_widths, dim=1)    
         }
         
-        # Calculate Total Energy
-        output["E_tot"] = torch.sum(output["E_layer"], dim=1) # (B, )
+        output["E_tot"] = torch.sum(output["E_layer"], dim=1)
         
         return output
+
+
+
+class NaiveResampler(nn.Module):
+    def __init__(self, geometry, target_layer_id, n_outer_rings):
+        super().__init__()
+        self.source_geometry = geometry
+        self.target_layer_id = target_layer_id
+        # Force conversion to python int to avoid slicing errors if input is a Tensor
+        self.n_outer_rings = int(n_outer_rings) 
+        
+        # We will collect tensors in these lists and cat them at the end
+        # This prevents the "mixed list of tensors and scalars" error
+        sparse_rows_list = []
+        sparse_cols_list = []
+        sparse_vals_list = []
+        
+        current_input_idx = 0
+        current_output_idx = 0
+        
+        # Store transformation logic for geometry reconstruction
+        self.layer_transform_info = {}
+
+        for layer_idx in geometry.relevant_layers:
+            # Ensure layer_idx is int for dictionary lookups
+            layer_idx = int(layer_idx) 
+            layer_str = str(layer_idx)
             
+            r_vals = geometry.binstart_radius[layer_str].float()
+            a_vals = geometry.binstart_alpha[layer_str].float()
+            num_voxels = r_vals.shape[0]
+            
+            local_indices = torch.arange(num_voxels, device=r_vals.device)
+            
+            info = {'keep': [], 'merge': []}
+
+            if layer_idx != target_layer_id:
+                # --- IDENTITY MAPPING ---
+                # Create rows/cols for the whole block at once
+                rows = torch.arange(current_output_idx, current_output_idx + num_voxels)
+                cols = torch.arange(current_input_idx, current_input_idx + num_voxels)
+                
+                sparse_rows_list.append(rows)
+                sparse_cols_list.append(cols)
+                sparse_vals_list.append(torch.ones(num_voxels))
+                
+                # For geometry: Keep all
+                info['keep'] = local_indices.tolist()
+                
+                current_input_idx += num_voxels
+                current_output_idx += num_voxels
+                
+            else:
+                # --- TARGET LAYER LOGIC ---
+                # Round to handle float precision issues in radius
+                r_rounded = torch.round(r_vals * 1000) / 1000
+                unique_radii = torch.unique(r_rounded, sorted=True)
+                
+                if self.n_outer_rings > len(unique_radii):
+                    raise ValueError(f"Layer {layer_idx} has {len(unique_radii)} rings, requested {self.n_outer_rings}")
+                
+                # Identify target rings
+                # We used int() on n_outer_rings, so this slice is safe now
+                target_radii = unique_radii[-self.n_outer_rings:]
+                
+                # Helper to check membership efficiently
+                is_target_ring = torch.isin(r_rounded, target_radii)
+                
+                # Iterate ring by ring to preserve geometric order
+                for r in unique_radii:
+                    ring_mask = (r_rounded == r)
+                    ring_indices = local_indices[ring_mask]
+                    
+                    # Sort neighbors by Alpha
+                    ring_alphas = a_vals[ring_mask]
+                    sort_arg = torch.argsort(ring_alphas)
+                    sorted_indices = ring_indices[sort_arg]
+                    
+                    # Check if this specific ring is in the target set
+                    # Note: We compare a scalar tensor 'r' to the target_radii tensor
+                    if torch.isin(r, target_radii):
+                        # --- MERGE (Downsample) ---
+                        n_in_ring = len(sorted_indices)
+                        if n_in_ring % 2 != 0:
+                            raise ValueError(f"Ring {r} has {n_in_ring} voxels (odd). Cannot downsample 2:1.")
+                        
+                        # Reshape to pairs: (N/2, 2)
+                        pairs = sorted_indices.view(-1, 2)
+                        
+                        # Vectorized matrix construction for this ring
+                        n_pairs = pairs.shape[0]
+                        
+                        # Output indices: repeats twice because 2 inputs -> 1 output
+                        # [out_0, out_0, out_1, out_1, ...]
+                        out_indices = torch.arange(current_output_idx, current_output_idx + n_pairs)
+                        out_indices_rep = out_indices.repeat_interleave(2)
+                        
+                        # Input indices: flattened pairs [in_0a, in_0b, in_1a, in_1b...]
+                        in_indices_flat = pairs.view(-1) + current_input_idx
+                        
+                        sparse_rows_list.append(out_indices_rep)
+                        sparse_cols_list.append(in_indices_flat)
+                        sparse_vals_list.append(torch.ones(n_pairs * 2))
+                        
+                        # Record merge for geometry update
+                        # We convert to python list of tuples for the geometry re-builder
+                        pair_list = pairs.tolist() # [[idx1, idx2], ...]
+                        info['merge'].extend([tuple(p) for p in pair_list])
+                        
+                        current_output_idx += n_pairs
+                        
+                    else:
+                        # --- KEEP (Identity) ---
+                        n_in_ring = len(sorted_indices)
+                        
+                        # Vectorized Identity for this ring
+                        out_indices = torch.arange(current_output_idx, current_output_idx + n_in_ring)
+                        in_indices = sorted_indices + current_input_idx
+                        
+                        sparse_rows_list.append(out_indices)
+                        sparse_cols_list.append(in_indices)
+                        sparse_vals_list.append(torch.ones(n_in_ring))
+                        
+                        info['keep'].extend(sorted_indices.tolist())
+                        current_output_idx += n_in_ring
+                
+                current_input_idx += num_voxels
+
+            self.layer_transform_info[layer_idx] = info
+
+        # --- 4. Final Matrix Construction ---
+        # Concatenate all list chunks into single tensors
+        final_rows = torch.cat(sparse_rows_list).long()
+        final_cols = torch.cat(sparse_cols_list).long()
+        final_vals = torch.cat(sparse_vals_list)
+        
+        indices = torch.stack([final_rows, final_cols])
+        
+        self.matrix_shape = (current_output_idx, current_input_idx)
+        
+        self.register_buffer(
+            'transfer_matrix', 
+            torch.sparse_coo_tensor(indices, final_vals, self.matrix_shape)
+        )
+
+    def forward(self, x):
+        if x.dim() == 3: x = x.view(x.size(0), -1)
+        # Transpose for sparse mm: (N_out, N_in) @ (N_in, B)
+        return torch.sparse.mm(self.transfer_matrix, x.t()).t()
+
+    def get_downsampled_geometry(self):
+        """
+        Returns a new AtlasGeometry object with ragged layers.
+        """
+        new_geo = copy.deepcopy(self.source_geometry)
+        target_layer = self.target_layer_id
+        info = self.layer_transform_info[target_layer]
+        l_str = str(target_layer)
+        
+        # Original Data
+        orig_r_start = self.source_geometry.binstart_radius[l_str]
+        orig_r_size  = self.source_geometry.binsize_radius[l_str]
+        orig_a_start = self.source_geometry.binstart_alpha[l_str]
+        orig_a_size  = self.source_geometry.binsize_alpha[l_str]
+        
+        # New buffers
+        new_r_start, new_r_size = [], []
+        new_a_start, new_a_size = [], []
+        
+        # We need to reconstruct the order strictly: Rings by R, then by Alpha
+        # Use the logic from __init__ to walk the rings again
+        r_vals = orig_r_start.float()
+        r_rounded = torch.round(r_vals * 1000) / 1000
+        unique_radii = torch.unique(r_rounded, sorted=True)
+        
+        target_radii = unique_radii[-self.n_outer_rings:]
+        
+        for r in unique_radii:
+            ring_mask = (r_rounded == r)
+            local_indices = torch.arange(len(r_vals))[ring_mask]
+            
+            # Sort by alpha
+            ring_alphas = orig_a_start[ring_mask]
+            sort_arg = torch.argsort(ring_alphas)
+            sorted_indices = local_indices[sort_arg]
+            
+            if torch.isin(r, target_radii):
+                # MERGED RINGS
+                # We know these were processed in pairs (idx1, idx2)
+                pairs = sorted_indices.view(-1, 2)
+                for pair in pairs:
+                    idx1, idx2 = pair[0], pair[1]
+                    
+                    # R: same as original
+                    new_r_start.append(orig_r_start[idx1])
+                    new_r_size.append(orig_r_size[idx1])
+                    
+                    # Alpha: Combined
+                    # Since we sorted by alpha, idx1 is strictly "before" idx2
+                    new_a_start.append(orig_a_start[idx1])
+                    new_a_size.append(orig_a_size[idx1] + orig_a_size[idx2])
+            else:
+                # KEPT RINGS
+                for idx in sorted_indices:
+                    new_r_start.append(orig_r_start[idx])
+                    new_r_size.append(orig_r_size[idx])
+                    new_a_start.append(orig_a_start[idx])
+                    new_a_size.append(orig_a_size[idx])
+
+        # Stack into tensors
+        new_geo.binstart_radius[l_str] = torch.stack(new_r_start)
+        new_geo.binsize_radius[l_str] = torch.stack(new_r_size)
+        new_geo.binstart_alpha[l_str] = torch.stack(new_a_start)
+        new_geo.binsize_alpha[l_str] = torch.stack(new_a_size)
+        
+        # Recompute centers
+        r_c = new_geo.binstart_radius[l_str] + new_geo.binsize_radius[l_str] / 2.0
+        alpha_c = new_geo.binstart_alpha[l_str] + new_geo.binsize_alpha[l_str] / 2.0
+        
+        new_geo.r_centers[target_layer] = r_c.float()
+        new_geo.eta_centers[target_layer] = (r_c * torch.cos(alpha_c)).float()
+        new_geo.phi_centers[target_layer] = (r_c * torch.sin(alpha_c)).float()
+        
+        return new_geo
+
+
 def evaluate_and_plot(data_dict, binning_path, output_dir="plots/", device="cpu"):
     """
     Orchestrates the flow: Raw Data -> Fast Extractor -> Adapter -> Existing Plotter
