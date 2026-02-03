@@ -57,6 +57,7 @@ def main(cfg):
         logger.info(f"Forcing Data Config: {cfg.fixed_data_settings.data_config_name}")
 
     GlobalHydra.instance().clear()
+    abs_config_dir = os.path.abspath(os.path.join(os.getcwd(), "../config"))
     
     with initialize(version_base=None, config_path="../config"):
         base_cfg = compose(config_name=cfg.base_model_config, overrides=hydra_overrides)
@@ -74,9 +75,6 @@ def main(cfg):
     base_cfg_dict['n_epochs'] = cfg.training.n_epochs
     base_cfg_dict['epoch_start'] = cfg.training.epoch_start
     
-    # Convert to pure dict for safe multiprocessing transfer
-    base_cfg_dict = OmegaConf.to_container(base_cfg, resolve=True)
-
     # 3. Setup Ax Client
     if cfg.experiment.resume and os.path.exists(json_path):
         ax_client = AxClient.load_from_json_file(filepath=json_path)
@@ -176,7 +174,17 @@ def main(cfg):
                     
                     p = mp.Process(
                         target=worker_task,
-                        args=(gpu_id, trial_index, parameters, base_cfg_dict, cfg.training, result_queue, save_dir)
+                        args=(
+                            gpu_id, 
+                            trial_index, 
+                            parameters, 
+                            base_cfg_dict, 
+                            cfg.training, 
+                            result_queue, 
+                            save_dir,
+                            abs_config_dir,        # <--- Pass Absolute Path
+                            cfg.base_model_config  # <--- Pass Config Name
+                        )
                     )
                     p.start()
                     active_processes.append(p)
