@@ -12,6 +12,7 @@ import torch.nn.functional as F
 import numpy as np
 from model.encoder.balancedgraycodes import BalancedGrayCodeCodec
 from model.encoder.offsetgraycodes import GrayCodeOffset
+from model.encoder.graycodes import GrayCode
 
 class HierarchicalEncoder(nn.Module):
     def __init__(self, cfg):
@@ -31,7 +32,7 @@ class HierarchicalEncoder(nn.Module):
             network=self._create_hierarchy_network(level=lvl)
             self._networks.append(network)
         
-        self.gray_codec = GrayCodeOffset()
+        self.gray_codec = GrayCode()
         
 
     def _create_hierarchy_network(self, level=0):
@@ -50,7 +51,7 @@ class HierarchicalEncoder(nn.Module):
             post_logits = []
             
             # --- NEW: Check for Gray Code Flag ---
-            if hasattr(self._config.model, 'use_gray_code') and self._config.model.use_gray_code:
+            if hasattr(self._config, 'use_gray_code') and self._config.use_gray_code:
                 post_samples.append(self.gray_energy_encoding(x0))
             elif self._config.refactor_binary_energy:
                 post_samples.append(self.binary_energy_refactored(x0))
@@ -79,9 +80,9 @@ class HierarchicalEncoder(nn.Module):
 
         # --- Gray Code Encoding Method ---
 
-    def gray_energy_encoding(self, x, lin_bits=19, sqrt_bits=16, log_bits=15):
+    def gray_energy_encoding(self, x, lin_bits=19, sqrt_bits=17, log_bits=15):
         """
-        Encodes incidence energy using Balanced Gray Codes via lookup table.
+        Encodes incidence energy using standard Gray Codes
         Replicates the structure/repetition logic of binary_energy_refactored.
         """
         # Override defaults if present in config
@@ -94,13 +95,15 @@ class HierarchicalEncoder(nn.Module):
 
         # 1. Get the encoded parts using the codec
         # Linear: direct int cast
-        lin_enc = self.gray_codec.lookup(x.int(), lin_bits)
+        lin_enc = self.gray_codec.encode(x.int(), lin_bits)
         
-        # Sqrt: * 100 scaling
-        sqrt_enc = self.gray_codec.lookup((x.sqrt() * 100).int(), sqrt_bits)
+        # Sqrt: * 200 scaling
+        sqrt_enc = self.gray_codec.encode((x.sqrt() * 200).int(), sqrt_bits)
         
-        # Log: * 2500 scaling
-        log_enc = self.gray_codec.lookup((x.log() * 2500).int(), log_bits)
+        # Log: * 5000 scaling
+        # log_enc = self.gray_codec.encode((x.log() * 5000).int()-2**15, log_bits)
+        log_enc = self.gray_codec.encode((x.log() * 5000).int(), log_bits)
+
 
         x_encoded = torch.cat((lin_enc, sqrt_enc, log_enc), dim=1)
 
