@@ -11,7 +11,8 @@ from .physics import (
     joint_energy,
     rbm_to_expanded_ising,
     convert_energy_to_binary,
-    calculate_rms_chain_strength
+    calculate_rms_chain_strength,
+    get_latent_correlation,
 )
 from .graphs import (
     get_physical_flux_biases,
@@ -28,7 +29,8 @@ from .sampling_backend import (
     sample_ising_flux_bias,
     sample_physical_with_analysis,
     sample_physical_with_analysis_srt,
-    sample_manual_ising
+    sample_manual_ising,
+    sample_physical_arbitrary
     )
 from .postprocessing import (
     process_rbm_samples,
@@ -666,8 +668,8 @@ def sample_expanded_flux_arbitrary(
     binary_patterns_batch,
     hidden_side='right',
     beta=1.0,
-    chain_strength=1.0,
-    rho = 28.0,
+    chain_strength=None,
+    rho=28.0,
     clamp_strength_h=50.0,
     source=None,
     save_dir="/home/leozhu/CaloQuVAE/wandb-outputs/dwave_misc/",
@@ -679,6 +681,8 @@ def sample_expanded_flux_arbitrary(
 ):
     """
     Samples using arbitrary permutations (shuffles) of chain assignments.
+      - Calls sample_physical_arbitrary
+      - Passes orbit data as explicit arguments, not metadata
     """
     batch_size = binary_patterns_batch.shape[0]
     total_qubits = raw_sampler.properties['num_qubits']
@@ -695,15 +699,19 @@ def sample_expanded_flux_arbitrary(
         hid_mapping=hid_mapping
     )
 
+    # 2. Convert RBM to Ising
     h_exp, J_exp = rbm_to_expanded_ising(
         rbm, fragment_map, exp_embedding, raw_sampler.adjacency, beta
     )    
 
-    # 4. Flux Calculation
+    # 3. Flux Calculation
     row_np = binary_patterns_batch[0].detach().cpu().numpy()
     n_cond = len(conditioning_sets)
+    
+    # Create logical clamps
     logical_clamps = {i: (1 if v > 0.5 else -1) for i, v in enumerate(row_np) if i < n_cond}
-    # This also respects rotation because it looks up 'logical_id' in 'exp_embedding'
+    
+    # Calculate Flux Biases (respects rotation via fragment_map)
     raw_fb = get_expanded_flux_biases(
         logical_clamps, fragment_map, exp_embedding, total_qubits, clamp_strength_h
     )
@@ -720,27 +728,25 @@ def sample_expanded_flux_arbitrary(
         raw_fb = [r + s for r, s in zip(raw_fb, additive_flux_offsets)]
     # --------------------------------
     
+    # Safety Clamp
     safe_limit = 0.01
     safe_fb = [max(-1*safe_limit, min(v, safe_limit)) for v in raw_fb]
 
+    # Chain Strength Default
     if chain_strength is None:
-            calc_strength = calculate_rms_chain_strength(J_exp, rho=rho)
-            # Use 'extended_j_range' if available, otherwise default to typical 2.0
-            max_j = raw_sampler.properties.get('extended_j_range', [None, 2.0])[1]
-            chain_strength = min(calc_strength, max_j)
-            print(f"Dynamic Chain Strength calculated: {chain_strength:.2f} (rho={rho:.2f})")
+        chain_strength = raw_sampler.properties.get('extended_j_range', [None, 2.0])[1]
     
+    # 4. Minimal Metadata (Orbit info is now passed as args)
     run_metadata = {
         'timestamp': str(datetime.now()),
         'chain_strength': chain_strength,
-        'calibrated': (additive_flux_offsets is not None),
-        'perm_seed': perm_seed # Log the seed so we can reproduce this shuffle
+        'calibrated': (additive_flux_offsets is not None)
     }
     if source is not None:
         run_metadata['source'] = source
 
-    # 5. Sample
-    analysis_result = sample_physical_with_analysis_srt(
+    # 5. Sample (Using new signature)
+    analysis_result = sample_physical_arbitrary(
         raw_sampler=raw_sampler,
         h_logical=h_exp,
         J_logical=J_exp,
@@ -751,11 +757,14 @@ def sample_expanded_flux_arbitrary(
         device=rbm.device,
         metadata=run_metadata,
         save_dir=save_dir,
-        use_srt=use_srt 
+        use_srt=use_srt,
+        # --- Explicit Orbit Passing ---
+        orbit_seed=perm_seed,
+        vis_mapping=vis_mapping,
+        hid_mapping=hid_mapping
     )
     
     return analysis_result
-
 
 def find_beta_rigorous(
     rbm, 
@@ -1261,6 +1270,102 @@ def find_beta_flux_bias_expanded(
     return beta, beta_hist, rbm_e_hist, qpu_e_hist
 
 
+def find_beta_arbitrary(
+    rbm,
+    raw_sampler,
+    conditioning_sets,
+    left_chains,
+    right_chains,
+    binary_patterns_batch,
+    vis_mapping: list,
+    hid_mapping: list,
+    orbit_seed: int = None,
+    num_reads=1024,
+    rbm_gibbs_steps=5000,
+    beta_init=3.0, 
+    lr=0.01, 
+    num_epochs=15, 
+    tolerance=0.1,
+    use_srt=True,
+    save_dir=None
+):
+    """
+    Orbit aware beta optimization
+    """
+    beta = beta_init
+    beta_hist, rbm_e_hist, qpu_e_hist = [], [], []
+    n_clamped = binary_patterns_batch.shape[1]
+
+    primary_pattern = binary_patterns_batch[0].unsqueeze(0)
+    target_batch = primary_pattern.repeat(num_reads, 1)
+
+    print(f"Calculating RBM Baseline Energy for Orbit Seed {orbit_seed}...")
+    full_v_rbm = rbm.sample_v_given_v_clamped(
+        clamped_v=target_batch, 
+        n_clamped=n_clamped, 
+        gibbs_steps=rbm_gibbs_steps, 
+        beta=1.0 # Classical RBM is always beta=1.0
+    )
+    full_h_rbm, _ = rbm._sample_h_given_v(full_v_rbm, beta=1.0)
+    
+    with torch.no_grad(): 
+        energies_rbm = joint_energy(rbm, full_v_rbm, full_h_rbm)
+        mean_rbm_energy = energies_rbm.mean().item()
+        print(f"   Target Mean Energy: {mean_rbm_energy:.4f}")
+    
+    for epoch in range(num_epochs):
+        
+        # A. Sample using Arbitrary Mapping
+        analysis_result = sample_expanded_flux_arbitrary(
+            rbm=rbm,
+            raw_sampler=raw_sampler,
+            conditioning_sets=conditioning_sets,
+            left_chains=left_chains,
+            right_chains=right_chains,
+            binary_patterns_batch=target_batch,
+            hidden_side=hidden_side,
+            beta=beta,
+            source=f"beta_est_orbit{orbit_seed}",
+            use_srt=use_srt,
+            save_dir=save_dir,
+            # --- Pass Orbit ---
+            vis_mapping=vis_mapping,
+            hid_mapping=hid_mapping,
+            perm_seed=orbit_seed
+        )
+        
+        dwave_v, dwave_h = process_analysis_result(
+            analysis_result, 
+            rbm, 
+            conditioning_sets
+        )
+        
+        # C. Calculate Metrics
+        with torch.no_grad():
+            # Calculate energy of QPU samples using RBM weights
+            e_dwave = joint_energy(rbm, dwave_v, dwave_h)
+            mean_dwave = e_dwave.mean().item()
+
+        # D. Update Step
+        diff = mean_dwave - mean_rbm_energy
+
+        beta_new = max(1e-2, beta - lr * diff)
+
+        print(f"Epoch {epoch}: Beta={beta:.4f} -> {beta_new:.4f} | Diff={diff:.2f} | Clean={analysis_result.total_clean_fraction:.2%}")
+
+        beta = beta_new
+        beta_hist.append(beta)
+        rbm_e_hist.append(mean_rbm_energy)
+        qpu_e_hist.append(mean_dwave)
+
+        if abs(diff) < tolerance: 
+            print("Converged within tolerance.")
+            break
+    
+    return beta, beta_hist, rbm_e_hist, qpu_e_hist
+
+
+
 def validate_beta_heterogeneous(
     rbm, 
     qpu_sampler, 
@@ -1513,3 +1618,283 @@ def mass_sample_dwave(
     print(f"Outputs:\n  {path_clean}\n  {path_dirty}\n  {path_energies}")
     
     return path_clean, path_dirty, path_energies
+
+
+def scan_orbits_monte_carlo(
+    rbm, raw_sampler, conditioning_sets, left_chains, right_chains,
+    target_batch, target_corr_matrix, 
+    beta: float,
+    num_permutations: int = 20,
+    reads_per_perm: int = 500,
+    hidden_side: str = 'right',
+    use_srt: bool = True,
+    start_seed: Union[int, str, None] = None # <-- ADDED ARGUMENT
+):
+    """
+    Scans the provided start_seed plus N random orbits.
+    Returns the seed that minimizes Correlation Error.
+    """
+    print(f"\n--- Phase 2: Monte Carlo Orbit Scan (Baseline + {num_permutations} randoms) ---")
+    
+    n_vis = len(left_chains)
+    n_hid = len(right_chains)
+    
+    results = []
+    
+    # 1. Build the list of seeds to test
+    # Always test the start_seed first (Identity or specific seed)
+    seeds_to_test = [start_seed] 
+    
+    # Then add N random seeds
+    for _ in range(num_permutations):
+        seeds_to_test.append(np.random.randint(0, 1000000))
+
+    # 2. Execution Loop
+    for i, seed in enumerate(seeds_to_test):
+        
+        # Labeling for clarity
+        if i == 0:
+            label = f"Baseline ({seed})"
+        else:
+            label = f"Random {i}/{num_permutations}"
+
+        # Get Mappings (works for None, "identity", or int)
+        v_map, h_map = get_orbit_mappings(seed, n_vis, n_hid)
+        
+        # Sample
+        analysis = sample_expanded_flux_arbitrary(
+            rbm=rbm, raw_sampler=raw_sampler,
+            conditioning_sets=conditioning_sets,
+            left_chains=left_chains, right_chains=right_chains,
+            binary_patterns_batch=target_batch[:reads_per_perm],
+            hidden_side=hidden_side, beta=beta,
+            vis_mapping=v_map, hid_mapping=h_map, perm_seed=seed,
+            source=f"scan_{i}_{seed}", use_srt=use_srt
+        )
+        
+        # Analyze
+        batch_v, _ = process_analysis_result(analysis, rbm, conditioning_sets)
+        
+        # Calculate Correlation            
+        qpu_corr = get_latent_correlation(batch_v, n_cond=len(conditioning_sets))
+        
+        # Score (Frobenius Norm)
+        error = np.linalg.norm(qpu_corr - target_corr_matrix)
+        
+        results.append({'seed': seed, 'error': error})
+        print(f"   {label}: Seed {seed} | Error: {error:.4f}")
+
+    # 3. Pick Winner
+    if not results:
+        print("!! All scans failed. Defaulting to start_seed.")
+        return start_seed
+
+    # Sort by error (ascending)
+    best_result = sorted(results, key=lambda x: x['error'])[0]
+    
+    # Check if we beat the baseline
+    baseline_error = results[0]['error']
+    improvement = baseline_error - best_result['error']
+    
+    print(f"-> Winner: Seed {best_result['seed']} (Error {best_result['error']:.4f})")
+    if improvement > 1e-4:
+        print(f"   (Improved over baseline by {improvement:.4f})")
+    else:
+        print(f"   (Baseline was optimal or matched)")
+    
+    return best_result['seed']
+
+
+def mass_sample_dwave_orbit_aware(
+    incidence_energy: float,
+    total_samples_needed: int,
+    save_dir: str,
+    # System Objects
+    engine, rbm, raw_sampler, conditioning_sets, left_chains, right_chains,
+    # Orbit Configuration
+    default_orbit_seed: int = None, # Initial guess (None = Identity)
+    perform_orbit_scan: bool = True,
+    scan_permutations: int = 20,    # How many MC steps if scanning
+    # Hyperparameters
+    n_cond: int = 52,
+    initial_beta: float = 3.0,
+    batch_size: int = 1024,
+    drift_tolerance: float = 1.0,  
+    hidden_side: str = 'right',
+    device: str = 'cpu',
+):
+    """
+    Orbit-Aware Production Sampling Pipeline.
+    
+    Flow:
+    1. Baselines (Energy & Correlation)
+    2. Coarse Beta (Default Orbit)
+    3. Orbit Scan -> Find Best Seed
+    4. Fine Beta (Best Orbit)
+    5. Mass Sampling (with Drift Correction on Best Orbit)
+    
+    Returns:
+        (path_clean, path_dirty, path_energies, best_orbit_seed)
+    """
+    os.makedirs(save_dir, exist_ok=True)
+    n_vis = len(left_chains)
+    n_hid = len(right_chains)
+    
+    print(f"\n=== Mass Sampling (Orbit Aware) Start: {total_samples_needed} samples @ {incidence_energy} MeV ===")
+
+    # --- Phase 0: Baselines ---
+    print("-> Phase 0: Establishing Classical Baselines...")
+    
+    # Generate Target Batch (Classical)
+    base_pattern = convert_energy_to_gray(
+        incidence_energy=incidence_energy, engine=engine, n_cond=n_cond, 
+        num_reads=1, device=device
+    )
+    baseline_batch = base_pattern.repeat(batch_size, 1)
+
+    # Run Classical Gibbs
+    v_base = rbm.sample_v_given_v_clamped(
+        clamped_v=baseline_batch, n_clamped=n_cond, gibbs_steps=5000, beta=1.0 
+    )
+    h_base, _ = rbm._sample_h_given_v(v_base, beta=1.0)
+    
+    with torch.no_grad():
+        baseline_energies = joint_energy(rbm, v_base, h_base)
+        target_energy_mean = baseline_energies.mean().item()
+    # Calculate Correlation Matrix (for Orbit Scoring)
+    target_corr_matrix = get_latent_correlation(v_base, n_cond)
+        
+    # --- Phase 1: Coarse Beta Estimation ---
+    # We need a rough beta to make the orbit scan valid
+    print(f"\n-> Phase 1: Coarse Beta Est. (Default Orbit: {default_orbit_seed})...")
+    
+    vis_def, hid_def = get_orbit_mappings(default_orbit_seed, n_vis, n_hid)
+    
+    beta_coarse = find_beta_arbitrary(
+        rbm, raw_sampler, conditioning_sets, left_chains, right_chains,
+        binary_patterns_batch=baseline_batch[:128],
+        vis_mapping=vis_def, hid_mapping=hid_def, orbit_seed=default_orbit_seed,
+        beta_init=initial_beta,
+        use_srt=True
+    )
+    print(f"Coarse Beta: {beta_coarse:.3f}")
+
+    # --- Phase 2: Orbit Scan ---
+    best_orbit_seed = default_orbit_seed
+    
+    if perform_orbit_scan:
+        best_orbit_seed = scan_orbits_monte_carlo(
+            rbm, raw_sampler, conditioning_sets, left_chains, right_chains,
+            target_batch=baseline_batch,
+            target_corr_matrix=target_corr_matrix,
+            beta=beta_coarse,
+            num_permutations=scan_permutations,
+            reads_per_perm=batch_size,
+            use_srt=True,
+            start_seed=default_orbit_seed
+        )
+    else:
+        print("\n-> Phase 2: Orbit Scan Skipped (Using Default).")
+
+    # Get final mappings
+    vis_best, hid_best = get_orbit_mappings(best_orbit_seed, n_vis, n_hid)
+
+    # --- Phase 3: Fine Beta Tuning ---
+    # Now that we have the physical layout locked, refine the temperature
+    print(f"\n-> Phase 3: Fine Beta Tuning (Best Orbit: {best_orbit_seed})...")
+    
+    beta_final = find_beta_arbitrary(
+        rbm, raw_sampler, conditioning_sets, left_chains, right_chains,
+        binary_patterns_batch=baseline_batch[:128],
+        vis_mapping=vis_best, hid_mapping=hid_best, orbit_seed=best_orbit_seed,
+        beta_init=beta_coarse, # Start from coarse estimate
+        use_srt=True
+    )
+    print(f"Final Beta: {beta_final:.3f}")
+
+    # --- Phase 4: Production Sampling ---
+    print(f"\n-> Phase 4: Production Sampling...")
+    
+    clean_accum = []
+    dirty_accum = []
+    samples_collected = 0
+    current_beta = beta_final
+    
+    while samples_collected < total_samples_needed:
+        remaining = total_samples_needed - samples_collected
+        current_batch_size = min(batch_size, remaining)
+        
+        batch_patterns = base_pattern.repeat(current_batch_size, 1)
+        
+        # A. Sample
+        try:
+            analysis_result = sample_expanded_flux_arbitrary(
+                rbm=rbm, raw_sampler=raw_sampler,
+                conditioning_sets=conditioning_sets,
+                left_chains=left_chains, right_chains=right_chains,
+                binary_patterns_batch=batch_patterns,
+                hidden_side=hidden_side, beta=current_beta,
+                vis_mapping=vis_best, hid_mapping=hid_best, perm_seed=best_orbit_seed,
+                source=f"prod_E{int(incidence_energy)}", use_srt=use_srt
+            )
+        except Exception as e:
+            print(f"!! QPU Fail: {e}. Retrying...")
+            continue
+            
+        # B. Unpack
+        batch_v, batch_h = process_analysis_result(analysis_result, rbm, conditioning_sets)
+        batch_mask = analysis_result.clean_mask.cpu()
+        
+        # C. Drift Check
+        with torch.no_grad():
+            qpu_energies = joint_energy(rbm, batch_v.to(rbm.device), batch_h.to(rbm.device))
+            qpu_mean = qpu_energies.mean().item()
+            
+        diff = qpu_mean - target_energy_mean
+        
+        print(f"   Batch {samples_collected}/{total_samples_needed} | Beta: {current_beta:.3f} | "
+              f"E_qpu: {qpu_mean:.2f} (Diff: {diff:.2f}) | Clean: {analysis_result.total_clean_fraction:.1%}")
+
+        if abs(diff) > drift_tolerance:
+            print(f"!! DRIFT ({diff:.2f} > {drift_tolerance}). Recalibrating...")
+            
+            # Recalibrate using the BEST orbit
+            new_beta = find_beta_arbitrary(
+                rbm, raw_sampler, conditioning_sets, left_chains, right_chains,
+                binary_patterns_batch=batch_patterns,
+                vis_mapping=vis_best, hid_mapping=hid_best, orbit_seed=best_orbit_seed,
+                beta_init=current_beta,num_reads=batch_size, use_srt=True
+            )
+            print(f"   -> Beta updated: {current_beta:.3f} -> {new_beta:.3f}")
+            current_beta = new_beta
+
+        # D. Store
+        batch_v_cpu = batch_v.cpu()
+        clean_batch = batch_v_cpu[batch_mask]
+        dirty_batch = batch_v_cpu[~batch_mask]
+        
+        if len(clean_batch) > 0: clean_accum.append(clean_batch)
+        if len(dirty_batch) > 0: dirty_accum.append(dirty_batch)
+            
+        samples_collected += current_batch_size
+
+    # --- Save & Finish ---
+    print("\n-> Saving Results...")
+    final_clean = torch.cat(clean_accum, dim=0) if clean_accum else torch.empty(0)
+    final_dirty = torch.cat(dirty_accum, dim=0) if dirty_accum else torch.empty(0)
+    
+    total_count = final_clean.shape[0] + final_dirty.shape[0]
+    final_energies = torch.full((total_count, 1), incidence_energy, dtype=torch.float32)
+    
+    # Filename now includes Orbit Seed
+    fname = f"samples_E{int(incidence_energy)}_ORB{best_orbit_seed}"
+    path_clean = os.path.join(save_dir, f"{fname}_clean.pt")
+    path_dirty = os.path.join(save_dir, f"{fname}_dirty.pt")
+    path_energies = os.path.join(save_dir, f"{fname}_energies.pt")
+    
+    torch.save(final_clean, path_clean)
+    torch.save(final_dirty, path_dirty)
+    torch.save(final_energies, path_energies)
+    
+    print(f"Done. Best Orbit: {best_orbit_seed}")
+    return path_clean, path_dirty, path_energies, best_orbit_seed

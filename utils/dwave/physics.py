@@ -306,3 +306,18 @@ def apply_j_scaling(J_logical, edge_factors, edge_counts):
         J_compensated[(u, v)] = j_val * scale_factor
         
     return J_compensated
+
+
+
+def get_latent_correlation(samples: torch.Tensor, n_cond: int):
+    """Calculates correlation matrix of the latent (unclamped) variables."""
+    if samples.shape[0] < 2: return np.zeros((samples.shape[1]-n_cond, samples.shape[1]-n_cond))
+    
+    samples = samples.float().cpu()
+    # Full correlation matrix
+    corr = torch.corrcoef(samples.T).numpy()
+    
+    # Slice to get only the latent part (bottom-right block)
+    latent = corr[n_cond:, n_cond:]
+    np.fill_diagonal(latent, 0) # Ignore diagonal unity
+    return np.nan_to_num(latent, nan=0.0)
