@@ -1,6 +1,7 @@
 from __future__ import annotations  # 1. Must be the very first line!
 
-from typing import Dict, List, Tuple
+from typing import Dict, List, Tuple, Union
+import numpy as np
 from collections import defaultdict
 from dwave.system import DWaveSampler
 from dwave.embedding.zephyr import find_biclique_embedding
@@ -736,3 +737,37 @@ def validate_and_repair_chains(sampler, left_chains, right_chains):
     print("==="*10 + "\n")
     
     return good_left, good_right
+
+
+
+def get_orbit_mappings(
+    seed: Union[int, str, None], 
+    n_vis: int, 
+    n_hid: int
+) -> Tuple[List[int], List[int]]:
+    """
+    Deterministically generates visible and hidden unit mappings based on a seed.
+    
+    Args:
+        seed: Integer seed, 'identity', or None.
+        n_vis: Number of visible units (e.g., 75 for left chains).
+        n_hid: Number of hidden units (e.g., 75 for right chains).
+        
+    Returns:
+        (vis_mapping, hid_mapping): Lists of indices.
+    """
+    # Case 1: Identity (Default)
+    if seed is None or seed == "identity" or seed == "default":
+        return list(range(n_vis)), list(range(n_hid))
+    
+    # Case 2: Deterministic Shuffle
+    if isinstance(seed, int):
+        rng = np.random.default_rng(seed)
+        
+        # We use .tolist() to ensure they are standard Python lists for JSON/Dataclass serialization
+        vis_mapping = rng.permutation(n_vis).tolist()
+        hid_mapping = rng.permutation(n_hid).tolist()
+        
+        return vis_mapping, hid_mapping
+        
+    raise ValueError(f"Unknown seed format: {seed}")
