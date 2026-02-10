@@ -175,6 +175,18 @@ def convert_energy_to_gray(incidence_energy: float, engine, n_cond: int, num_rea
     target_batch_full = cond_pattern.repeat(num_reads, 1).to(device)
     return target_batch_full
 
+def convert_energy_to_gray_compact(incidence_energy: float, engine, n_cond: int, num_reads: int, device: torch.device):
+    e_tensor = torch.tensor([[incidence_energy]], dtype=torch.float32).to(device)
+    with torch.no_grad():
+        if hasattr(engine, 'model') and hasattr(engine.model, 'encoder'):
+            cond_pattern = engine.model.encoder.gray_encoding_compact(e_tensor, lin_bits=engine._config.model.lin_bits, sqrt_bits=engine._config.model.sqrt_bits, log_bits=engine._config.model.log_bits)[:, :n_cond]
+        else:
+            raise ValueError("Failed to encode incidence energy")
+
+    target_batch_full = cond_pattern.repeat(num_reads, 1).to(device)
+    return target_batch_full
+
+
 
 def calculate_rms_chain_strength(J_logical: dict, rho: float = 1.0) -> float:
     """
