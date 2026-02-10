@@ -10,7 +10,7 @@ import torch
 import torch.nn as nn
 from torch.nn.functional import binary_cross_entropy_with_logits
 import torch.nn.functional as F
-from model.gumbel import GumbelMod
+from model.gumbel import GumbelMod, GumbelNoNoise, STEActivation
 from model.encoder.encoderhierarchybase import HierarchicalEncoder, HierarchicalEncoderHidden
 from model.decoder.decoder import Decoder
 from model.decoder.decoderhierarchybase import DecoderHierarchyBase, DecoderHierarchyBaseV2, DecoderHierarchyBaseV3, DecoderHierarchyBaseV4, DecoderHierarchyBaseV5
@@ -19,7 +19,7 @@ from model.decoder.decoder_full_geo import DecoderFullGeo
 from model.decoder.decoderhierarchy0 import DecoderHierarchy0, DecoderHierarchyv3, DecoderHierarchy0Hidden
 from model.decoder.decoderhierarchy0ca import DecoderHierarchy0CA
 from model.decoder.decoderhierarchytf import DecoderHierarchyTF, DecoderHierarchyTFv2
-from model.decoder.decoder_ATLAS_new import DecoderATLASNew, DecoderFullGeoATLASNew, DecoderFullGeoATLASClean, DecoderFullGeoATLASCylinder
+from model.decoder.decoder_ATLAS_new import DecoderATLASNew, DecoderFullGeoATLASNew, DecoderFullGeoATLASClean, DecoderFullGeoATLASCylinder, DecoderFullGeoATLASCompact
 from model.rbm.rbm import RBM, RBM_Hidden
 from model.rbm.rbm_torch import RBMtorch, RBM_Hiddentorch
 from model.rbm.rbm_fulltorch import RBMTorchFull
@@ -33,7 +33,16 @@ class AutoEncoderBase(nn.Module):
     def __init__(self, cfg):
         super(AutoEncoderBase,self).__init__()
         self._config=cfg
-        self._hit_smoothing_dist_mod = GumbelMod()
+        smoothing_dist_type = getattr(self._config.model, "smoothing_dist", "gumbel")
+        if smoothing_dist_type == "gumbel":
+            self._hit_smoothing_dist_mod = GumbelMod()
+        elif smoothing_dist_type == "gumbel_no_noise":
+            self._hit_smoothing_dist_mod = GumbelNoNoise()
+        elif smoothing_dist_type == "ste":
+            self._hit_smoothing_dist_mod = STEActivation()
+        else:
+            raise ValueError(f"Unknown smoothing_dist type: {smoothing_dist_type}")
+        logger.info(f"Using smoothing_dist: {smoothing_dist_type}")
         self._bce_loss = nn.BCEWithLogitsLoss(reduction="none")
 
     def _activation_fct(self, slope, x):
@@ -85,6 +94,8 @@ class AutoEncoderBase(nn.Module):
             return DecoderFullGeoATLASNew(self._config)
         elif self._config.model.decoder == "decoderfullgeoatlasclean":
             return DecoderFullGeoATLASClean(self._config)
+        elif self._config.model.decoder == "decoderfullgeoatlascompact":
+            return DecoderFullGeoATLASCompact(self._config)
         elif self._config.model.decoder == "decoderfullgeoatlascylinder":
             return DecoderFullGeoATLASCylinder(self._config)
         elif self._config.model.decoder == "decoderhierachytfv2":

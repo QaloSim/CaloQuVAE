@@ -33,6 +33,15 @@ class HierarchicalEncoder(nn.Module):
             self._networks.append(network)
         
         self.gray_codec = GrayCode()
+        # set encoding function based on config
+        if hasattr(self._config, "use_gray_code_compact") and self._config.use_gray_code_compact:
+            self.energy_encoding_fct = self.gray_encoding_compact
+        elif hasattr(self._config, "use_gray_code") and self._config.use_gray_code:
+            self.energy_encoding_fct = self.gray_energy_encoding
+        elif hasattr(self._config, "refactor_binary_energy") and self._config.refactor_binary_energy:
+            self.energy_encoding_fct = self.binary_energy_refactored
+        else:
+            self.energy_encoding_fct = self.binary_energy
         
 
     def _create_hierarchy_network(self, level=0):
@@ -51,12 +60,7 @@ class HierarchicalEncoder(nn.Module):
             post_logits = []
             
             # --- NEW: Check for Gray Code Flag ---
-            if hasattr(self._config, 'use_gray_code') and self._config.use_gray_code:
-                post_samples.append(self.gray_energy_encoding(x0))
-            elif self._config.refactor_binary_energy:
-                post_samples.append(self.binary_energy_refactored(x0))
-            else:
-                post_samples.append(self.binary_energy(x0))
+            post_samples.append(self.energy_encoding_fct(x0))
             
             for lvl in range(self.n_latent_hierarchy_lvls-1):
                 
@@ -116,7 +120,39 @@ class HierarchicalEncoder(nn.Module):
         # 3. Repeat and Pad
         padding = torch.zeros(x.shape[0], residual, device=x.device, dtype=x.dtype)
         
-        return torch.cat((x_encoded.repeat(1, reps), padding), 1)  
+        return torch.cat((x_encoded.repeat(1, reps), padding), 1)
+    
+    def gray_encoding_compact(self, x, lin_bits=19, sqrt_bits=16, log_bits=14):
+        """
+        Encodes incidence energy using standard Gray Codes
+        Compacter version with smaller scaling factors to ensure 1 MeV precision at 1 GeV
+        """
+        # 1. Get the encoded parts using the codec
+        # Linear: direct int cast
+        if hasattr(self._config.model, 'lin_bits'):
+            lin_bits = self._config.model.lin_bits
+        if hasattr(self._config.model, 'sqrt_bits'):
+            sqrt_bits = self._config.model.sqrt_bits
+        if hasattr(self._config.model, 'log_bits'):
+            log_bits = self._config.model.log_bits
+
+        lin_enc = self.gray_codec.encode(x.int(), lin_bits)
+        
+        sqrt_enc = self.gray_codec.encode((x.sqrt() * 64).int(), sqrt_bits)
+        
+        log_enc = self.gray_codec.encode((x.log() * 1000).int(), log_bits)
+
+        x_encoded = torch.cat((lin_enc, sqrt_enc, log_enc), dim=1)
+
+        total_bits_per_rep = lin_bits + sqrt_bits + log_bits
+        
+        reps = int(np.floor(self.cond_p_size / total_bits_per_rep))
+        residual = self.cond_p_size - reps * total_bits_per_rep
+
+        # 3. Repeat and Pad
+        padding = torch.zeros(x.shape[0], residual, device=x.device, dtype=x.dtype)
+
+        return torch.cat((x_encoded.repeat(1, reps), padding), 1)
 
         
     def binary(self, x, bits):
