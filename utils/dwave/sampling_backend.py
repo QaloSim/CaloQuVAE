@@ -407,7 +407,6 @@ def sample_physical_arbitrary(
 
     if use_srt:
         # Standard SRT Implementation
-        from dimod import SpinReversalTransformComposite
         active_sampler = SpinReversalTransformComposite(raw_sampler)
         
         # 3a. Generate Random Mask

@@ -434,7 +434,6 @@ def run_embedding(rbm_size, solver_name):
     all_chains = list(left_chains.values()) + list(right_chains.values())
     max_len = max(len(chain) for chain in all_chains)
 
-    # This is the set of ALL qubits used in the 76x76 embedding
     qubits_used = set()
     for chain in all_chains:
         qubits_used.update(chain)
@@ -442,25 +441,6 @@ def run_embedding(rbm_size, solver_name):
     print(f" -> Max chain length: {max_len}")
     print(f" -> Total qubits used: {len(qubits_used)}")
 
-
-    # DIAGNOSTIC BLOCK
-    print("--- Diagnosing Chains ---")
-    # Grab the first chain from the left side
-    test_key = next(iter(left_chains))
-    test_chain = left_chains[test_key]
-    print(f"Chain {test_key}: {test_chain}")
-
-    # Check connectivity on the actual sampler
-    valid = True
-    for i in range(len(test_chain)-1):
-        u, v = test_chain[i], test_chain[i+1]
-        if u not in target_sampler.adjacency[v]:
-            print(f"❌ CRITICAL FAILURE: {u} and {v} are NOT connected on the QPU!")
-            valid = False
-    if valid:
-        print("✅ Chain is physically connected.")
-    else:
-        print("⚠️  The input chains are invalid. Stop here.")
     return target_sampler, working_graph, qubits_used, left_chains, right_chains
 
 

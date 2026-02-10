@@ -4,6 +4,7 @@ import copy
 from dwave.system.composites import FixedEmbeddingComposite
 from datetime import datetime
 import os
+from typing import Tuple, List, Optional, Union
 
 # --- Explicit Local Imports ---
 from .physics import (
@@ -22,7 +23,8 @@ from .graphs import (
     build_expanded_embedding,
     get_expanded_flux_biases,
     build_expanded_embedding_rotation,
-    build_expanded_embedding_arbitrary
+    build_expanded_embedding_arbitrary,
+    get_orbit_mappings,
 )
 from .sampling_backend import (
     sample_logical_ising,
@@ -1366,6 +1368,150 @@ def find_beta_arbitrary(
 
 
 
+
+def find_beta_multi_energy(
+    incidence_energies: list, # List of energies, e.g., [1, 10, 50]
+    energy_patterns_dict: dict, # Map: {energy_val: binary_patterns_tensor}
+    rbm,
+    raw_sampler,
+    conditioning_sets,
+    left_chains,
+    right_chains,
+    hidden_side: str = "right",
+    orbit_seed=None, # Default orbit seed
+    num_reads=1024,
+    rbm_gibbs_steps=5000,
+    beta_init=3.0, 
+    lr=0.01, 
+    num_epochs=15, 
+    tolerance=0.1,
+    use_srt=True,
+    save_dir=None
+):
+    """
+    Orbit aware beta optimization across multiple incidence energies.
+    Optimizes a single scalar Beta to minimize the energy divergence 
+    between RBM and QPU across the provided energy spectrum.
+    """
+    beta = beta_init
+    beta_hist, rbm_e_hist, qpu_e_hist = [], [], []
+    
+    # --- 1. Calculate Global RBM Baseline (Target) ---
+    print(f"Calculating Global RBM Baseline across {len(incidence_energies)} energies...")
+    
+    per_energy_rbm_means = []
+    
+    # We pre-calculate the target batch for each energy to save time in the loop
+    target_batches = {} 
+
+    for energy in incidence_energies:
+        if energy not in energy_patterns_dict:
+            raise ValueError(f"Energy {energy} missing from energy_patterns_dict")
+            
+        # Prepare batch for this energy
+        primary_pattern = energy_patterns_dict[energy][0].unsqueeze(0)
+        target_batch = primary_pattern.repeat(num_reads, 1)
+        target_batches[energy] = target_batch
+        n_clamped = target_batch.shape[1]
+
+        # Classical Sampling (Beta=1.0)
+        full_v_rbm = rbm.sample_v_given_v_clamped(
+            clamped_v=target_batch, 
+            n_clamped=n_clamped, 
+            gibbs_steps=rbm_gibbs_steps, 
+            beta=1.0 
+        )
+        full_h_rbm, _ = rbm._sample_h_given_v(full_v_rbm, beta=1.0)
+        
+        with torch.no_grad(): 
+            energies_rbm = joint_energy(rbm, full_v_rbm, full_h_rbm)
+            mean_e = energies_rbm.mean().item()
+            per_energy_rbm_means.append(mean_e)
+            print(f"   Energy {energy}GeV Baseline: {mean_e:.4f}")
+
+    # The target is the average energy across all incidence types
+    global_target_energy = np.mean(per_energy_rbm_means)
+    print(f"Global Target Mean Energy: {global_target_energy:.4f}")
+    print("-" * 60)
+
+    # get orbit mappings for the given seed
+    if hidden_side == 'right':
+        n_vis, n_hid = len(left_chains), len(right_chains)
+    else:
+        n_vis, n_hid = len(right_chains), len(left_chains)
+
+    vis_mapping, hid_mapping = get_orbit_mappings(orbit_seed, n_vis, n_hid)
+
+    # --- 2. Optimization Loop ---
+    for epoch in range(num_epochs):
+        
+        epoch_qpu_means = []
+        epoch_clean_fractions = []
+        
+        # Iterate through all incidence energies using CURRENT Beta
+        for energy in incidence_energies:
+            
+            target_batch = target_batches[energy]
+            
+            # A. Sample QPU (Arbitrary Mapping)
+            # Note: We use the same orbit_seed for all checks to minimize embedding noise
+            analysis_result = sample_expanded_flux_arbitrary(
+                rbm=rbm,
+                raw_sampler=raw_sampler,
+                conditioning_sets=conditioning_sets,
+                left_chains=left_chains,
+                right_chains=right_chains,
+                binary_patterns_batch=target_batch,
+                hidden_side=hidden_side,
+                beta=beta,
+                source=f"beta_est_E{energy}_orbit{orbit_seed}",
+                use_srt=use_srt,
+                save_dir=save_dir,
+                vis_mapping=vis_mapping,
+                hid_mapping=hid_mapping,
+                perm_seed=orbit_seed 
+            )
+            
+            # B. Process Results
+            dwave_v, dwave_h = process_analysis_result(
+                analysis_result, 
+                rbm, 
+                conditioning_sets
+            )
+            
+            # C. Calculate Metrics for this specific energy batch
+            with torch.no_grad():
+                e_dwave = joint_energy(rbm, dwave_v, dwave_h)
+                epoch_qpu_means.append(e_dwave.mean().item())
+                epoch_clean_fractions.append(analysis_result.total_clean_fraction)
+
+        # --- Aggregation & Update ---
+        global_qpu_mean = np.mean(epoch_qpu_means)
+        avg_clean_frac = np.mean(epoch_clean_fractions)
+        
+        # D. Update Step
+        # Diff = QPU - RBM. If QPU energy is too high, we increase Beta (lower temp).
+        diff = global_qpu_mean - global_target_energy
+        beta_new = max(1e-2, beta - lr * diff)
+
+        print(f"Epoch {epoch}: Beta={beta:.4f} -> {beta_new:.4f} | "
+              f"Global Diff={diff:.2f} | Avg Clean={avg_clean_frac:.2%}")
+
+        beta = beta_new
+        
+        # Store History
+        beta_hist.append(beta)
+        rbm_e_hist.append(global_target_energy)
+        qpu_e_hist.append(global_qpu_mean)
+
+        if abs(diff) < tolerance: 
+            print("Converged within tolerance.")
+            break
+    
+    return beta, beta_hist, rbm_e_hist, qpu_e_hist
+
+
+
 def validate_beta_heterogeneous(
     rbm, 
     qpu_sampler, 
@@ -1898,3 +2044,73 @@ def mass_sample_dwave_orbit_aware(
     
     print(f"Done. Best Orbit: {best_orbit_seed}")
     return path_clean, path_dirty, path_energies, best_orbit_seed
+
+
+
+def mass_sample_dwave_multi_energy(
+    incidence_energies: list,
+    energy_patterns_dict: dict,
+    save_dir: str,
+    # System Objects
+    engine, rbm, raw_sampler, conditioning_sets, left_chains, right_chains,
+    # Hyperparameters
+    num_srt_batches: int=8,
+    n_cond: int = 49,
+    beta: float = 3.0,
+    batch_size: int = 1024,
+    hidden_side: str = 'right',
+    device: str = 'cpu',
+    orbit_seed = None,
+):
+    """
+    Sampling across multiple incidence energies in a single run.
+    Default orbit is used with no drift detection
+    Calls are made with multiple batches of SRTs
+    """
+    os.makedirs(save_dir, exist_ok=True)
+    n_vis = len(left_chains)
+    n_hid = len(right_chains)
+    
+    print(f"\n=== Mass Sampling Start: {len(incidence_energies) * batch_size * num_srt_batches} samples across {len(incidence_energies)} energies ===")
+
+    # 1. Prepare Target Batches for Each Energy
+    target_batches = {}
+    for energy in incidence_energies:
+        if energy not in energy_patterns_dict:
+            raise ValueError(f"Energy {energy} missing from energy_patterns_dict")
+        base_pattern = energy_patterns_dict[energy][0].unsqueeze(0)
+        target_batches[energy] = base_pattern.repeat(batch_size, 1)
+
+    # 2. Sample Each Energy Sequentially
+    qpu_samples = []
+    if hidden_side == 'right':
+        n_vis, n_hid = len(left_chains), len(right_chains)
+    else:
+        n_vis, n_hid = len(right_chains), len(left_chains)
+
+    vis_mapping, hid_mapping = get_orbit_mappings(orbit_seed, n_vis, n_hid)
+
+    for _ in range(num_srt_batches):    
+        for energy in incidence_energies:
+            print(f"\n-> Sampling for Energy {energy} MeV...")
+            
+            batch_patterns = target_batches[energy]
+            
+            try:
+                analysis_result = sample_expanded_flux_arbitrary(
+                    rbm=rbm, raw_sampler=raw_sampler,
+                    conditioning_sets=conditioning_sets,
+                    left_chains=left_chains, right_chains=right_chains,
+                    binary_patterns_batch=batch_patterns,
+                    hidden_side=hidden_side, beta=beta,
+                    source=f"prod_E{int(energy)}", use_srt=True, 
+                    save_dir=save_dir, 
+                    vis_mapping=vis_mapping, hid_mapping=hid_mapping,
+                    perm_seed=orbit_seed
+                )
+            except Exception as e:
+                print(f"!! QPU Fail for Energy {energy}: {e}. Skipping...")
+                continue
+            qpu_samples.append(analysis_result)
+
+    return qpu_samples
