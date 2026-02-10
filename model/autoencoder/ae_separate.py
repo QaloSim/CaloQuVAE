@@ -7,7 +7,7 @@ Inherits from AutoEncoderBase and implements a different KL divergence loss.
 import torch
 import torch.nn as nn
 from torch.nn.functional import binary_cross_entropy_with_logits
-from model.gumbel import GumbelMod
+from model.gumbel import GumbelMod, GumbelNoNoise
 from model.encoder.encoderhierarchybase import HierarchicalEncoder
 from model.decoder.decoder import Decoder
 from model.decoder.decoderhierarchybase import DecoderHierarchyBase, DecoderHierarchyBaseV2
@@ -33,6 +33,7 @@ class AutoEncoderSeparate(AutoEncoderBase):
         self.geo = AtlasGeometry(geo_file)
         self.feature_extractor = DifferentiableFeatureExtractor(self.geo)
         self.cond_normalizer = ConditionNormalizer(method='log_minmax', max_val=300000.0)
+        self._hit_smoothing = GumbelMod()
 
 
     def posterior_entropy(self, post_logits, is_training=True):
@@ -95,7 +96,7 @@ class AutoEncoderSeparate(AutoEncoderBase):
                 activations_raw = self._activation_fct(act_fct_slope, output_activations)
             else:
                 # Evaluation mode: Hard masking for cleaner evaluation
-                output_activations = self._activation_fct(0.0, output_activations) * self._hit_smoothing_dist_mod(output_hits)
+                output_activations = self._activation_fct(0.0, output_activations) * self._hit_smoothing(output_hits)
         
             return output_hits, output_activations, activations_raw, hit_mask_attached
 
