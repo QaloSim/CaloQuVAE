@@ -268,7 +268,7 @@ class SubDecoder(nn.Module):
         return x
 
 class SubdecoderClean(SubDecoder):
-    def __init__(self, cfg, first_subdecoder=False, last_subdecoder=False):
+    def __init__(self, cfg, first_subdecoder=False, last_subdecoder=False, energy_channels=1):
         super().__init__(cfg, first_subdecoder, last_subdecoder)
 
         # Common block structure to avoid repetition and enforce consistency
@@ -281,9 +281,10 @@ class SubdecoderClean(SubDecoder):
             )
 
         # --- Architecture Definition ---
+        # Each layer gets 32 latent channels + 1 channel from skip connection, then energy_channels additional for x0
         if self.last_subdecoder:
             self._subdecoder_layers = nn.Sequential(
-                make_block(34, 32),
+                make_block(33 + energy_channels, 32),
                 make_block(32, 32),
                 make_block(32, 32),
                 # Final projection: No activation, no Norm. Raw logits.
@@ -291,14 +292,14 @@ class SubdecoderClean(SubDecoder):
             )
             
             self._last_subdecoder_hits = nn.Sequential(
-                make_block(34, 32),
+                make_block(33 + energy_channels, 32),
                 make_block(32, 32),
                 make_block(32, 32),
                 nn.ConvTranspose3d(32, 1, (3, 3, 3), stride=(1, 1, 1), padding=(1, 1, 1)),
             )
         else:
             self._subdecoder_layers = nn.Sequential(
-                make_block(34, 32),
+                make_block(33 + energy_channels, 32),
                 make_block(32, 32),
                 make_block(32, 32),
             )

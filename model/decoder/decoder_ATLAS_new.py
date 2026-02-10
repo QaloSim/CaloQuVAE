@@ -185,14 +185,15 @@ class FirstSubDecoderATLASNew(FirstSubDecoder):
         )
 
 class FirstSubdecoderAtlasClean(FirstSubDecoder):
-    def __init__(self, cfg):
+    def __init__(self, cfg, energy_channels=1):
         super().__init__(cfg)
         self.shower_size = (self._config.data.z, self._config.data.phi, self._config.data.r)
 
+        # 1. Update _layers1 input size (Already done by you, correct)
         self._layers1 = nn.Sequential(
-            PeriodicConvTranspose3d(self.n_latent_nodes+1, 512, (3, 3, 3), stride=(1, 1, 1), padding=0),
+            PeriodicConvTranspose3d(self.n_latent_nodes + energy_channels, 512, (3, 3, 3), stride=(1, 1, 1), padding=0),
             nn.BatchNorm3d(512),
-            nn.SiLU(), # Standardized PReLU -> SiLU
+            nn.SiLU(), 
             
             # Upscales to (512, 3, 3, 3)
             PeriodicConvTranspose3d(512, 256, kernel_size=(3, 3, 3), stride=(1, 1, 1), padding=0),
@@ -204,10 +205,13 @@ class FirstSubdecoderAtlasClean(FirstSubDecoder):
             # Upscales to (128, 5, 7, 7)
         )
 
+        # 2. FIX: Update input channels from 129 -> 128 + energy_channels
+        # 128 comes from the previous layer, energy_channels comes from the skip connection
+        in_channels_L2 = 128 + energy_channels 
+
         self._layers2 = nn.Sequential(
-            # Input 129 implies concatenation happened before this block (128 from layers1 + 1 extra)
-            nn.ConvTranspose3d(129, 64, (3, 5, 5), stride=(1, 1, 2), padding=(1, 0, 0)),
-            nn.BatchNorm3d(64), # GroupNorm -> BatchNorm
+            nn.ConvTranspose3d(in_channels_L2, 64, (3, 5, 5), stride=(1, 1, 2), padding=(1, 0, 0)),
+            nn.BatchNorm3d(64),
             nn.SiLU(),
             LinearAttention(64, cylindrical=False),
             
@@ -225,10 +229,10 @@ class FirstSubdecoderAtlasClean(FirstSubDecoder):
         )
 
         self._layers2_hits = nn.Sequential(
-            # Layer for hits
-            nn.ConvTranspose3d(129, 64, (3, 5, 5), stride=(1, 1, 2), padding=(1, 0, 0)),
+            # 3. FIX: Update input channels here too
+            nn.ConvTranspose3d(in_channels_L2, 64, (3, 5, 5), stride=(1, 1, 2), padding=(1, 0, 0)),
             nn.BatchNorm3d(64),
-            nn.SiLU(), # Standardized PReLU -> SiLU
+            nn.SiLU(),
             
             # Upscales to (64, 5, 15, 23)
             nn.ConvTranspose3d(64, 64, (3, 3, 5), stride=(1, 1, 1), padding=(1, 0, 0)),
@@ -238,9 +242,27 @@ class FirstSubdecoderAtlasClean(FirstSubDecoder):
             # Upscales to (64, 5, 11, 17)
             nn.ConvTranspose3d(64, 32, (3, 2, 4), stride=(1, 1, 1), padding=(1, 0, 0)),
             nn.BatchNorm3d(32),
-            # Removed final PReLU(32, 1.0) -> It was identity anyway.
         )
 
+    # 4. FIX: Override forward to handle multi-energy channel broadcasting
+    def forward(self, x, x0):
+        # x input shape: (Batch, n_latent + energy_channels, 1, 1, 1)
+        x = self._layers1(x) 
+        # x output shape: (Batch, 128, 5, 7, 7)
+        
+        d1, d2, d3 = x.shape[-3], x.shape[-2], x.shape[-1]
+        
+        # Broadcast x0 (Batch, energy_channels) to (Batch, energy_channels, d1, d2, d3)
+        # We assume x0 is passed in as (Batch, energy_channels) or (Batch, energy_channels, 1, 1, 1)
+        x0_broadcast = x0.view(x0.shape[0], x0.shape[1], 1, 1, 1).expand(-1, -1, d1, d2, d3)
+
+        # Concatenate: (Batch, 128, ...) + (Batch, energy_channels, ...) = (Batch, 128 + energy_channels, ...)
+        xx0 = torch.cat((x, x0_broadcast), dim=1) 
+        
+        x1 = self._layers2(xx0).reshape(xx0.shape[0], 32, self.shower_size[0], self.shower_size[1], self.shower_size[2])
+        x2 = self._layers2_hits(xx0).reshape(xx0.shape[0], 32, self.shower_size[0], self.shower_size[1], self.shower_size[2])
+        
+        return x1 * x2
 
 
 class DecoderFullGeoATLASClean(DecoderFullGeo):
@@ -274,6 +296,93 @@ class DecoderFullGeoATLASClean(DecoderFullGeo):
                 nn.SiLU(),
             ) #outputs (1, 5, 14, 24)
             self.skip_connections.append(skip_connection)
+
+class DecoderFullGeoATLASCompact(DecoderFullGeoATLASClean):
+
+    def _create_hierarchy_networks(self):
+        self.subdecoders = nn.ModuleList()
+        for i in range(self.n_latent_hierarchy_lvls):
+            if i == 0:
+                subdecoder = FirstSubdecoderAtlasClean(self._config, energy_channels=3)
+            else:
+                subdecoder = SubdecoderClean(self._config, last_subdecoder=(i == self.n_latent_hierarchy_lvls - 1), energy_channels=3)
+            self.subdecoders.append(subdecoder)
+
+    
+    def trans_energy_multibasis(self, x0, energy_min=1000.0, energy_max=300000.0):
+        """
+        Encodes incidence energy into a (batch_size, 3) tensor with Linear, Sqrt, and Log bases.
+        All components are min-max normalized to approx [0, 1] range based on input bounds.
+        
+        Args:
+            x0 (torch.Tensor): Input energy in MeV.
+            energy_min (float): Min expected energy (default 1 GeV = 1000 MeV).
+            energy_max (float): Max expected energy (default 300 GeV = 300000 MeV).
+        
+        Returns:
+            torch.Tensor: Shape (batch_size, 3)
+                - Index 0: Normalized Linear
+                - Index 1: Normalized Sqrt
+                - Index 2: Normalized Log
+        """
+        # Ensure x0 is float for division/log
+        x0 = x0.float()
+        if x0.dim() > 1:
+            x0 = x0.squeeze()
+        
+        # 1. Linear Scaling: (x - min) / (max - min)
+        lin_norm = (x0 - energy_min) / (energy_max - energy_min)
+        
+        # 2. Square Root Scaling: (sqrt(x) - sqrt(min)) / (sqrt(max) - sqrt(min))
+        # Pre-calculate bounds for efficiency
+        sqrt_min = torch.sqrt(torch.tensor(energy_min))
+        sqrt_max = torch.sqrt(torch.tensor(energy_max))
+        sqrt_norm = (torch.sqrt(x0) - sqrt_min) / (sqrt_max - sqrt_min)
+        
+        # 3. Log Scaling: (log(x) - log(min)) / (log(max) - log(min))
+        log_min = torch.log(torch.tensor(energy_min))
+        log_max = torch.log(torch.tensor(energy_max))
+        log_norm = (torch.log(x0) - log_min) / (log_max - log_min)
+        
+        # Stack along the last dimension to create (batch_size, 3)
+        return torch.stack([lin_norm, sqrt_norm, log_norm], dim=-1)
+
+    def forward(self, x, x0):
+        x_lat = x
+        x0 = self.trans_energy_multibasis(x0)
+        x0_reshaped = x0.view(x0.shape[0], 3, 1, 1, 1)
+        x = x.view(x.shape[0], self.n_latent_nodes, 1, 1, 1)  # Reshape x to match the input shape of the first subdecoder
+        prev_output = None
+        partition_idx_start = self.n_latent_nodes - self.p_size  # start index for the z3 RBM partition
+        partition_idx_end = partition_idx_start + self.p_size # end index for the z3 RBM partition
+
+
+        for lvl in range(self.n_latent_hierarchy_lvls):
+            curr_subdecoder = self.subdecoders[lvl]
+            x0_broadcasted = x0_reshaped.expand(x.shape[0], 3, *self.input_shapes[lvl])
+
+            decoder_input = torch.cat((x, x0_broadcasted), dim=1)  # Concatenate along the channel dimension
+            # print(decoder_input.shape)
+            
+            if lvl < self.n_latent_hierarchy_lvls - 1:
+                output = curr_subdecoder(decoder_input, x0)
+                if prev_output is not None:
+                    output += prev_output  # add/refine the previous subdecoder output
+                prev_output = output
+                enc_z = torch.cat((x_lat[:, 0:self.cond_p_size], x_lat[:, partition_idx_start:partition_idx_end]), dim=1)  # concatenate the incident energy and the latent nodes of the current RBM partition
+                enc_z = torch.unflatten(enc_z, 1, (self.cond_p_size + self.p_size*(1+lvl), 1, 1, 1))
+                # Apply skip connection
+                enc_z = self.skip_connections[lvl](enc_z)
+                partition_idx_start -= self.p_size  # start index for the current RBM partition, moves one partition back every level
+                # print(output.shape, enc_z.shape)
+                x = torch.cat((output, enc_z), dim=1)  # concatenate the output of the current subdecoder and the skip connection output
+
+            else:  # last level
+                output_hits, output_activations = curr_subdecoder(decoder_input, x0)
+                output_hits = output_hits.reshape(output_hits.shape[0], self.z*self.phi*self.r)
+                output_activations = output_activations.reshape(output_activations.shape[0], self.z*self.phi*self.r)
+                return output_hits, output_activations
+
 
 
 
