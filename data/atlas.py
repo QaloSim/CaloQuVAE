@@ -2,6 +2,9 @@ import torch
 import h5py
 import numpy as np
 from collections import defaultdict
+from CaloQuVAE import logging
+logger = logging.getLogger(__name__)
+
 
 def get_atlas_dataset(cfg):
     with h5py.File(cfg.data.path, 'r') as f:
@@ -15,10 +18,19 @@ def get_atlas_dataset(cfg):
     if is_discrete:
         bin_ids = np.digitize(energies_np, unique_energies, right=False)
     else: # using smeared logic
-        energy_bin_centers = [2**i for i in range(8, 23)]
-        energy_bin_edges = [2**(np.log2(c) - 0.5) for c in energy_bin_centers]
-        energy_bin_edges.append(2**(np.log2(energy_bin_centers[-1]) + 0.5))
-        bin_ids = np.digitize(energies_np, energy_bin_edges, right=False)
+        if "Custom" in cfg.data.dataset_name:
+            logger.info("Using Linear Binning for Custom ATLAS Dataset")
+            logger
+            min_e = energies_np.min()
+            max_e = energies_np.max()
+            num_bins = 15
+            energy_bin_edges = np.linspace(min_e, max_e + 1e-6, num_bins + 1)
+            bin_ids = np.digitize(energies_np, energy_bin_edges, right=False)
+        else:
+            energy_bin_centers = [2**i for i in range(8, 23)]
+            energy_bin_edges = [2**(np.log2(c) - 0.5) for c in energy_bin_centers]
+            energy_bin_edges.append(2**(np.log2(energy_bin_centers[-1]) + 0.5))
+            bin_ids = np.digitize(energies_np, energy_bin_edges, right=False)
 
     bin_to_indices = defaultdict(list)
     for i, b in enumerate(bin_ids):

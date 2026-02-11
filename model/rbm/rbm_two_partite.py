@@ -65,6 +65,8 @@ class RBM_TwoPartite:
         self.chains["h"] = torch.randint(0, 2, size=(num_chains, num_hiddens), device=device, dtype=torch.float32)
         self.chains["mv"] = torch.zeros(size=(num_chains, num_visibles), device=device, dtype=torch.float32)
         self.chains["mh"] = torch.zeros(size=(num_chains, num_hiddens), device=device, dtype=torch.float32)
+
+        self.pcd_chains = {}
     
     def compute_gradient(
         self,

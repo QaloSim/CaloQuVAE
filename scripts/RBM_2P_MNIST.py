@@ -342,6 +342,7 @@ def main():
     logger.info(f"Initialized RBM: {rbm.p_size} visible, {rbm.p_size} hidden units")
     logger.info(f"Device: {rbm.device}")
     logger.info(f"Num chains: {config.rbm.num_chains}")
+    logger.info(f"Using {config.rbm.method} for training")
 
     # Setup save directory
     run_timestamp = datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
@@ -372,6 +373,11 @@ def main():
             if config.rbm.method == "CD":
                 rbm.chains["v"] = v_data.clone()
                 rbm.sample_hidden()
+            elif config.rbm.method == "PCD":
+                if epoch == 0:
+                    rbm.pcd_chains[batch_idx] = v_data.clone()
+                rbm.chains["v"] = rbm.pcd_chains[batch_idx]
+                rbm.sample_hidden()
             
             # Positive phase: compute hidden expectations
             with torch.no_grad():
@@ -388,6 +394,8 @@ def main():
 
             # Training step
             rbm.fit_batch(data_dict, centered=True)
+            if config.rbm.method == "PCD":
+                rbm.pcd_chains[batch_idx] = rbm.chains["v"].clone()
 
         # --- End of epoch: generate samples and log ---
         logger.info(f"\nEpoch {epoch+1} completed. Generating samples...")
