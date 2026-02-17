@@ -98,6 +98,105 @@ def visualize_embedding(sampler, graph, left_chains_dict, right_chains_dict, con
     plt.title(f"Embedding on {sampler.solver.name}", fontsize=20)
     plt.show()
 
+import matplotlib.pyplot as plt
+import dwave_networkx as dnx
+import networkx as nx
+
+def visualize_embedding_poster(sampler, graph, left_chains_dict, right_chains_dict, conditioning_sets):
+    print("\n--- Generating Poster Visualization (Cropped) ---")
+    
+    # --- 1. CONFIGURATION ---
+    c_palette = {
+        'left': '#D55E00',      # Vermilion
+        'right': '#009E73',     # Bluish Green
+        'cond': '#56B4E9',      # Sky Blue
+        'unused_rgba': (0.8, 0.8, 0.8, 0.1) # Ghost the background
+    }
+
+    # --- 2. DATA PREP ---
+    emb = {}
+    l_qubits, r_qubits, c_qubits = set(), set(), set()
+
+    for node, chain in left_chains_dict.items():
+        emb[f'L_{node}'] = chain
+        l_qubits.update(chain)
+        
+    for node, chain in right_chains_dict.items():
+        emb[f'R_{node}'] = chain
+        r_qubits.update(chain)
+        
+    for i, q_set in enumerate(conditioning_sets):
+        emb[f'C_{i}'] = q_set
+        c_qubits.update(q_set)
+
+    chain_color = {}
+    for logical_node in emb:
+        if logical_node.startswith('L_'):
+            chain_color[logical_node] = c_palette['left']
+        elif logical_node.startswith('R_'):
+            chain_color[logical_node] = c_palette['right']
+        elif logical_node.startswith('C_'):
+            chain_color[logical_node] = c_palette['cond']
+
+    # --- 3. PLOTTING & CROPPING ---
+    fig, ax = plt.subplots(figsize=(12, 12), dpi=300) 
+    
+    # We need the layout positions to calculate the zoom limits
+    # dnx uses this layout internally, so we call it here just for the math
+    pos = dnx.zephyr_layout(graph)
+    
+    dnx.draw_zephyr_embedding(
+        graph, 
+        emb=emb,
+        chain_color=chain_color,
+        unused_color=c_palette['unused_rgba'], 
+        node_size=20,       
+        show_labels=False,
+        width=0.2,
+        ax=ax
+    )
+
+    # --- CALCULATE BOUNDING BOX ---
+    # Gather all active physical qubits
+    all_active_qubits = l_qubits | r_qubits | c_qubits
+    
+    # Extract their x and y coordinates
+    xs = [pos[q][0] for q in all_active_qubits]
+    ys = [pos[q][1] for q in all_active_qubits]
+    
+    # Add a small margin so nodes aren't cut off at the edge (0.5 is usually one unit block)
+    margin = 0.1
+    ax.set_xlim(min(xs) - margin, max(xs) + margin)
+    ax.set_ylim(min(ys) - margin, max(ys) + margin)
+
+    # --- 4. LEGEND ---
+    legend_elements = [
+        plt.Line2D([0], [0], marker='o', color='w', 
+                   label=f'Left Chains ({len(l_qubits)} q)',
+                   markerfacecolor=c_palette['left'], markersize=18),
+        plt.Line2D([0], [0], marker='o', color='w', 
+                   label=f'Right Chains ({len(r_qubits)} q)',
+                   markerfacecolor=c_palette['right'], markersize=18),
+        plt.Line2D([0], [0], marker='o', color='w', 
+                   label=f'Conditioning ({len(c_qubits)} q)',
+                   markerfacecolor=c_palette['cond'], markersize=18),
+    ]
+    
+    ax.legend(handles=legend_elements, 
+              loc='upper right', 
+              fontsize=24,           
+              frameon=True, 
+              framealpha=1.0, 
+              edgecolor='black')
+
+    plt.axis('off')
+    # tight_layout will now work relative to the new cropped limits
+    plt.tight_layout()
+    
+    # filename = "embedding_poster_cropped.png"
+    # plt.savefig(filename, bbox_inches='tight', transparent=True)
+    # print(f"Plot saved to {filename}")
+    plt.show()
 def plot_beta_optimization(
     beta_hist: list | np.ndarray, 
     rbm_e_hist: list | np.ndarray, 
@@ -1839,3 +1938,99 @@ def plot_hamming_magnetization_classical(results: dict, n_cond: int = 52):
 
     plt.tight_layout()
     plt.show()
+
+
+def plot_hamming_cliff_comparison(results_binary: dict, results_gray: dict, n_cond: int = 52):
+    """
+    Plots the difference in magnetization (Drift) for both Binary and Gray code 
+    experiments on the same axes for direct poster comparison.
+    """
+    
+    # --- 1. Helper to compute drift ---
+    def compute_diff(results):
+        energies = sorted(list(results.keys())) # Ensure E1 < E2
+        e1, e2 = energies[0], energies[1]
+        
+        # Get raw samples (B, latent_dim)
+        s1 = results[e1]['samples'].float()
+        s2 = results[e2]['samples'].float()
+        
+        # Compute mean magnetization, slice off conditional nodes
+        mag1 = s1.mean(dim=0)[n_cond:].cpu().numpy()
+        mag2 = s2.mean(dim=0)[n_cond:].cpu().numpy()
+        
+        # Return difference
+        return mag2 - mag1, (e1, e2)
+
+    diff_binary, (be1, be2) = compute_diff(results_binary)
+    diff_gray, (ge1, ge2) = compute_diff(results_gray)
+    
+    # Create Indices (Latent Nodes)
+    indices = np.arange(len(diff_binary))
+    
+    # --- 2. Poster Style Settings ---
+    plt.rcParams.update({
+    # 1. Use the generic 'serif' family
+    "font.family": "serif",
+    
+    # 2. Specify a list of serif fonts to try (in order of priority)
+    # This fixes the "findfont" error by giving it options that definitely exist
+    "font.serif": ["Times New Roman", "Times", "DejaVu Serif", "serif"],
+
+    # 3. Match the math font (equations) to Times New Roman
+    # 'stix' is a math font that looks very similar to Times
+    "mathtext.fontset": "stix", 
+    
+    # 4. Your sizing settings
+    'font.size': 14,
+    'axes.titlesize': 32,
+    'axes.labelsize': 18,
+    'xtick.labelsize': 14,
+    'ytick.labelsize': 14,
+    'legend.fontsize': 16,
+    'legend.title_fontsize': 18,
+    'lines.linewidth': 3
+})
+    # --- 3. Plot Setup ---
+    fig, ax = plt.subplots(figsize=(20, 7)) # Wide aspect ratio for posters
+    
+    # Colors (IBM Color Blind Safe Palette)
+    color_gray = '#DC267F'  # Magenta (Your original preference)
+    color_binary = '#648FFF'    # Indigo/Blue (High contrast to Magenta)
+
+    # --- 4. Plot Binary Code (The "Bad" Cliff) ---
+    # Using 'step' plots is cleaner than stem for overlapping data
+    ax.step(indices, diff_binary, where='mid', color=color_binary, label='Binary Code', alpha=0.8)
+    ax.fill_between(indices, diff_binary, step='mid', color=color_binary, alpha=0.1)
+
+    # --- 5. Plot Gray Code (The "Good" Cliff) ---
+    ax.step(indices, diff_gray, where='mid', color=color_gray, label='Gray Code', alpha=1.0, linestyle='--')
+    # Hatching helps distinguish the "good" overlap on a printed poster
+    ax.fill_between(indices, diff_gray, step='mid', color=color_gray, alpha=0.4, hatch='//')
+
+    # --- 6. Formatting & Annotations ---
+    # Zero line (Reference)
+    ax.axhline(0, color='black', linewidth=1.5, alpha=0.5)
+    
+    # Dynamic Title based on Energy Transition
+    ax.set_title(f"Hamming Cliff Sensitivity: ${be1} \\to {be2}$ MeV", pad=20)
+    ax.set_xlabel("Latent Node Index")
+    ax.set_ylabel(r"Magnetization Drift $\Delta \langle \sigma_z \rangle$ (Lower is Better)")
+    
+    # Force Integer Ticks for x-axis if not too dense
+    if len(indices) < 20:
+        ax.set_xticks(indices)
+    
+    # Large Legend
+    ax.legend(loc='upper right', frameon=True, framealpha=0.95, shadow=True, borderpad=1)
+    
+    # Grid
+    # ax.grid(True, linestyle=':', alpha=0.6)
+    
+    # Clean spines for professional look
+    ax.spines['top'].set_visible(False)
+    ax.spines['right'].set_visible(False)
+
+    plt.tight_layout()
+    plt.show()
+    return fig
