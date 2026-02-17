@@ -107,6 +107,97 @@ def plot_calorimeter_shower(cfg, showers, showers_recon, showers_sampled, epoch,
 
     return image_input, image_recon, image_sample, image_input_avg, image_recon_avg, image_sample_avg
 
+def plot_calorimeter_shower_simplified(
+    gt_showers, 
+    showers_recon, 
+    incident_energies, 
+    choice, 
+    num_events, 
+    showers_sampled=None, 
+    cfg=None
+):
+    """
+    Plots the GT, Recon, and Sampled events for the 'num_events' closest to the 'choice' energy.
+    
+    Args:
+        gt_showers: Tensor of ground truth showers.
+        showers_recon: Tensor of reconstructed showers.
+        incident_energies: Tensor of incident energies corresponding to the showers.
+        choice (float): The target energy to search for.
+        num_events (int): Number of events to plot.
+        showers_sampled (Tensor, optional): Tensor of sampled showers. Defaults to None.
+        cfg: Configuration object required for HLF initialization.
+    """
+    
+    # 1. Initialize HighLevelFeatures (HLF) 
+    # We need this object to handle the specific binning/geometry of the plots
+    dataset_name = cfg.data.dataset_name.lower()
+    if "atlas" in dataset_name:
+        HLF = HighLevelFeatures_ATLAS_regular(
+            particle=cfg.data.particle,
+            filename=cfg.data.binning_path,
+            relevantLayers=cfg.data.relevantLayers
+        )
+    else:
+        HLF = HighLevelFeatures(
+            particle=cfg.data.particle,
+            filename=cfg.data.binning_path,
+            relevantLayers=cfg.data.relevantLayers
+        )
+
+    # 2. Find the indices of events closest to the chosen energy
+    # We calculate the absolute difference and sort by smallest difference
+    diff = torch.abs(incident_energies.flatten() - choice)
+    
+    # Get the indices of the 'num_events' smallest differences
+    # largest=False means we get the smallest values (closest energies)
+    closest_indices = torch.topk(diff, k=num_events, largest=False).indices.tolist()
+
+    # 3. Iterate and Plot
+    figures = []
+    
+    for i, idx in enumerate(closest_indices):
+        # Extract the specific energy for this event
+        current_energy = incident_energies[idx].item()
+        
+        # Select Data
+        real = gt_showers[idx]
+        recon = showers_recon[idx]
+        
+        # Prepare Title Suffix
+        title_suffix = f" (E_true: {current_energy:.1f} MeV)"
+
+        # Plot GT
+        fig_real = HLF.DrawSingleShower(
+            real, 
+            title=f"Event {i+1} GT{title_suffix}", 
+            filename=None, 
+            cmap='rainbow'
+        )
+        figures.append(fig_real)
+        
+        # Plot Recon
+        fig_recon = HLF.DrawSingleShower(
+            recon, 
+            title=f"Event {i+1} Recon{title_suffix}", 
+            filename=None, 
+            cmap='rainbow'
+        )
+        figures.append(fig_recon)
+
+        # Plot Sampled (only if provided)
+        if showers_sampled is not None:
+            # Assuming showers_sampled aligns with gt_showers index-wise
+            sampled = showers_sampled[idx]
+            fig_sampled = HLF.DrawSingleShower(
+                sampled, 
+                title=f"Event {i+1} Sampled{title_suffix}", 
+                filename=None, 
+                cmap='rainbow'
+            )
+            figures.append(fig_sampled)
+
+    return figures
 
 class AtlasEvaluator:
     def __init__(self):
