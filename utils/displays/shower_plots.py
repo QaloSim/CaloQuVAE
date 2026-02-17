@@ -12,9 +12,135 @@ import os
 # local imports
 from utils.HighLevelFeatsAtlasReg import HighLevelFeatures_ATLAS_regular
 from utils.HLF.atlasgeo import AtlasGeometry, DifferentiableFeatureExtractor
+import mplhep as hep
 
 
 
+
+def plot_poster_comparison(shower_atlas, shower_qpu, layer_names, layer_ids, cfg):
+    """
+    Plots a direct comparison between a specific ATLAS shower and a QPU shower 
+    for a poster, including ATLAS labelling and a shared colorbar.
+
+    Args:
+        shower_atlas: Tensor (1D) of the ATLAS shower event.
+        shower_qpu: Tensor (1D) of the QPU shower event.
+        layer_names: List of strings or ints naming the layers (e.g. ["EMB0", "TileBar 0"]).
+        layer_ids: List of corresponding layer IDs for geometry retrieval (e.g. [1, 2, 3, 4, 13]).
+        cfg: Configuration object for HLF initialization.
+    
+    Returns:
+        fig: The matplotlib figure object.
+    """
+    
+    # 1. Initialize HighLevelFeatures (HLF)
+    # We use this ONLY for geometry/binning calculations
+    dataset_name = cfg.data.dataset_name.lower()
+    HLF = HighLevelFeatures_ATLAS_regular(
+        particle=cfg.data.particle,
+        filename=cfg.data.binning_path,
+        relevantLayers=cfg.data.relevantLayers
+    )
+    # 2. Setup Figure Grid
+    # Rows = 2 (ATLAS vs QPU), Cols = Number of Layers
+    num_layers = len(layer_names)
+    fig, axes = plt.subplots(2, num_layers, figsize=(4 * num_layers, 8), dpi=300,
+    gridspec_kw={'hspace': 0.02, 'wspace': 0.2}, # Add this line to control spacing,
+    # constrained_layout=True
+    )
+    
+    # Global Plot Settings
+    cmap = 'rainbow'
+    vmin, vmax = 2, 1e3 # Adjust based on your typical energy range
+    norm = LogNorm(vmin=vmin, vmax=vmax)
+    vox_per_layer = 14 * 24 # Standard voxel size per layer based on your HLF
+    
+    # Helper function to extract geometry and draw patches on a specific axis
+    def _draw_on_ax(ax, energy_tensor, layer_id):
+        # Inject state into HLF to retrieve geometry for this layer
+        # Note: We need to ensure tensor is on CPU/Numpy for plotting
+        if isinstance(energy_tensor, torch.Tensor):
+            e_vals = energy_tensor.detach().cpu().numpy()
+        else:
+            e_vals = energy_tensor
+
+        HLF.single_event_energy = e_vals
+        HLF.current_layer = str(layer_id)
+        
+        # Get Geometry arrays
+        r0, r1, a0, a1, e = HLF.get_sector_arrays(HLF.current_layer)
+        
+        # Transform for equal area visualization
+        transform = HLF._make_equal_bin_transform(r0, r1)
+        r0p, r1p = transform(r0), transform(r1)
+        
+        # Create Wedges
+        patches = []
+        for inner, outer, start, end in zip(r0p, r1p, a0, a1):
+            width = outer - inner
+            patches.append(Wedge((0, 0), outer, start, end, width=width))
+            
+        # Add Collection
+        pc = PatchCollection(patches, cmap=cmap, norm=norm, edgecolor="grey", linewidths=0.1)
+        pc.set_array(e)
+        ax.add_collection(pc)
+        
+        # Styling
+        Rmax = r1p.max()
+        ax.set_xlim(-Rmax - 0.1, Rmax + 0.1)
+        ax.set_ylim(-Rmax - 0.1, Rmax + 0.1)
+        ax.set_aspect('equal')
+        ax.axis('off')
+        return pc
+
+    # 3. Plot Loops
+    
+    # --- Row 0: ATLAS ---
+    for i, layer_id in enumerate(layer_ids):
+        ax = axes[0, i]
+        # Slice the flat tensor for this layer
+        start_idx = i * vox_per_layer
+        end_idx = (i + 1) * vox_per_layer
+        layer_data = shower_atlas[start_idx:end_idx]
+        
+        _draw_on_ax(ax, layer_data, layer_id)
+                
+        # Add row label to the first column
+        if i == 0:
+            ax.text(-0.2, 0.5, "ATLAS\nSimulation", transform=ax.transAxes, 
+                    fontsize=24, va='center', ha='right', fontweight='bold', rotation=90)
+
+    # --- Row 1: QPU ---
+    for i, layer_id in enumerate(layer_ids):
+        ax = axes[1, i]
+        # Slice the flat tensor for this layer
+        start_idx = i * vox_per_layer
+        end_idx = (i + 1) * vox_per_layer
+        layer_data = shower_qpu[start_idx:end_idx]
+        
+        _draw_on_ax(ax, layer_data, layer_id)
+        ax.set_title(f"{layer_names[i]}", transform=ax.transAxes, y=-0.1,
+                ha='center', va='top', fontsize=16, fontweight='medium')
+
+        # Add row label to the first column
+        if i == 0:
+            ax.text(-0.2, 0.5, "QPU\nGeneration", transform=ax.transAxes, 
+                    fontsize=24, va='center', ha='right', fontweight='bold', rotation=90)
+
+    # 4. Add Colorbar
+    # We add one colorbar at the bottom for the whole figure
+    sm = ScalarMappable(cmap=cmap, norm=norm)
+    sm.set_array([])
+    cbar = fig.colorbar(sm, ax=axes.ravel().tolist(), orientation='vertical', 
+                        fraction=0.05, pad=0.05, aspect=15, location="right")
+    cbar.set_label('Energy (MeV)', fontsize=18)
+
+    # 5. Add ATLAS Label (mplhep)
+    # Usually placed on the top left axis or the figure super-title area
+    # We'll attach it to the first axis of the ATLAS row
+    hep.atlas.label(ax=axes[0,0], text="Work in Progress", loc=0, data=False, rlabel="") 
+    fig.suptitle(r"Displays of ATLAS Simulation and QPU Generated Showers, $E_{inc} = 50$ GeV", fontsize=28, fontweight='bold')
+    return fig
 
 
 def plot_layer_on_ax(ax, hlf_instance, layer_id, energy_data, title=None, 
