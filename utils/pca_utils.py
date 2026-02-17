@@ -3,6 +3,7 @@ import numpy as np
 from matplotlib.gridspec import GridSpec
 import seaborn as sns
 import torch
+from typing import Tuple, List
 
 
 def plot_scatter_labels(ax, data_proj, gen_data_proj, proj1, proj2, labels):
@@ -159,3 +160,63 @@ def compute_U(
         curr_id_mat = id_mat.clone()
     u = get_ortho(u)
     return u
+
+
+
+def load_data(real_path: str, gen_path: str, device: torch.device, incidence_path: str=None) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
+    print(f"Loading data...")
+    real = torch.load(real_path, map_location=device).to(torch.float32)
+    gen = torch.load(gen_path, map_location=device).to(torch.float32)
+    if incidence_path is not None:
+        print(f"Loading incident energy...")
+        incidence_energy = torch.load(incidence_path, map_location=device).to(torch.float32)
+        return real, gen, incidence_energy
+    else:
+        return real, gen
+
+def load_data_features(real_path: str, gen_path: str, recon_features_path: str, classical_features_path: str, device: torch.device) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
+    print(f"Loading data and features...")
+    real = torch.load(real_path, map_location=device).to(torch.float32)
+    gen = torch.load(gen_path, map_location=device).to(torch.float32)
+    recon_features = torch.load(recon_features_path, map_location=device).to(torch.float32)
+    classical_features = torch.load(classical_features_path, map_location=device).to(torch.float32)
+    return real, gen, recon_features, classical_features
+
+def run_pca_pipeline(
+    data_real: torch.Tensor, 
+    data_gen: torch.Tensor, 
+    n_components: int = 4,
+    center_projection: bool = False 
+) -> Tuple[np.ndarray, np.ndarray]:
+    """
+    Args:
+        center_projection: 
+            If True, projects (X - mean) @ U. (Standard PCA, centered at 0,0)
+            If False, projects X @ U. (Your method, preserves origin offset)
+    """
+    device = data_real.device
+    num_samples, num_visibles = data_real.shape
+    
+    print("Computing Mean and Centering Real Data...")
+    mean_vec = data_real.mean(0)
+    M = data_real - mean_vec
+    
+    # Weights assumed uniform based on your snippet
+    weights = torch.ones(num_samples, 1, device=device)
+    
+    print("Computing Eigenvectors (U)...")
+    U = compute_U(M, weights, d=n_components, device=device, dtype=torch.float32)
+    
+    print("Projecting Data...")
+    scale = num_visibles**0.5
+    
+    if center_projection:
+        # Standard PCA: Center both datasets
+        proj_real = ((data_real - mean_vec) @ U) / scale
+        proj_gen = ((data_gen - mean_vec) @ U) / scale
+    else:
+        # Your Method: Project raw data (Offset preserved)
+        proj_real = (data_real @ U) / scale
+        proj_gen = (data_gen @ U) / scale
+        
+    return proj_real.detach().cpu().numpy(), proj_gen.detach().cpu().numpy()
