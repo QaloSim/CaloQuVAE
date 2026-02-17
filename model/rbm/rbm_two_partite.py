@@ -135,6 +135,26 @@ class RBM_TwoPartite:
             self.sample_hidden(beta)
             self.sample_visibles(beta)
 
+    def sample_state_conditional(self, data_dict: Dict[str, torch.Tensor], n_cond: int=49, beta: float = 1.0) -> None:
+        """
+        Runs Gibbs sampling while clamping the first n_cond visible units to the data.
+        Used for Conditional CD (CCD) training.
+        """
+        if self.chains["v"].shape[0] != data_dict["v"].shape[0]: #match batch size for last batch
+            self.init_chains(data_dict["v"].shape[0], self.num_visible, self.num_hidden, self.device)
+
+        # start at conditional slice of data
+        self.chains["v"][:, :n_cond] = data_dict["v"][:, :n_cond]
+        # initalize the rest of the visible units randomly
+        self.chains["v"][:, n_cond:] = torch.randint(0, 2, (self.chains["v"].shape[0], self.chains["v"].shape[1] - n_cond), device=self.device, dtype=torch.float32)
+        for _ in range(self.config.rbm.bgs_steps):
+            self.sample_hidden(beta)
+            self.sample_visibles(beta)
+            # re-clamp the conditional slice
+            self.chains["v"][:, :n_cond] = data_dict["v"][:, :n_cond]
+    
+
+
     def reset_chains(self) -> None:
         """Reinitialize chains to random binary values."""
         num_chains = self.chains["v"].shape[0]
@@ -193,6 +213,17 @@ class RBM_TwoPartite:
         """
 
         self.sample_state()
+        self.update_parameters(data, centered)
+    
+    def fit_batch_ccd(self,
+        data: Dict[str, torch.Tensor],
+        n_cond: int,
+        centered: bool=True) -> None:
+        """Fits the model to a batch of data using Conditional CD (CCD). 
+        Same args and updates as fit_batch, but with n_cond specifying how many visible units to clamp.
+        Calls sample_state_conditional instead of sample_state to perform the Gibbs sampling with clamping.
+        """
+        self.sample_state_conditional(data, n_cond)
         self.update_parameters(data, centered)
 
     def compute_energy(self, v_nodes: torch.Tensor) -> torch.Tensor:
