@@ -22,13 +22,15 @@ import torch.nn as nn
 from model.dummymodel import MLP
 from model.autoencoder.autoencoderbase import AutoEncoderBase, AutoEncoderHidden
 from model.autoencoder.ae_separate import AutoEncoderSeparate, AutoEncoderSeparateHidden
+from model.transfusion.transfusion_model import TransfusionModel
 
 _MODEL_DICT={
     "mlp": MLP,
     "autoencoderbase": AutoEncoderBase,
     "autoencoderhidden": AutoEncoderHidden,
     "ae_separate": AutoEncoderSeparate,
-    "ae_hidden": AutoEncoderSeparateHidden
+    "ae_hidden": AutoEncoderSeparateHidden,
+    "transfusion": TransfusionModel
 }
 
 class ModelCreator():
@@ -90,6 +92,32 @@ class ModelCreator():
         self._config.config_path = config_path
         OmegaConf.save(self._config, config_path, resolve=True)
         return config_path
+    
+    def save_state_tfusion(self, cfg_string='test', opt=None, sched=None, override_path=None):
+        if override_path:
+            save_dir = override_path
+        else:
+            save_dir = self._config.save_dir
+
+        os.makedirs(save_dir, exist_ok=True)
+
+        path = os.path.join(save_dir, f"{cfg_string}.pth")
+        logger.info(f"Saving model state to {path}")
+
+        modules = list(self._model._modules.keys())
+        state_dict = {module: getattr(self._model, module).state_dict() for module in modules}
+
+        torch.save(state_dict, path)
+        if opt is not None:
+            torch.save(opt.state_dict(), os.path.join(save_dir, f"{cfg_string}_opt.pth"))
+        if sched is not None:
+            torch.save(sched.state_dict(), os.path.join(save_dir, f"{cfg_string}_sched.pth"))
+
+        config_path = os.path.join(save_dir, f"{cfg_string}_config.yaml")
+        self._config.run_path = path
+        self._config.config_path = config_path
+        OmegaConf.save(self._config, config_path, resolve=True)
+        return config_path
 
         
     def save_RBM_state(self, cfg_string='test', encoded_data_energy=None):
@@ -142,6 +170,40 @@ class ModelCreator():
                 logger.info("Loaded RBM optimizer state")
             except Exception as e:
                 logger.error(f"Failed to load RBM optimizer state: {e}")
+    
+    def load_state_tfusion(self, run_path, device, opt=None, sched=None):
+        logger.info("Loading state")
+        model_loc = run_path
+
+        # Open a file in read-binary mode
+        with open(model_loc, 'rb') as f:
+            # Interpret the file using torch.load()
+            checkpoint=torch.load(f, map_location=device)
+
+            logger.info("Loading weights from file : {0}".format(run_path))
+            
+            local_module_keys=list(self._model._modules.keys())
+            for module in checkpoint.keys():
+                if module in local_module_keys:
+                    print("Loading weights for module = ", module)
+                    getattr(self._model, module).load_state_dict(checkpoint[module])
+        base_dir = os.path.dirname(run_path)
+        cfg_string = os.path.splitext(os.path.basename(run_path))[0]
+        opt_path = os.path.join(base_dir, f"{cfg_string}_opt.pth")
+        sched_path = os.path.join(base_dir, f"{cfg_string}_sched.pth")
+        if opt is not None and os.path.exists(opt_path):
+            try:
+                opt.load_state_dict(torch.load(opt_path, map_location=device))
+                logger.info("Loaded optimizer state")
+            except Exception as e:
+                logger.error(f"Failed to load optimizer state: {e}")
+        if sched is not None and os.path.exists(sched_path):
+            try:
+                sched.load_state_dict(torch.load(sched_path, map_location=device))
+                logger.info("Loaded scheduler state")
+            except Exception as e:
+                logger.error(f"Failed to load scheduler state: {e}")
+
 
                     
     def load_RBM_state(self, run_path, device):
