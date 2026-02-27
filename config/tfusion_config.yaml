@@ -1,0 +1,27 @@
+defaults:
+  - data: AtlasCustom2Layer
+  - wandb: ML2
+  - model: model_tfusion
+  - engine: engine_tfusion
+  - _self_
+
+n_epochs: 700
+epoch_start: 0
+
+device: gpu
+gpu_list:
+  - 4
+
+run_path: ""
+config_path: "/fast_scratch_1/caloqvae/lzhu/wandb/run-20260225_231755-ubgp0yf2/files/transfusion_690_config.yaml"
+load_state: 0
+save_dir: "/home/leozhu/CaloQuVAE/wandb-outputs"
+feature_stats_path: ""
+
+validation_datasets:
+  - AtlasCustom2
+  - AtlasCustom1GeV
+  - AtlasCustom10GeV
+  - AtlasCustom50GeV
+  - AtlasCustom100GeV
+  - AtlasCustom250GeV
