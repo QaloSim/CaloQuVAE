@@ -34,10 +34,12 @@ def get_bins_given_edges(low_edge: float, high_edge: float, nbins: int, decimals
     return bins
 
 
-def get_adaptive_bins(data_ref, n_bins=100, plot_range_factor=(2, 10)):
+def get_adaptive_bins(data_ref, n_bins=100, plot_range_factor=(2, 10), max_range=False):
     """Calculates range based on median and quantiles of the REFERENCE data."""
     if len(data_ref) == 0:
         return np.linspace(0, 1, n_bins)
+    if max_range:
+        return get_bins_given_edges(np.min(data_ref), np.max(data_ref), n_bins, decimals=8, logscale=False)
 
     median = np.median(data_ref)
     q05 = np.quantile(data_ref, 0.05)
@@ -65,7 +67,7 @@ def get_adaptive_bins(data_ref, n_bins=100, plot_range_factor=(2, 10)):
     return get_bins_given_edges(low, high, n_bins, decimals=8, logscale=False)
 
 
-def calculate_wasserstein(data_ref, data_gen, name="metric", n_bins=100) -> MetricResult:
+def calculate_wasserstein(data_ref, data_gen, name="metric", n_bins=100, max_range=False) -> MetricResult:
     """
     Calculates the Wasserstein Distance on UNBINNED data.
     Also computes histograms strictly for plotting purposes.
@@ -91,7 +93,7 @@ def calculate_wasserstein(data_ref, data_gen, name="metric", n_bins=100) -> Metr
 
     # --- 2. Calculate Plotting Artifacts (Binned) ---
     # We maintain the adaptive binning logic so the plots look exactly the same
-    bins = get_adaptive_bins(data_ref, n_bins=n_bins)
+    bins = get_adaptive_bins(data_ref, n_bins=n_bins, max_range=max_range)
     
     # Clip data to bin range for visualization consistency
     data_ref_clipped = np.clip(data_ref, bins[0], bins[-1])
