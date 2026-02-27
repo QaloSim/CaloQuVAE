@@ -1,0 +1,12 @@
+model_name: transfusion
+dim_embedding: 64
+encode_t_dim: 64
+encode_t_scale: 30
+num_encoder_layers: 2
+num_decoder_layers: 2
+nhead: 2
+dim_feedforward: 128
+dropout: 0.0
+intermediate_dim: 256
+layers_per_block: 4
+position_embedding: lookup
