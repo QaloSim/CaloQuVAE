@@ -1,0 +1,28 @@
+model_name: ae_layers
+encoder: hierarchicalencoderlayers
+encoderblock: EncoderLayers
+decoder: decoderlayers
+
+output_smoothing_fct: 60
+smoothing_dist: gumbel
+# mse_weight: 0.5
+mse_weight: 0.5
+coefficient: 0.01
+
+hidden_layer: 0
+cond_p_size: 62
+lin_bits: 13
+sqrt_bits: 8
+log_bits: 6
+u_bits: 7
+
+loss_coeff:
+  ae_loss: 1.0
+  hit_loss: 1.0
+  mmd_loss: 0.0
+  feature_mae: 0.0
+  focal_alpha: 0.588425
+  focal_gamma: 0.0
+  r_loss_coeff: 0.0
+
+  
