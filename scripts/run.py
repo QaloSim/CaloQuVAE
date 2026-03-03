@@ -30,7 +30,7 @@ import wandb
 from CaloQuVAE import logging
 logger = logging.getLogger(__name__)
 
-from data.dataManager import DataManager
+from data.dataManager import DataManager, DataManagerLayersShowers
 from model.modelCreator import ModelCreator
 from engine.engine import Engine
 # from utils.plotting.plotProvider import PlotProvider
@@ -85,7 +85,10 @@ def setup_model(config=None):
     """
     Run m
     """
-    dataMgr = DataManager(config)
+    if config.use_u:
+        dataMgr = DataManagerLayersShowers(config)
+    else:
+        dataMgr = DataManager(config)
 
     #create model handling object
     modelCreator = ModelCreator(config)
@@ -117,7 +120,7 @@ def setup_model(config=None):
     params = [p for p in params if p.requires_grad]
     engine.optimiser = torch.optim.AdamW(params,
                                         lr=config.engine.learning_rate,
-                                        weight_decay=config.engine.weight_decay)
+                                        weight_decay=getattr(config.engine, 'weight_decay', 0.0))
     model.prior.initOpt()
     #add the model instance to the engine namespace
     engine.model = model
