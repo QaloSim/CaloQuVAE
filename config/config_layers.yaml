@@ -1,0 +1,41 @@
+save_state: 1
+load_state: 0
+save_hists: 0
+save_partition: 1
+freeze_vae: 0
+
+run_path: ""
+config_path: ""
+
+device: gpu
+gpu_list:
+  - 2
+  # - 0
+  # - 1
+  # - 2
+  # - 3
+
+defaults:
+  - data: AtlasCustom2
+  - wandb: ML2
+  - model: model_ATLASLayers
+  - engine: engine_layers
+  - rbm: zephyr
+  - _self_
+
+n_epochs: 2000
+epoch_freeze: 160
+epoch_start: 0
+
+use_u: 1
+feature_stats_path: ""
+save_dir: "/home/leozhu/CaloQuVAE/wandb-outputs"
+
+validation_datasets:
+  # - TestData
+  - AtlasCustom2
+  - AtlasCustom1GeV
+  - AtlasCustom10GeV
+  - AtlasCustom50GeV
+  - AtlasCustom100GeV
+  - AtlasCustom250GeV
