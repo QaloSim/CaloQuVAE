@@ -23,6 +23,7 @@ from model.dummymodel import MLP
 from model.autoencoder.autoencoderbase import AutoEncoderBase, AutoEncoderHidden
 from model.autoencoder.ae_separate import AutoEncoderSeparate, AutoEncoderSeparateHidden
 from model.transfusion.transfusion_model import TransfusionModel
+from model.autoencoder.ae_layers import AutoencoderLayers
 
 _MODEL_DICT={
     "mlp": MLP,
@@ -30,7 +31,8 @@ _MODEL_DICT={
     "autoencoderhidden": AutoEncoderHidden,
     "ae_separate": AutoEncoderSeparate,
     "ae_hidden": AutoEncoderSeparateHidden,
-    "transfusion": TransfusionModel
+    "transfusion": TransfusionModel,
+    "ae_layers": AutoencoderLayers
 }
 
 class ModelCreator():
