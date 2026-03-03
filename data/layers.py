@@ -16,20 +16,64 @@ def get_layer_dataset(cfg):
     num_voxels_per_layer = cfg.data.phi * cfg.data.r
     layer_energies = showers.reshape(batch_size, num_layers, num_voxels_per_layer).sum(dim=2) # (batch, layers) energy per layer
     incident_energies = f.pop("incident_energies")
-    layer_energies, incident_energies = reduce(layer_energies, incident_energies, showers)
+    layer_energies, incident_energies = reduce(layer_energies, incident_energies)
     f["layer_energies"] = layer_energies
     f["incident_energies"] = incident_energies
     return f
 
+def get_showers_and_layer_dataset(cfg):
+    """
+    loads a voxelized dataset (x, x0) and adds (u, E)
+    u is transformed layer energies, E is raw layer energies
+    """
+    f = get_atlas_dataset(cfg)
+    showers = f["showers"]
+    num_layers = cfg.data.z
+    batch_size = showers.shape[0]
+    num_voxels_per_layer = cfg.data.phi * cfg.data.r
+    layer_energies = showers.reshape(batch_size, num_layers, num_voxels_per_layer).sum(dim=2) # (batch, layers) energy per layer
+    incident_energies = f["incident_energies"]
+    transformed_layer_energies = transform_dataset(layer_energies, incident_energies)
+    f["layer_energies_transformed"] = transformed_layer_energies
+    f["layer_energies"] = layer_energies
+    return f
 
-def reduce(x, e_inc, showers, e_min=900.0, e_max=310000.0, f=1.30, eps=1e-7):
+
+
+def transform_dataset(E, e_inc, f=1.60, eps=1e-7):
+    """
+    Transforms raw layer energies for the entire dataset.    
+    Args:
+        E: Raw layer energies, shape (N_samples, 5)
+        e_inc: Incidence energy in MeV, shape (N_samples, 1)
+    Returns:
+        u_scaled: Transformed layer features (not standardized), shape (N_samples, 5)
+    """
+    # Total deposited energy across all 5 layers
+    E_tot = E.sum(dim=1, keepdim=True)    
+    # u0: Ratio of total energy to scaled incidence energy
+    u0 = E_tot / (f * e_inc + eps)
+    
+    # Calculate remaining energy sums for the denominator: sum_{j >= i} E_j
+    rem_energy = torch.flip(torch.cumsum(torch.flip(E, dims=[1]), dim=1), dims=[1])
+    
+    # u_fractions (for i=1 to 4)
+    u_fractions = E[:, :-1] / (rem_energy[:, :-1] + eps)
+    
+    # Raw u vector for the entire dataset
+    u = torch.cat([u0, u_fractions], dim=1)
+            
+    return u
+
+
+
+def reduce(x, e_inc, e_min=900.0, e_max=310000.0, f=1.60, eps=1e-7):
     """
     Args:
         x: Raw layer energies, shape (batch_size, 5)
         e_inc: Incidence energy in MeV, shape (batch_size, 1)
-        showers: Raw voxel data, shape (batch_size, num_voxels)
     Returns:
-        u: Transformed energy ratios, shape (batch_size, 5)
+        u: Transformed and standardized layer energy ratios, shape (batch_size, 5)
         e_inc_norm: Log-normalized incidence energy in [0, 1], shape (batch_size, 1)
     """
     # Log-normalize the incidence energy to [0, 1]
@@ -60,7 +104,7 @@ def reduce(x, e_inc, showers, e_min=900.0, e_max=310000.0, f=1.30, eps=1e-7):
     
     return u, e_inc_norm
 
-def reduce_inverse(u, e_inc_norm, feature_mean, feature_std, e_min=900.0, e_max=310000.0, f=1.30, eps=1e-7):
+def reduce_inverse(u, e_inc_norm, feature_mean, feature_std, e_min=900.0, e_max=310000.0, f=1.60, eps=1e-7):
     """
     Recovers [E1, ..., E5] and raw E_inc from standardized [u0, ..., u4] and log-normalized E_inc.
     

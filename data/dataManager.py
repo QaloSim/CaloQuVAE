@@ -7,7 +7,7 @@ from CaloQuVAE import logging
 
 # for atlas dataset
 from data.atlas import get_atlas_dataset
-from data.layers import get_layer_dataset
+from data.layers import get_layer_dataset, get_showers_and_layer_dataset
 
 logger = logging.getLogger(__name__)
 
@@ -31,6 +31,21 @@ class LayerDatasets(Dataset):
         return len(self.layer_energies)
     def __getitem__(self, index):
         return self.layer_energies[index, :].float(), self.incident_energies[index, :].float()
+
+class LayerShowersDataset(Dataset):
+    """
+    Dataset class that takes in outputs from get_showers_and_layer_datasets
+    """
+    def __init__(self, dataset):
+        self.showers, self.incident_energies, self.layer_energies_transformed, self.layer_energies_raw = dataset[0], dataset[1], dataset[2], dataset[3]
+    def __len__(self):
+        return len(self.showers)
+    def __getitem__(self, index):
+        return (self.showers[index, :].float(), 
+                self.incident_energies[index, :].float(), 
+                self.layer_energies_transformed[index, :].int(), 
+                self.layer_energies_raw[index, :].float())
+
 
 class DataManagerLayers():
     def __init__(self, cfg=None):
@@ -124,6 +139,104 @@ class DataManagerLayers():
         else:
             self.test_loader = None
             logger.info("Test Loader: 0 events (Skipped)")
+
+class DataManagerLayersShowers():
+    """
+    DataManager for training AE based on showers and conditioned on layer energies
+    In addition to x, x0, this dataset also provides u and E for each layer
+    u is transformed layer energies, E is raw layer energies
+    """
+    def __init__(self, cfg=None):
+        self._config = cfg
+        self.select_dataset()          # for different datasets
+        self.preprocess_dataset()      # scale layer energies to fit with in conditioning bits, and save scaling stats
+        self.create_dataloaders()      # slice into train/val/test
+
+
+    def select_dataset(self):
+        """
+        Selects Layer dataset (only for ATLAS data)
+        """
+        dataset_name = self._config.data.dataset_name.lower()
+        logger.info(f"Loading ATLAS Layer+Showers dataset: {self._config.data.dataset_name}")
+        self.f = get_showers_and_layer_dataset(self._config)
+    
+    def preprocess_dataset(self):
+        """
+        Preprocesses the dataset by transforming the layer energies and saving the scaling statistics.
+        """
+        stats_path = getattr(self._config, 'feature_stats_path', None)
+        if stats_path and os.path.exists(stats_path):
+            logger.info(f"Loading feature statistics from {stats_path}")
+            stats = torch.load(stats_path)
+            feature_max = stats['max']
+            feature_min = stats['min']
+        else:
+            logger.info("Computing new feature ranges for layer energy transformation...")
+            layer_energies_transformed = self.f["layer_energies_transformed"]
+            feature_max = layer_energies_transformed.max(dim=0).values * 1.1 # add 10% padding to max for safety
+            feature_min = layer_energies_transformed.min(dim=0).values * 0.9 # subtract 10% padding from min for safety
+            
+            save_dir = getattr(self._config, 'save_dir', os.getcwd())
+            os.makedirs(save_dir, exist_ok=True)
+            
+            new_stats_path = os.path.join(save_dir, "feature_stats.pt")
+            torch.save({'max': feature_max, 'min': feature_min}, new_stats_path)
+            self._config.feature_stats_path = new_stats_path
+            logger.info(f"Saved feature ranges to {new_stats_path}")
+        
+        u_raw = self.f["layer_energies_transformed"]
+        u_scaled = (u_raw - feature_min) / (feature_max - feature_min) # scale to [0, 1]
+        num_bits = self._config.model.u_bits
+        u_scaled_bits = (u_scaled * (2**num_bits - 1)).round().clamp(0, 2**num_bits - 1).int() # scale to [0, 2^num_bits - 1] and convert to int
+        self.f["layer_energies_transformed"] = u_scaled_bits
+        
+
+    def create_dataloaders(self):
+        tr, va = self.f["split_lengths"]
+        logger.info(f"Using pre-calculated stratified splits: Tr={tr}, Val={va}")
+
+        showers, incident_energies, layers_transformed, layers_raw = self.f["showers"], self.f["incident_energies"], self.f["layer_energies_transformed"], self.f["layer_energies"]
+
+        if tr > 0:
+            self.train_loader = DataLoader(
+                LayerShowersDataset((showers[:tr, :], incident_energies[:tr, :], layers_transformed[:tr, :], layers_raw[:tr, :])),
+                batch_size=self._config.data.batch_size_tr,
+                shuffle=True,
+                num_workers=self._config.data.num_workers
+            )
+            logger.info("{0}: {2} events, {1} batches".format(
+                "Train", len(self.train_loader), len(self.train_loader.dataset)))
+        else:
+            self.train_loader = None
+            logger.info("Train Loader: 0 events (Skipped)")
+        if va > 0:
+            self.val_loader = DataLoader(
+                LayerShowersDataset((showers[tr:tr + va, :], incident_energies[tr:tr + va, :], layers_transformed[tr:tr + va, :], layers_raw[tr:tr + va, :])),
+                batch_size=self._config.data.batch_size_val,
+                shuffle=False,
+                num_workers=self._config.data.num_workers
+            )
+            logger.info("{0}: {2} events, {1} batches".format(
+                "Val", len(self.val_loader), len(self.val_loader.dataset)))
+        else:
+            self.val_loader = None
+            logger.info("Val Loader: 0 events (Skipped)")
+        te_len = layers_transformed.shape[0] - tr - va
+        if te_len > 0:
+            self.test_loader = DataLoader(
+                LayerShowersDataset((showers[tr + va:, :], incident_energies[tr + va:, :], layers_transformed[tr + va:, :], layers_raw[tr + va:, :])),
+                batch_size=self._config.data.batch_size_test,
+                shuffle=False,
+                num_workers=self._config.data.num_workers
+            )
+            logger.info("{0}: {2} events, {1} batches".format(
+                "Test", len(self.test_loader), len(self.test_loader.dataset)))
+        else:
+            self.test_loader = None
+            logger.info("Test Loader: 0 events (Skipped)")
+
+
 
 
 class DataManager():
