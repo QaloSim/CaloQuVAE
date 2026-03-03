@@ -13,6 +13,7 @@ import numpy as np
 from model.encoder.balancedgraycodes import BalancedGrayCodeCodec
 from model.encoder.offsetgraycodes import GrayCodeOffset
 from model.encoder.graycodes import GrayCode
+from typing import List, Tuple
 
 class HierarchicalEncoder(nn.Module):
     def __init__(self, cfg):
@@ -27,6 +28,8 @@ class HierarchicalEncoder(nn.Module):
         self._networks=nn.ModuleList([])
         if hasattr(self._config.model, 'cond_p_size'):
             self.cond_p_size = self._config.model.cond_p_size
+            if hasattr(self._config.model, 'u_bits'):
+                self.e_inc_p_size = self.cond_p_size - self._config.model.u_bits * self._config.data.z
 
         for lvl in range(self.n_latent_hierarchy_lvls-1):
             network=self._create_hierarchy_network(level=lvl)
@@ -34,7 +37,9 @@ class HierarchicalEncoder(nn.Module):
         
         self.gray_codec = GrayCode()
         # set encoding function based on config
-        if hasattr(self._config, "use_gray_code_compact") and self._config.use_gray_code_compact:
+        if hasattr(self._config, "use_u") and self._config.use_u:
+            self.energy_encoding_fct = self.gray_einc_with_u
+        elif hasattr(self._config, "use_gray_code_compact") and self._config.use_gray_code_compact:
             self.energy_encoding_fct = self.gray_encoding_compact
         elif hasattr(self._config, "use_gray_code") and self._config.use_gray_code:
             self.energy_encoding_fct = self.gray_energy_encoding
@@ -59,7 +64,6 @@ class HierarchicalEncoder(nn.Module):
             post_samples = []
             post_logits = []
             
-            # --- NEW: Check for Gray Code Flag ---
             post_samples.append(self.energy_encoding_fct(x0))
             
             for lvl in range(self.n_latent_hierarchy_lvls-1):
@@ -142,7 +146,8 @@ class HierarchicalEncoder(nn.Module):
         
         log_enc = self.gray_codec.encode((x.log() * 1000).int(), log_bits)
 
-        x_encoded = torch.cat((lin_enc, sqrt_enc, log_enc), dim=1)
+        x_encoded = torch.cat((lin_enc, sqrt_enc, log_enc), dim=2)
+        x_encoded = x_encoded.view(x_encoded.shape[0], x_encoded.shape[2]) # second dimension is 1
 
         total_bits_per_rep = lin_bits + sqrt_bits + log_bits
         
@@ -153,6 +158,34 @@ class HierarchicalEncoder(nn.Module):
         padding = torch.zeros(x.shape[0], residual, device=x.device, dtype=x.dtype)
 
         return torch.cat((x_encoded.repeat(1, reps), padding), 1)
+
+    def gray_einc_with_u(self, x, lin_bits=13, sqrt_bits=8, log_bits=6):
+        """
+        Encodes incidence energy using standard Gray Codes
+        More compact to allow for additional conditioning on layer energy vector u
+        """
+        if hasattr(self._config.model, 'lin_bits'):
+            lin_bits = self._config.model.lin_bits
+        if hasattr(self._config.model, 'sqrt_bits'):
+            sqrt_bits = self._config.model.sqrt_bits
+        if hasattr(self._config.model, 'log_bits'):
+            log_bits = self._config.model.log_bits
+        
+        lin_enc = self.gray_codec.encode((x / 64.0).int(), lin_bits)
+        sqrt_enc = self.gray_codec.encode((x.sqrt() * 4/9.0).int(), sqrt_bits)
+        log_enc = self.gray_codec.encode(((x / 1000.0).log() * 32/3.0).int(), log_bits)
+        x_encoded = torch.cat((lin_enc, sqrt_enc, log_enc), dim=2)
+        x_encoded = x_encoded.view(x_encoded.shape[0], x_encoded.shape[2]) # second dimension is 1
+
+        return x_encoded
+
+    def gray_u(self, u, u_bits=7):
+        """
+        Encodes each u_i in u using u_bits of Gray Code
+        """
+        u_encoded = self.gray_codec.encode(u.int(), u_bits)
+        return u_encoded.view(u_encoded.shape[0], u_encoded.shape[1]*u_encoded.shape[2])
+
 
         
     def binary(self, x, bits):
@@ -187,6 +220,44 @@ class HierarchicalEncoder(nn.Module):
         ), 1)
         
         return torch.cat((x_encoded.repeat(1, reps), torch.zeros(x.shape[0], residual).to(x.device, x.dtype)), 1)
+
+
+class HierarchicalEncoderLayers(HierarchicalEncoder):
+    def __init__(self, cfg):
+        super().__init__(cfg)
+    
+    def _create_hierarchy_network(self, level=0):
+
+        if self._config.model.encoderblock == "EncoderLayers":
+            return EncoderLayers(cfg=self._config, level=level)
+        else:
+            raise ValueError(f"Unknown encoder block type: {self._config.model.encoderblock}")
+
+
+    def forward(self, x, x0, u, beta_smoothing_fct=1):
+        """
+        Forward method for the layer-conditioned hierarchical encoder.
+        Args: x: input voxels, shape (b, n_voxels), x0: incident energy, shape (b, 1), u: layer energies, shape (b, n_l)
+        Returns: post_logits, post_samples
+        """
+        post_samples = []
+        post_logits = []
+        
+        post_samples.append(torch.cat((self.energy_encoding_fct(x0), self.gray_u(u)), dim=1))
+        
+        for lvl in range(self.n_latent_hierarchy_lvls-1):
+            current_net = self._networks[lvl]
+            current_input = x
+
+            logits = torch.clamp(current_net(current_input, x0, u, post_samples), min=-88., max=88.)
+            post_logits.append(logits)
+
+            beta = torch.tensor(beta_smoothing_fct, dtype=torch.float, device=logits.device, requires_grad=False)
+            samples = self.smoothing_dist_mod(logits, beta)
+
+            post_samples.append(samples)
+            
+        return post_logits, post_samples
 
 
 class HierarchicalEncoderHidden(HierarchicalEncoder):
@@ -260,7 +331,7 @@ class EncoderBlockPBH3Dv3Reg(nn.Module):
         M = post_samples.shape[1]
 
         pres = [(torch.arange(0,M).multiply(np.pi/M).cos().to(post_samples.device) * post_samples + torch.arange(0,M).multiply(np.pi/M).sin().to(post_samples.device) *(1 - post_samples).abs()).divide(np.sqrt(M)).unsqueeze(2) for i in np.arange(1,M/4-1,1)]
-        pos_enc = torch.cat(pres,2).transpose(1,2);
+        pos_enc = torch.cat(pres,2).transpose(1,2)
         res = pos_enc.sum([1,2])/(M-1)
         return res.unsqueeze(1)
     
@@ -375,3 +446,192 @@ class EncoderBlockATLASNew(EncoderBlockPBH3Dv3Reg):
                         nn.PReLU(self.n_latent_nodes, 1.0),
                         nn.Flatten(),
                         )
+
+
+class PeriodicConv3dPadding(nn.Module):
+    def __init__(self, in_channels, out_channels, kernel_size, stride=1, padding=0, dilation=1, groups=1, bias=True):   
+        super().__init__()     
+        # Parse padding into a tuple (pad_z, pad_phi, pad_r)
+        if isinstance(padding, int):
+            self.pad_z = self.pad_phi = self.pad_r = padding
+        elif isinstance(padding, tuple) and len(padding) == 3:
+            self.pad_z, self.pad_phi, self.pad_r = padding
+        else:
+            raise ValueError("padding must be an int or a 3-tuple (pad_z, pad_phi, pad_r)")
+
+        # Internal Conv3d does absolutely no padding
+        self.conv = nn.Conv3d(in_channels, out_channels, kernel_size, stride=stride, padding=0, dilation=dilation, groups=groups, bias=bias)
+
+    def forward(self, x):
+        # Z-axis Padding: Zero padding on both ends
+        if self.pad_z > 0:
+            # F.pad format for 3D is (left_R, right_R, left_Phi, right_Phi, left_Z, right_Z)
+            x = F.pad(x, (0, 0, 0, 0, self.pad_z, self.pad_z), mode='constant', value=0)
+            
+        # Phi-axis (Angular) Padding: Circular padding
+        if self.pad_phi > 0:
+            x = F.pad(x, (0, 0, self.pad_phi, self.pad_phi, 0, 0), mode='circular')
+            
+        # R-axis (Radial) Padding: Outer zero pad + Origin crossing
+        if self.pad_r > 0:
+            # First, pad the outer edge of the cylinder (R_max) with zeros
+            x = F.pad(x, (0, self.pad_r, 0, 0, 0, 0), mode='constant', value=0)
+            
+            # Second, handle the origin (R=0) crossing
+            inner_r = x[..., :self.pad_r]
+            
+            # Shift the angular dimension by pi
+            mid = inner_r.shape[-2] // 2
+            shift = torch.cat((inner_r[..., mid:, :], inner_r[..., :mid, :]), dim=-2)
+            
+            # Reverse the radial order
+            shift = torch.flip(shift, dims=[-1])
+            
+            # Prepend to the radial dimension
+            x = torch.cat((shift, x), dim=-1)
+
+        # Apply convolution
+        x = self.conv(x)
+        return x
+
+
+class EncoderLayers(nn.Module):
+    """
+    Subencoder block for layer-conditioned AE.
+    In addition to layer-wise conditioning, uses upgraded periodic cylindrical convolutions with custom padding,
+    FiLM for previous post_samples, and vectorized operations
+    """
+    def __init__(self, cfg=None, level=0):
+        super().__init__()
+        self._config = cfg
+        self.n_latent_nodes = self._config.rbm.latent_nodes_per_p
+        self.z = self._config.data.z #5
+        self.r = self._config.data.r #24
+        self.phi = self._config.data.phi #14
+
+        self.seq1_out_channels = 64
+        self.level = level
+    
+
+        # len of previous post_samples: conditioning nodes plus previous hierarchy levels' latent nodes
+        self.len_post_samples = self._config.model.cond_p_size + self.n_latent_nodes * self.level
+        self.context_dim = self.len_post_samples + 3 + self.z # +3 for energy conditioning, +z for layer-wise conditioning
+
+        self.film_mlp_seq1 = nn.Sequential(
+            nn.Linear(self.context_dim, self.seq1_out_channels * 2),
+            nn.SiLU(),
+            nn.Linear(self.seq1_out_channels * 2, self.seq1_out_channels * 2) # Multiplied by 2 to output both gamma and beta
+        )
+
+        self.film_mlp_seq2 = nn.Sequential(
+            nn.Linear(self.context_dim, self.n_latent_nodes * 2),
+            nn.SiLU(),
+            nn.Linear(2*self.n_latent_nodes, 2 * self.n_latent_nodes)
+        )
+
+        self.seq1 = nn.Sequential(
+            # (5, 24, 14) -> (5, 12, 7)
+            PeriodicConv3dPadding(1, 32, (3, 3, 3), stride=(1, 2, 2), padding=(1, 1, 1)),
+            nn.BatchNorm3d(32),
+            nn.SiLU(),
+            # (5, 12, 7) -> (5, 6, 4)
+            PeriodicConv3dPadding(32, self.seq1_out_channels, (3, 3, 3), stride=(1, 2, 2), padding=(1, 1, 1)),
+            nn.BatchNorm3d(self.seq1_out_channels),
+            nn.SiLU(),
+        )
+        self.seq2 = nn.Sequential(
+            # (5, 6, 4) -> (3, 3, 3)
+            PeriodicConv3dPadding(self.seq1_out_channels, 128, (3, 4, 2), stride=(1, 1, 1), padding=(0, 0, 0)),
+            nn.BatchNorm3d(128),
+            nn.SiLU(),
+            # (3, 3, 3) -> (1, 1, 1)
+            PeriodicConv3dPadding(128, self.n_latent_nodes, (3, 3, 3), stride=(1, 1, 1), padding=(0, 0, 0)),
+            nn.Flatten(),
+        )
+
+            
+    def _get_film_params(self, mlp: nn.Module, context: torch.Tensor, is_spatial: bool) -> Tuple[torch.Tensor, torch.Tensor]:
+        """
+        Generates gamma and beta parameters from the combined context vector.
+        """
+        film_params = mlp(context)
+        gamma, beta = torch.chunk(film_params, 2, dim=1)
+        
+        if is_spatial:
+            # Reshape for 5D tensor broadcasting: (Batch, Channels, Z, Phi, R)
+            gamma = gamma.view(-1, gamma.shape[1], 1, 1, 1)
+            beta = beta.view(-1, beta.shape[1], 1, 1, 1)
+            
+        return gamma, beta
+
+    
+    def forward(self, x: torch.Tensor, x0: torch.Tensor, u: torch.Tensor, post_samples: List[torch.Tensor]) -> torch.Tensor:
+        """
+        Forward method of subencoder, conditioned on x0 (incidence energy), u (layer-wise energy vector), 
+        and post_samples (previous hierarchy levels' latent samples).
+        """
+
+        x = x.view(x.shape[0], 1, self.z, self.r, self.phi) 
+        
+        history = torch.cat(post_samples, dim=1)
+        x0_transformed = self.trans_energy_multibasis(x0)
+        
+        
+        global_context = torch.cat([history, x0_transformed, u], dim=1)
+        assert global_context.shape[1] == self.context_dim, f"Expected context dimension {self.context_dim}, got {global_context.shape[1]} at level {self.level}"
+        
+        x = self.seq1(x)
+        
+        # Apply Spatial FiLM (Intermediate conditioning)
+        gamma1, beta1 = self._get_film_params(self.film_mlp_seq1, global_context, is_spatial=True)
+        x = (1 + gamma1) * x + beta1
+        
+        x = self.seq2(x)
+        gamma2, beta2 = self._get_film_params(self.film_mlp_seq2, global_context, is_spatial=False)
+        x = (1 + gamma2) * x + beta2
+        
+        return x
+
+    def trans_energy_multibasis(self, x0, energy_min=900.0, energy_max=310000.0):
+        """
+        Encodes incidence energy into a (batch_size, 3) tensor with Linear, Sqrt, and Log bases.
+        All components are min-max normalized to approx [0, 1] range based on input bounds.
+        
+        Args:
+            x0 (torch.Tensor): Input energy in MeV.
+            energy_min (float): Min expected energy (default 1 GeV = 1000 MeV).
+            energy_max (float): Max expected energy (default 300 GeV = 300000 MeV).
+        
+        Returns:
+            torch.Tensor: Shape (batch_size, 3)
+                - Index 0: Normalized Linear
+                - Index 1: Normalized Sqrt
+                - Index 2: Normalized Log
+        """
+        # Ensure x0 is float for division/log
+        x0 = x0.float()
+        if x0.dim() > 1:
+            x0 = x0.squeeze()
+        
+        # 1. Linear Scaling: (x - min) / (max - min)
+        lin_norm = (x0 - energy_min) / (energy_max - energy_min)
+        
+        # 2. Square Root Scaling: (sqrt(x) - sqrt(min)) / (sqrt(max) - sqrt(min))
+        # Pre-calculate bounds for efficiency
+        sqrt_min = torch.sqrt(torch.tensor(energy_min))
+        sqrt_max = torch.sqrt(torch.tensor(energy_max))
+        sqrt_norm = (torch.sqrt(x0) - sqrt_min) / (sqrt_max - sqrt_min)
+        
+        # 3. Log Scaling: (log(x) - log(min)) / (log(max) - log(min))
+        log_min = torch.log(torch.tensor(energy_min))
+        log_max = torch.log(torch.tensor(energy_max))
+        log_norm = (torch.log(x0) - log_min) / (log_max - log_min)
+        
+        # Stack along the last dimension to create (batch_size, 3)
+        return torch.stack([lin_norm, sqrt_norm, log_norm], dim=-1)
+
+
+
+
+
+

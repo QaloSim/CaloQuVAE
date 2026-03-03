@@ -5,7 +5,6 @@ import numpy as np
 class GrayCode(nn.Module):
     def __init__(self):
         super().__init__()
-        # No offset storage required for standard Gray code
 
     def _gray_code(self, n):
         """Standard Gray code: n ^ (n >> 1)"""
@@ -29,10 +28,11 @@ class GrayCode(nn.Module):
         Encodes integer x into Standard Gray Code Bits.
         
         Args:
-            x: Int Tensor (Batch) or (Batch, 1)
+            x: Int Tensor of arbitrary shape, e.g., (Batch, n)
             data_bits: The resolution of the input data. 
             
-            outputs: (Batch, data_bits) float Tensor of bits
+        Returns:
+            bits: Float Tensor of shape (*x.shape, data_bits)
         """
         out_bits = data_bits
         
@@ -44,18 +44,19 @@ class GrayCode(nn.Module):
         gray_val = self._gray_code(x_clamped)
         
         # 3. Integer -> Bits (MSB first)
-        #    Ensure gray_val is (Batch, 1)
-        gray_val = gray_val.view(-1, 1)
+        #    Use unsqueeze(-1) instead of view(-1, 1) to preserve all preceding dimensions.
+        #    If x is (Batch, n), gray_val becomes (Batch, n, 1).
+        gray_val = gray_val.unsqueeze(-1)
         
         #    Create mask: [2^(N-1), ... 1]
         mask = 2 ** torch.arange(out_bits - 1, -1, -1, device=x.device)
         
-        #    Broadcast: (Batch, 1) & (out_bits) -> (Batch, out_bits)
-        #    Note: We do NOT unsqueeze gray_val here, because we already viewed it as (-1, 1).
-        #    PyTorch will broadcast the 1D mask to (1, out_bits) automatically against the (Batch, 1) input.
+        #    Broadcast: (*x.shape, 1) & (out_bits) -> (*x.shape, out_bits)
         bits = (gray_val & mask).ne(0).float()
         
         return bits
+        
+                
     def decode_section(self, bit_tensor):
         """
         Reverses the encoding: Bits -> Gray -> Binary
