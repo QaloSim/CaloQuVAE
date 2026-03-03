@@ -189,7 +189,7 @@ class FirstSubdecoderAtlasClean(FirstSubDecoder):
         super().__init__(cfg)
         self.shower_size = (self._config.data.z, self._config.data.phi, self._config.data.r)
 
-        # 1. Update _layers1 input size (Already done by you, correct)
+        # 1. Update _layers1 input size
         self._layers1 = nn.Sequential(
             PeriodicConvTranspose3d(self.n_latent_nodes + energy_channels, 512, (3, 3, 3), stride=(1, 1, 1), padding=0),
             nn.BatchNorm3d(512),
@@ -309,7 +309,7 @@ class DecoderFullGeoATLASCompact(DecoderFullGeoATLASClean):
             self.subdecoders.append(subdecoder)
 
     
-    def trans_energy_multibasis(self, x0, energy_min=1000.0, energy_max=300000.0):
+    def trans_energy_multibasis(self, x0, energy_min=900.0, energy_max=310000.0):
         """
         Encodes incidence energy into a (batch_size, 3) tensor with Linear, Sqrt, and Log bases.
         All components are min-max normalized to approx [0, 1] range based on input bounds.
