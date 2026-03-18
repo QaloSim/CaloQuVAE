@@ -10,7 +10,7 @@ CaloQVAE Group
 import os
 import torch
 import wandb
-
+from torch.nn.parallel import DistributedDataParallel as DDP
 from omegaconf import OmegaConf
 
 from CaloQuVAE import logging
@@ -23,7 +23,7 @@ from model.dummymodel import MLP
 from model.autoencoder.autoencoderbase import AutoEncoderBase, AutoEncoderHidden
 from model.autoencoder.ae_separate import AutoEncoderSeparate, AutoEncoderSeparateHidden
 from model.transfusion.transfusion_model import TransfusionModel
-from model.autoencoder.ae_layers import AutoencoderLayers
+from model.autoencoder.ae_layers import AutoencoderLayers, AutoencoderLayersBCE
 
 _MODEL_DICT={
     "mlp": MLP,
@@ -32,7 +32,8 @@ _MODEL_DICT={
     "ae_separate": AutoEncoderSeparate,
     "ae_hidden": AutoEncoderSeparateHidden,
     "transfusion": TransfusionModel,
-    "ae_layers": AutoencoderLayers
+    "ae_layers": AutoencoderLayers,
+    "ae_layers_bce": AutoencoderLayersBCE
 }
 
 class ModelCreator():
@@ -78,23 +79,22 @@ class ModelCreator():
         path = os.path.join(save_dir, f"{cfg_string}.pth")
         logger.info(f"Saving model state to {path}")
 
-        modules = list(self._model._modules.keys())
-        state_dict = {module: getattr(self._model, module).state_dict() for module in modules}
-
-        torch.save(state_dict, path)
-
+        # Strip the DDP wrapper before extracting states
+        actual_model = self._model.module if isinstance(self._model, DDP) else self._model
+        
+        modules = list(actual_model._modules.keys())
+        torch.save(actual_model.state_dict(), path)
         if vae_opt is not None:
             torch.save(vae_opt.state_dict(), os.path.join(save_dir, f"{cfg_string}_opt_model.pth"))
         if rbm_opt is not None:
             torch.save(rbm_opt.state_dict(), os.path.join(save_dir, f"{cfg_string}_opt_rbm.pth"))
 
-
         config_path = os.path.join(save_dir, f"{cfg_string}_config.yaml")
         self._config.run_path = path
         self._config.config_path = config_path
         OmegaConf.save(self._config, config_path, resolve=True)
-        return config_path
-    
+        
+        return config_path    
     def save_state_tfusion(self, cfg_string='test', opt=None, sched=None, override_path=None):
         if override_path:
             save_dir = override_path
@@ -142,17 +142,24 @@ class ModelCreator():
         
         # Open a file in read-binary mode
         with open(model_loc, 'rb') as f:
-            # Interpret the file using torch.load()
-            checkpoint=torch.load(f, map_location=device)
-
+            checkpoint = torch.load(f, map_location=device)
             logger.info("Loading weights from file : {0}".format(run_path))
             
-            local_module_keys=list(self._model._modules.keys())
-            for module in checkpoint.keys():
-                if module in local_module_keys:
-                    print("Loading weights for module = ", module)
-                    getattr(self._model, module).load_state_dict(checkpoint[module])
+            actual_model = self._model.module if isinstance(self._model, DDP) else self._model
 
+            # Check if this is the old, nested-dict format
+            if any(isinstance(v, dict) for v in checkpoint.values()):
+                logger.info("Detected legacy checkpoint format. Loading child modules manually.")
+                local_module_keys = list(actual_model._modules.keys())
+                for module in checkpoint.keys():
+                    if module in local_module_keys:
+                        print("Loading weights for module = ", module)
+                        getattr(actual_model, module).load_state_dict(checkpoint[module])
+            else:
+                logger.info("Detected standard PyTorch checkpoint. Loading directly.")
+                # strict=False allows loading old weights into a new model that now has registered buffers
+                actual_model.load_state_dict(checkpoint, strict=False)
+                
         base_dir = os.path.dirname(run_path)
         cfg_string = os.path.splitext(os.path.basename(run_path))[0]
 
