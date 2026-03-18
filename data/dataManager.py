@@ -4,10 +4,13 @@ import numpy as np
 import os
 from torch.utils.data import DataLoader, Dataset
 from CaloQuVAE import logging
+from torch.utils.data.distributed import DistributedSampler
+import torch.distributed as dist
 
 # for atlas dataset
 from data.atlas import get_atlas_dataset
 from data.layers import get_layer_dataset, get_showers_and_layer_dataset
+from utils.HLF.atlasgeo import DifferentiableFeatureExtractor, AtlasGeometry
 
 logger = logging.getLogger(__name__)
 
@@ -43,7 +46,7 @@ class LayerShowersDataset(Dataset):
     def __getitem__(self, index):
         return (self.showers[index, :].float(), 
                 self.incident_energies[index, :].float(), 
-                self.layer_energies_transformed[index, :].int(), 
+                self.layer_energies_transformed[index, :].float(), 
                 self.layer_energies_raw[index, :].float())
 
 
@@ -149,9 +152,7 @@ class DataManagerLayersShowers():
     def __init__(self, cfg=None):
         self._config = cfg
         self.select_dataset()          # for different datasets
-        self.preprocess_dataset()      # scale layer energies to fit with in conditioning bits, and save scaling stats
-        self.create_dataloaders()      # slice into train/val/test
-
+        self.applied_stats = False
 
     def select_dataset(self):
         """
@@ -161,35 +162,66 @@ class DataManagerLayersShowers():
         logger.info(f"Loading ATLAS Layer+Showers dataset: {self._config.data.dataset_name}")
         self.f = get_showers_and_layer_dataset(self._config)
     
-    def preprocess_dataset(self):
+
+    def get_raw_feature_ranges(self):
         """
-        Preprocesses the dataset by transforming the layer energies and saving the scaling statistics.
+        Computes the raw feature ranges for new training runs.
+        Returns (feature_min, feature_max) to be saved into the model's buffers.
         """
-        stats_path = getattr(self._config, 'feature_stats_path', None)
-        if stats_path and os.path.exists(stats_path):
-            logger.info(f"Loading feature statistics from {stats_path}")
-            stats = torch.load(stats_path)
-            feature_max = stats['max']
-            feature_min = stats['min']
-        else:
-            logger.info("Computing new feature ranges for layer energy transformation...")
-            layer_energies_transformed = self.f["layer_energies_transformed"]
-            feature_max = layer_energies_transformed.max(dim=0).values * 1.1 # add 10% padding to max for safety
-            feature_min = layer_energies_transformed.min(dim=0).values * 0.9 # subtract 10% padding from min for safety
-            
-            save_dir = getattr(self._config, 'save_dir', os.getcwd())
-            os.makedirs(save_dir, exist_ok=True)
-            
-            new_stats_path = os.path.join(save_dir, "feature_stats.pt")
-            torch.save({'max': feature_max, 'min': feature_min}, new_stats_path)
-            self._config.feature_stats_path = new_stats_path
-            logger.info(f"Saved feature ranges to {new_stats_path}")
+        logger.info("Computing new feature ranges for layer energy transformation...")
+        layer_energies_transformed = self.f["layer_energies_transformed"]
         
+        feature_max = layer_energies_transformed.max(dim=0).values * 1.1 # add 10% padding to max for safety
+        feature_min = layer_energies_transformed.min(dim=0).values * 0.9 # subtract 10% padding from min for safety
+        
+        return feature_min, feature_max
+
+    def get_geom_features(self):
+        """
+        Extracts geometric features for the geom_loss calculation.
+        Returns a dict of tensors, each of shape (N, num_layers).
+        """
+        showers = self.f["showers"]
+        target_hits = (showers > 0).float()  # Binary mask of where hits are present
+        geo = AtlasGeometry(self._config.data.binning_path)
+        extractor = DifferentiableFeatureExtractor(geo)
+        geom_features = extractor(target_hits)
+        geom_features = {k: feature.std(dim=0) for k, feature in geom_features.items()}  # (N, num_layers)
+        return geom_features
+
+    def apply_stats_and_build_loaders(self, feature_min, feature_max):
+        """
+        Transforms the dataset using provided stats and constructs dataloaders.
+        """
+        if self.applied_stats:
+            ValueError("Feature stats have already been applied. This method should only be called once per DataManager instance.")
+        self.applied_stats = True
+        logger.info("Applying feature statistics to transform layer energies...")
+        
+        # Safety check: move stats to CPU. 
+        # Model buffers might be on GPU, but self.f is likely in system RAM.
+        if isinstance(feature_min, torch.Tensor):
+            feature_min = feature_min.cpu()
+        if isinstance(feature_max, torch.Tensor):
+            feature_max = feature_max.cpu()
+
         u_raw = self.f["layer_energies_transformed"]
-        u_scaled = (u_raw - feature_min) / (feature_max - feature_min) # scale to [0, 1]
-        num_bits = self._config.model.u_bits
-        u_scaled_bits = (u_scaled * (2**num_bits - 1)).round().clamp(0, 2**num_bits - 1).int() # scale to [0, 2^num_bits - 1] and convert to int
-        self.f["layer_energies_transformed"] = u_scaled_bits
+        logger.info(f"Original raw feature ranges: min={u_raw.min(dim=0).values}, max={u_raw.max(dim=0).values}")
+        
+        # Scale to [0, 1]. Added a small epsilon safeguard against division by zero.
+        denominator = (feature_max - feature_min)
+        if isinstance(denominator, torch.Tensor):
+            denominator[denominator == 0] = 1e-6
+        elif denominator == 0:
+            denominator = 1e-6
+            
+        u_scaled = (u_raw - feature_min) / denominator 
+                
+        self.f["layer_energies_transformed"] = u_scaled
+        logger.info(f"Applied feature scaling. New feature ranges: min={u_scaled.min(dim=0).values}, max={u_scaled.max(dim=0).values}")
+        
+        # Finally, slice the transformed data into loaders
+        self.create_dataloaders()
         
 
     def create_dataloaders(self):
@@ -199,11 +231,22 @@ class DataManagerLayersShowers():
         showers, incident_energies, layers_transformed, layers_raw = self.f["showers"], self.f["incident_energies"], self.f["layer_energies_transformed"], self.f["layer_energies"]
 
         if tr > 0:
+            train_dataset = LayerShowersDataset((showers[:tr, :], incident_energies[:tr, :], layers_transformed[:tr, :], layers_raw[:tr, :]))
+            # Check if DDP is active
+            if dist.is_initialized():
+                train_sampler = DistributedSampler(train_dataset)
+                shuffle_flag = False # Sampler handles shuffling
+            else:
+                train_sampler = None
+                shuffle_flag = True  # Fallback to standard shuffle for single GPU
+                
             self.train_loader = DataLoader(
-                LayerShowersDataset((showers[:tr, :], incident_energies[:tr, :], layers_transformed[:tr, :], layers_raw[:tr, :])),
+                train_dataset,
                 batch_size=self._config.data.batch_size_tr,
-                shuffle=True,
-                num_workers=self._config.data.num_workers
+                sampler=train_sampler,
+                shuffle=shuffle_flag,
+                num_workers=self._config.data.num_workers,
+                pin_memory=True
             )
             logger.info("{0}: {2} events, {1} batches".format(
                 "Train", len(self.train_loader), len(self.train_loader.dataset)))
