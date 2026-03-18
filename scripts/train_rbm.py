@@ -99,7 +99,7 @@ def save_fantasy_samples_for_vae(rbm, n_samples, burn_in, save_dir):
     logger.info(f"Saved VAE data ({final_samples.shape}) to: {data_path}")
     return data_path
 
-@hydra.main(version_base=None, config_path="../config", config_name="config")
+@hydra.main(version_base=None, config_path="../config", config_name="config_layers")
 def main(cfg: DictConfig):
     # --- Device Setup ---
     if cfg.device == "gpu" and torch.cuda.is_available():
@@ -126,6 +126,7 @@ def main(cfg: DictConfig):
     logger.info(f"Initialized RBM: {rbm.num_visible} visible, {rbm.num_hidden} hidden units")
     training_mode = cfg.rbm.method
     logger.info(f"Training method: {training_mode}")
+    weight_max = getattr(cfg.rbm, "weight_max", float('inf'))
 
     # --- Output Directory Setup ---
     run_timestamp = datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
@@ -136,8 +137,6 @@ def main(cfg: DictConfig):
     os.makedirs(save_dir, exist_ok=True)
     logger.info(f"Saving results to '{save_dir}'")
     
-    checkpoint_file = os.path.join(save_dir, "training_checkpoint.h5")
-
     # --- Training Loop ---
     num_epochs = cfg.n_epochs
     
@@ -166,12 +165,15 @@ def main(cfg: DictConfig):
                 rbm.chains["v"] = v_data.clone()
                 rbm.sample_hidden()
                 rbm.fit_batch(data_dict, centered=True)
-            if training_mode == "PCD":
+            elif training_mode == "PCD":
                 rbm.fit_batch(data_dict, centered=True)
-            if training_mode == "CCD":
+            elif training_mode == "CCD":
                 rbm.fit_batch_ccd(data_dict, n_cond=cfg.model.cond_p_size, centered=True)
             else:
                 raise ValueError(f"Unsupported training method: {training_mode}")
+            
+            # clip weights
+            rbm.params["weight_matrix"] = torch.clamp(rbm.params["weight_matrix"], -weight_max, weight_max)
 
         # --- End of Epoch Logging ---
         logger.info(f"  v_bias: mean={rbm.params['vbias'].mean():.4f}, "
@@ -186,6 +188,7 @@ def main(cfg: DictConfig):
         # Save Checkpoint
         if (epoch + 1) % cfg.rbm.checkpoint_interval == 0 or (epoch + 1) == num_epochs:
             try:
+                checkpoint_file = os.path.join(save_dir, f"training_checkpoint_epoch_{epoch+1}.h5")
                 rbm.save_checkpoint(checkpoint_file, epoch, cfg)
                 logger.info(f"Checkpoint saved to {checkpoint_file}")
             except Exception as e:
