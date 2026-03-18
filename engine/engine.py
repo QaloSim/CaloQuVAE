@@ -816,7 +816,11 @@ class Engine():
 
     def _save_model(self, name="blank", override_path=None):
         config_string = "_".join(str(i) for i in [self._config.model.model_name,f'{name}'])
-        config_path = self._model_creator.save_state(config_string, vae_opt=self.optimiser, rbm_opt=self.model.prior.opt, override_path=override_path)
+        if hasattr(self.model, "prior") and self.model.prior is not None:
+            rbm_opt = getattr(self.model.prior, 'opt', None)
+        else:
+            rbm_opt = None
+        config_path = self._model_creator.save_state(config_string, vae_opt=self.optimiser, rbm_opt=rbm_opt, override_path=override_path)
         return config_path
     
     def load_best_model(self, epoch):
