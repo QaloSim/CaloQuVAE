@@ -110,7 +110,8 @@ class AutoEncoderBase(nn.Module):
     def create_networks(self):
         logger.debug("Creating Network Structures")
         self.encoder=self._create_encoder()
-        self.prior=self._create_prior()
+        if self._config.engine.training_mode != "ae":
+            self.prior=self._create_prior()
         self.decoder=self._create_decoder()
         # self.stater = self._create_stat()
         
