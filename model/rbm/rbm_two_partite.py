@@ -18,8 +18,21 @@ class RBM_TwoPartite:
         else:
             self.device = torch.device("cpu")
 
+        self.init_mask()
         self.init_parameters(data, self.num_visible, self.num_hidden, self.device)
         self.init_chains(self.config.rbm.num_chains, self.num_visible, self.num_hidden, self.device)
+    
+    def init_mask(self):
+        mask_path = getattr(self.config.rbm, "mask_path", None)
+        if mask_path and os.path.exists(mask_path):
+            logger.info(f"Loading weight mask from {mask_path}")
+            mask_np = np.load(mask_path)
+            self.weight_mask = torch.tensor(mask_np, dtype=torch.float32, device=self.device)
+            assert self.weight_mask.shape == (self.num_visible, self.num_hidden), \
+                f"Mask shape {self.weight_mask.shape} does not match RBM dims ({self.num_visible}, {self.num_hidden})"
+        else:
+            logger.info(f"No valid mask found. Proceeding without a weight mask.")
+            self.weight_mask = None
 
     def init_parameters(self,
         data : torch.Tensor,
@@ -38,7 +51,10 @@ class RBM_TwoPartite:
         self.params = {}
         self.params["vbias"] = torch.log(frequencies) - torch.log(1. - frequencies)
         self.params["hbias"] = torch.zeros(num_hiddens, device=device, dtype=torch.float32)
-        self.params["weight_matrix"] = torch.randn(size=(num_visibles, num_hiddens), device=device) * init_std
+        raw_weights = torch.randn(size=(num_visibles, num_hiddens), device=device) * init_std
+        if self.weight_mask is not None:
+            raw_weights *= self.weight_mask
+        self.params["weight_matrix"] = raw_weights
     
     def init_chains(
         self,
@@ -108,6 +124,9 @@ class RBM_TwoPartite:
             
             grad["vbias"] = v_data_mean - v_gen_mean
             grad["hbias"] = h_data_mean - h_gen_mean
+        
+        if self.weight_mask is not None:
+            grad["weight_matrix"] *= self.weight_mask
         
         return grad
     def sample_hidden(self,beta:float = 1.0) -> None:
@@ -468,7 +487,7 @@ class RBM_TwoPartite:
         # 'a' mode: read/write if file exists, create otherwise
         with h5py.File(filepath, 'a') as f:
             
-            # --- 1. Save Hyperparameters (only on first save) ---
+            #  Save Hyperparameters (only on first save)
             if 'hyperparameters' not in f:
                 logger.info(f"Creating new checkpoint file: {filepath}")
                 h_group = f.create_group('hyperparameters')
@@ -476,29 +495,29 @@ class RBM_TwoPartite:
                 # Save the full config as a YAML string
                 h_group.attrs['config_yaml'] = OmegaConf.to_yaml(config)
                 
-                # Save key hyperparameters for quick access (like in the example)
                 h_group['num_visibles'] = self.num_visible 
                 h_group['num_hiddens'] = self.num_hidden 
                 h_group['num_chains'] = config.rbm.num_chains
                 h_group['learning_rate'] = config.rbm.lr
-                # ... add any other key hyperparameters ...
+                h_group['gamma'] = config.rbm.gamma
             
-            # --- 2. Create Group for this specific checkpoint ---
+            # Create Group for this specific checkpoint
             group_name = f"epoch_{epoch}"
             if group_name in f:
                 del f[group_name]  # Overwrite old checkpoint for this epoch
             cp_group = f.create_group(group_name)
 
-            # --- 3. Save Model Parameters into the group ---
+            # Save Model Parameters into the group
             for key, tensor in self.params.items():
                 cp_group.create_dataset(key, data=tensor.cpu().numpy())
 
-            # --- 4. Save RNG States into the group (for reproducibility) ---
+            # Save RNG States into the group (for reproducibility)
             cp_group.create_dataset('torch_rng_state', data=torch.get_rng_state())
             
-            # Save numpy RNG state (using the same format as the source)
+            # Save numpy RNG state 
             np_rng_state = np.random.get_state()
-            cp_group.create_dataset('numpy_rng_arg0', data=np.string_(np_rng_state[0]))
+            # Updated for NumPy 2.0 compatibility: np.string_ -> np.bytes_
+            cp_group.create_dataset('numpy_rng_arg0', data=np.bytes_(np_rng_state[0]))
             cp_group.create_dataset('numpy_rng_arg1', data=np_rng_state[1])
             cp_group.create_dataset('numpy_rng_arg2', data=np_rng_state[2])
             cp_group.create_dataset('numpy_rng_arg3', data=np_rng_state[3])
@@ -512,6 +531,7 @@ class RBM_TwoPartite:
             
             # --- 6. Update the 'last_epoch' pointer ---
             f.attrs['last_epoch'] = epoch
+
 
     def load_checkpoint(self, filepath: str, epoch: int = None) -> int:
         """
