@@ -194,12 +194,10 @@ class DataManagerLayersShowers():
         Transforms the dataset using provided stats and constructs dataloaders.
         """
         if self.applied_stats:
-            ValueError("Feature stats have already been applied. This method should only be called once per DataManager instance.")
+            raise ValueError("Feature stats have already been applied. This method should only be called once per DataManager instance.")
         self.applied_stats = True
         logger.info("Applying feature statistics to transform layer energies...")
         
-        # Safety check: move stats to CPU. 
-        # Model buffers might be on GPU, but self.f is likely in system RAM.
         if isinstance(feature_min, torch.Tensor):
             feature_min = feature_min.cpu()
         if isinstance(feature_max, torch.Tensor):
@@ -208,19 +206,16 @@ class DataManagerLayersShowers():
         u_raw = self.f["layer_energies_transformed"]
         logger.info(f"Original raw feature ranges: min={u_raw.min(dim=0).values}, max={u_raw.max(dim=0).values}")
         
-        # Scale to [0, 1]. Added a small epsilon safeguard against division by zero.
         denominator = (feature_max - feature_min)
         if isinstance(denominator, torch.Tensor):
             denominator[denominator == 0] = 1e-6
         elif denominator == 0:
             denominator = 1e-6
             
-        u_scaled = (u_raw - feature_min) / denominator 
-                
-        self.f["layer_energies_transformed"] = u_scaled
-        logger.info(f"Applied feature scaling. New feature ranges: min={u_scaled.min(dim=0).values}, max={u_scaled.max(dim=0).values}")
+        # FIX: Store out-of-place. Do NOT overwrite self.f["layer_energies_transformed"]
+        self.layers_scaled = (u_raw - feature_min) / denominator 
+        logger.info(f"Applied feature scaling. New feature ranges: min={self.layers_scaled.min(dim=0).values}, max={self.layers_scaled.max(dim=0).values}")
         
-        # Finally, slice the transformed data into loaders
         self.create_dataloaders()
         
 
@@ -228,7 +223,11 @@ class DataManagerLayersShowers():
         tr, va = self.f["split_lengths"]
         logger.info(f"Using pre-calculated stratified splits: Tr={tr}, Val={va}")
 
-        showers, incident_energies, layers_transformed, layers_raw = self.f["showers"], self.f["incident_energies"], self.f["layer_energies_transformed"], self.f["layer_energies"]
+        showers = self.f["showers"]
+        incident_energies = self.f["incident_energies"]
+        layers_raw = self.f["layer_energies"]
+        
+        layers_transformed = getattr(self, "layers_scaled", self.f["layer_energies_transformed"])
 
         if tr > 0:
             train_dataset = LayerShowersDataset((showers[:tr, :], incident_energies[:tr, :], layers_transformed[:tr, :], layers_raw[:tr, :]))
