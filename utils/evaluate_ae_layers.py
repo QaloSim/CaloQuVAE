@@ -183,6 +183,37 @@ def plot_posterior_correlations(cfg, post_logits, post_samples):
 
     return fig
 
+def plot_latent_corr_comparison(post_samples, prior_samples):
+    """
+    Plots correlation matrices for both posterior and prior latent spaces side by side for comparison.
+    Also plots a third difference matrix
+    """
+
+    post_correlations = torch.corrcoef(post_samples.T).cpu().numpy()
+    prior_correlations = torch.corrcoef(prior_samples.T).cpu().numpy()
+    diff_correlations = post_correlations - prior_correlations
+
+    np.fill_diagonal(post_correlations, 0)
+    np.fill_diagonal(prior_correlations, 0)
+
+    fig, axes = plt.subplots(1, 3, figsize=(24, 8))
+    im0 = axes[0].imshow(post_correlations, cmap='seismic', vmin=-1, vmax=1, interpolation="none")
+    axes[0].set_title('Posterior Correlation Matrix')
+    plt.colorbar(im0, ax=axes[0])
+    axes[0].invert_yaxis()
+
+    im1 = axes[1].imshow(prior_correlations, cmap='seismic', vmin=-1, vmax=1, interpolation="none")
+    axes[1].set_title('Prior Correlation Matrix')
+    plt.colorbar(im1, ax=axes[1])
+    axes[1].invert_yaxis()
+
+    im2 = axes[2].imshow(diff_correlations, cmap='bwr', vmin=-1, vmax=1, interpolation="none")
+    axes[2].set_title('Difference (Posterior - Prior)')
+    plt.colorbar(im2, ax=axes[2])
+    axes[2].invert_yaxis()
+    return fig
+
+
 def plot_latent_node_activations(post_logits):
     """Plots the average activation probability of learned latent nodes to identify 'dead' nodes."""
     # Convert logits to probabilities (only learned nodes)
