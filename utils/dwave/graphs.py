@@ -12,6 +12,11 @@ from typing import TYPE_CHECKING
 if TYPE_CHECKING:
     from utils.dwave.sampling_backend import ChainAnalysisResult
 
+import pulp
+import random
+import scipy.sparse as sp
+import networkx as nx
+
 # --- A. Basic Zephyr ---
 
 def get_sampler_and_biclique_embedding(num_visible, num_hidden, solver_name):
@@ -323,7 +328,7 @@ def build_expanded_embedding_arbitrary(
         phys_chain_idx = vis_mapping[i]
         
         actual_key = sorted_vis_keys[phys_chain_idx]
-        expanded_embedding[logical_id] = list(visible_chain_source[actual_key])
+        expanded_embedding[logical_id] = [int(q) for q in visible_chain_source[actual_key]]
 
     # 4. Handle Hidden Nodes (Permutable)
     # Default to Identity
@@ -338,7 +343,7 @@ def build_expanded_embedding_arbitrary(
         logical_id = num_visible + k
         
         actual_key = sorted_hid_keys[phys_chain_idx]
-        expanded_embedding[logical_id] = list(hidden_chain_source[actual_key])
+        expanded_embedding[logical_id] = [int(q) for q in hidden_chain_source[actual_key]]
 
     return expanded_embedding, fragment_map
     
@@ -399,12 +404,12 @@ def translate_chain_labels(result: ChainAnalysisResult, n_vis: int) -> ChainAnal
 
 
 
-def run_embedding(rbm_size, solver_name):
+def run_embedding(left_size, right_size, solver_name):
     """
     Performs the biclique embedding on the target QPU.
     Returns the sampler, the working graph, and the chains.
     """
-    print(f"--- 1. Running Embedding for K_{rbm_size},{rbm_size} on {solver_name} ---")
+    print(f"--- 1. Running Embedding for K_{left_size},{right_size} on {solver_name} ---")
     TARGET_SOLVER = solver_name
     try:
         target_sampler = DWaveSampler(solver=TARGET_SOLVER)
@@ -424,7 +429,7 @@ def run_embedding(rbm_size, solver_name):
 
     try:
         left_chains, right_chains = find_biclique_embedding(
-            rbm_size, rbm_size, target_graph=working_graph
+            left_size, right_size, target_graph=working_graph
         )
     except Exception as e:
         print(f"Error during find_biclique_embedding: {e}")
@@ -447,10 +452,10 @@ def run_embedding(rbm_size, solver_name):
 
 def build_neighbor_sets(target_sampler, target_logical_nodes, qubits_used):
     """
-    Builds the 76 "available neighbor" sets, V_i.
+    Builds the "available neighbor" sets, V_i.
     V_i = {all *available* qubits adjacent to logical node i}
     """
-    print(f"\n--- 2. Building {len(target_logical_nodes)} Neighbor Sets ---")
+    print(f"\n--- Building {len(target_logical_nodes)} Neighbor Sets ---")
     
     # 1. Get all qubits available on the chip
     all_physical_qubits = set(target_sampler.nodelist)
@@ -463,7 +468,7 @@ def build_neighbor_sets(target_sampler, target_logical_nodes, qubits_used):
     neighbor_sets = []
     min_adj_size = float('inf')
     
-    # 3. Iterate over each of the 76 logical nodes in Side A
+    # 3. Iterate over each of the logical nodes in Side A
     for i, chain in enumerate(target_logical_nodes):
         
         # This set will hold all *available* neighbors for this one logical node
@@ -481,7 +486,7 @@ def build_neighbor_sets(target_sampler, target_logical_nodes, qubits_used):
         if len(chain_available_neighbors) < min_adj_size:
             min_adj_size = len(chain_available_neighbors)
             
-    print(f"All 76 neighbor sets built.")
+    print(f"All {len(neighbor_sets)} neighbor sets built.")
     print(f"The 'bottleneck' (min neighbors) is: {min_adj_size}")
     print(f"This is the *absolute upper bound* on the number of nodes.")
     
@@ -663,6 +668,403 @@ def select_optimal_side(sampler, q_used, left_chains, right_chains, verbose=True
 
     return best_cond_sets, visible_side
 
+
+def find_exact_max_disjoint_hitting_sets(neighbor_sets, all_available_neighbors):
+    """
+    Exact ILP algorithm to find the mathematically maximum number of disjoint hitting sets.
+    """
+    # 1. The absolute maximum possible nodes is bottlenecked by the smallest set
+    max_possible_sets = min(len(s.intersection(all_available_neighbors)) for s in neighbor_sets)
+    print(f"Maximum possible disjoint hitting sets: {max_possible_sets}")
+    
+    if max_possible_sets == 0:
+        return 0, []
+
+    # Initialize the ILP Problem
+    prob = pulp.LpProblem("Max_Disjoint_Hitting_Sets", pulp.LpMaximize)
+
+    # Decision Variables
+    # y[c] = 1 if hitting set 'c' is active
+    y = pulp.LpVariable.dicts("y", range(max_possible_sets), cat=pulp.LpBinary)
+    
+    # x[q, c] = 1 if qubit 'q' is assigned to hitting set 'c'
+    x = pulp.LpVariable.dicts("x", 
+                              [(q, c) for q in all_available_neighbors for c in range(max_possible_sets)], 
+                              cat=pulp.LpBinary)
+
+    # Objective: Maximize the number of active hitting sets
+    prob += pulp.lpSum(y[c] for c in range(max_possible_sets))
+
+    # Constraint 1: Disjoint sets - Each qubit is used at most once across all sets
+    for q in all_available_neighbors:
+        prob += pulp.lpSum(x[(q, c)] for c in range(max_possible_sets)) <= 1
+
+    # Constraint 2: Hitting property - If set 'c' is active, it MUST hit every neighbor_set
+    for c in range(max_possible_sets):
+        for i, v_set in enumerate(neighbor_sets):
+            valid_qubits = v_set.intersection(all_available_neighbors)
+            prob += pulp.lpSum(x[(q, c)] for q in valid_qubits) >= y[c]
+            
+    # Constraint 3: Symmetry Breaking (forces the solver to pack sets sequentially)
+    for c in range(max_possible_sets - 1):
+        prob += y[c] >= y[c+1]
+
+    prob.solve(pulp.PULP_CBC_CMD(msg=False))
+
+    # Extract the results
+    all_found_nodes = []
+    for c in range(max_possible_sets):
+        if pulp.value(y[c]) == 1.0:
+            current_set = set()
+            for q in all_available_neighbors:
+                if pulp.value(x[(q, c)]) == 1.0:
+                    current_set.add(q)
+            all_found_nodes.append(current_set)
+
+    return all_found_nodes
+
+def evaluate_split_chains(sampler, left_chains, right_chains):
+    """
+    Splits fully connected biclique chains in half and calculates the 
+    resulting logical adjacency matrix based on physical couplers.
+    """
+    new_left_chains = {}
+    new_right_chains = {}
+    
+    # 1. Split the visible (left) chains
+    for i, (logical_node, chain) in enumerate(left_chains.items()):
+        midpoint = len(chain) // 2
+        new_left_chains[f"v_{i}_A"] = chain[:midpoint]
+        new_left_chains[f"v_{i}_B"] = chain[midpoint:]
+        
+    # 2. Split the hidden (right) chains
+    for j, (logical_node, chain) in enumerate(right_chains.items()):
+        midpoint = len(chain) // 2
+        new_right_chains[f"h_{j}_A"] = chain[:midpoint]
+        new_right_chains[f"h_{j}_B"] = chain[midpoint:]
+
+    # 3. Evaluate new logical connectivity
+    adjacency = sampler.adjacency
+    num_v = len(new_left_chains)
+    num_h = len(new_right_chains)
+    connectivity_matrix = np.zeros((num_v, num_h))
+    
+    v_keys = list(new_left_chains.keys())
+    h_keys = list(new_right_chains.keys())
+    
+    for v_idx, v_key in enumerate(v_keys):
+        v_chain = new_left_chains[v_key]
+        for h_idx, h_key in enumerate(h_keys):
+            h_chain = new_right_chains[h_key]
+            
+            # A logical edge exists ONLY if there is at least one 
+            # physical coupler between the two half-chains
+            connected = False
+            for q_v in v_chain:
+                if connected: break
+                for q_h in h_chain:
+                    if q_h in adjacency[q_v]:
+                        connected = True
+                        break
+            
+            if connected:
+                connectivity_matrix[v_idx, h_idx] = 1
+                
+    return new_left_chains, new_right_chains, connectivity_matrix
+
+def analyze_rbm_topology(connectivity_matrix):
+    """
+    Quantitatively analyzes the logical sparsity pattern of an RBM.
+    Expects a 2D numpy array of shape (num_visible, num_hidden).
+    """
+    # 1. Convert biadjacency matrix to a full bipartite NetworkX graph
+    sparse_mat = sp.csr_matrix(connectivity_matrix)
+    G = nx.bipartite.from_biadjacency_matrix(sparse_mat)
+    
+    # Extract node sets
+    top_nodes = {n for n, d in G.nodes(data=True) if d['bipartite'] == 0}
+    bottom_nodes = set(G) - top_nodes
+    
+    # 2. Check for Disjoint Subgraphs (The Shatter Test)
+    num_components = nx.number_connected_components(G)
+    component_sizes = [len(c) for c in nx.connected_components(G)]
+    
+    # 3. Check for Dead Nodes
+    degrees = np.array([d for n, d in G.degree()])
+    dead_nodes = np.sum(degrees == 0)
+    
+    # 4. Analyze Bottlenecks (Degree Distribution)
+    min_degree = np.min(degrees[degrees > 0]) if len(degrees[degrees > 0]) > 0 else 0
+    max_degree = np.max(degrees)
+    mean_degree = np.mean(degrees)
+    
+    # 5. Graph Density
+    density = nx.bipartite.density(G, top_nodes)
+    
+    print("\n--- RBM Topological Diagnostics ---")
+    print(f"Connected Components: {num_components} (Ideal: 1)")
+    
+    if num_components > 1:
+        print(f"CRITICAL WARNING: Graph is shattered into {num_components} disconnected subgraphs.")
+        print(f"Component Sizes (Nodes): {component_sizes}")
+        
+    print(f"Dead Nodes (0 connections): {dead_nodes}")
+    print(f"Degree Stats - Min: {min_degree}, Max: {max_degree}, Mean: {mean_degree:.2f}")
+    print(f"Overall Density: {density:.3f} (1.0 is fully connected)")
+    
+    return G, num_components
+
+
+def select_optimal_side_exact(sampler, q_used, left_chains, right_chains, threshold=62):
+    """
+    Evaluates both the Left and Right chains using the exact ILP hitting set solver 
+    to lock in the maximum number of conditioning nodes.
+    """
+
+    v_sets_right, v_all_right = build_neighbor_sets(sampler, list(right_chains.values()), q_used)
+    cond_sets_right = find_exact_max_disjoint_hitting_sets(v_sets_right, v_all_right) if v_all_right else []
+    if len(cond_sets_right) > threshold:
+        return cond_sets_right[:threshold], 'right'
+
+    # 1. Analyze Left Side
+    v_sets_left, v_all_left = build_neighbor_sets(sampler, list(left_chains.values()), q_used)
+    cond_sets_left = find_exact_max_disjoint_hitting_sets(v_sets_left, v_all_left) if v_all_left else []
+    if len(cond_sets_left) > threshold:
+        return cond_sets_left[:threshold], 'left'
+    
+    # 2. Analyze Right Side
+    
+    print("\n" + "===" * 15)
+    print("--- Exact Connectivity Summary ---")
+    print(f"Left Exact Capacity:  {len(cond_sets_left)}")
+    print(f"Right Exact Capacity: {len(cond_sets_right)}")
+    
+    # 3. Select Winner
+    if len(cond_sets_left) >= len(cond_sets_right):
+        print(f"Selected Side: 'left' with {len(cond_sets_left)} conditioning nodes.")
+        print("===" * 15)
+        return cond_sets_left, 'left'
+    else:
+        print(f"Selected Side: 'right' with {len(cond_sets_right)} conditioning nodes.")
+        print("===" * 15)
+        return cond_sets_right, 'right'
+
+def build_target_neighborhoods(target_chains, adjacency):
+    """Pre-computes the physical neighbors for every target logical chain for $O(1)$ lookups."""
+    neighborhoods = {}
+    for key, chain in target_chains.items():
+        neighbors = set()
+        for q in chain:
+            neighbors.update(adjacency[q])
+        neighborhoods[key] = neighbors
+    return neighborhoods
+
+def generate_candidate_chains(
+    adjacency, used_qubits, target_chains, 
+    max_len=10, min_hits=35, target_pool_size=1000, 
+    min_free_neighbors=0  # NEW: Guarantees qubits are left for conditioning nodes
+):
+    """
+    Rapidly generates valid chain candidates using randomized BFS walks,
+    with aggressive prefix pruning and neighbor survival constraints.
+    """
+    target_neighborhoods = build_target_neighborhoods(target_chains, adjacency)
+    available_qubits = list(set(adjacency.keys()) - used_qubits)
+    candidates = []
+    
+    # Run random walks until we fill our candidate pool or hit an iteration limit
+    for _ in range(target_pool_size * 20): 
+        if len(candidates) >= target_pool_size: 
+            break
+            
+        start_q = random.choice(available_qubits)
+        current_chain = [start_q]
+        current_qubits = {start_q}
+        
+        # 1. Grow the chain blindly
+        while len(current_chain) < max_len:
+            neighbors = set()
+            for q in current_chain:
+                neighbors.update(adjacency[q])
+            
+            valid_steps = list(neighbors - used_qubits - current_qubits)
+            if not valid_steps:
+                break
+                
+            next_q = random.choice(valid_steps)
+            current_chain.append(next_q)
+            current_qubits.add(next_q)
+        
+        # 2. Prefix Pruning (Remove useless trailing qubits)
+        best_prefix_len = 1
+        max_hits_achieved = 0
+        
+        for i in range(1, len(current_chain) + 1):
+            prefix = current_chain[:i]
+            prefix_hits = sum(1 for target_set in target_neighborhoods.values() if set(prefix).intersection(target_set))
+            if prefix_hits > max_hits_achieved:
+                max_hits_achieved = prefix_hits
+                best_prefix_len = i
+                
+        pruned_chain = current_chain[:best_prefix_len]
+        pruned_qubits = set(pruned_chain)
+        hits = max_hits_achieved
+        
+        # 3. Survival & Threshold Evaluation
+        if hits >= min_hits:
+            # Check how many unused adjacent qubits this chain leaves behind
+            chain_neighbors = set()
+            for q in pruned_chain:
+                chain_neighbors.update(adjacency[q])
+            
+            free_neighbors = chain_neighbors - used_qubits - pruned_qubits
+            
+            if len(free_neighbors) >= min_free_neighbors:
+                candidates.append((tuple(pruned_chain), hits))
+                
+    # Deduplicate candidates (we don't want the ILP evaluating identical chains)
+    unique_candidates = {frozenset(c[0]): c for c in candidates}.values()
+    return list(unique_candidates)
+    
+
+def select_optimal_chains_ilp(candidates):
+    """
+    Selects the maximum disjoint set of chains from the candidate pool.
+    candidates: List of tuples -> (chain_tuple, hit_score)
+    """
+    print(f"Solving ILP for {len(candidates)} candidate chains...")
+    prob = pulp.LpProblem("Bipartite_Expansion", pulp.LpMaximize)
+    
+    # Decision Variables: y[i] = 1 if candidate chain 'i' is kept
+    y = pulp.LpVariable.dicts("y", range(len(candidates)), cat=pulp.LpBinary)
+    
+    # Objective: Maximize total hits (connectivity)
+    prob += pulp.lpSum(y[i] * candidates[i][1] for i in range(len(candidates)))
+    
+    # Constraint Mapping: Which candidates use which qubits?
+    qubit_to_cands = {}
+    for i, (chain, _) in enumerate(candidates):
+        for q in chain:
+            if q not in qubit_to_cands:
+                qubit_to_cands[q] = []
+            qubit_to_cands[q].append(i)
+            
+    # Constraint: Physical qubits must be mutually disjoint
+    for q, cand_list in qubit_to_cands.items():
+        prob += pulp.lpSum(y[i] for i in cand_list) <= 1
+        
+    # Solve
+    prob.solve(pulp.PULP_CBC_CMD(msg=False))
+    
+    selected_chains = []
+    total_hits = 0
+    for i in range(len(candidates)):
+        if pulp.value(y[i]) == 1.0:
+            selected_chains.append(candidates[i][0])
+            total_hits += candidates[i][1]
+            
+    print(f"ILP selected {len(selected_chains)} new disjoint chains.")
+    return selected_chains
+
+
+def orchestrate_bipartite_expansion(
+    sampler, 
+    base_left_chains, 
+    base_right_chains, 
+    locked_qubits=None,
+    max_len=10, 
+    start_min_hits=35, 
+    pool_size=1500, 
+    max_iterations=10
+):
+    """
+    Iteratively expands a bipartite embedding on the QPU.
+    Alternates between fixing Left to expand Right, and fixing Right to expand Left.
+    """
+    adjacency = sampler.adjacency
+    
+    # Create working copies to prevent mutating the original split chains
+    left_chains = {k: list(v) for k, v in base_left_chains.items()}
+    right_chains = {k: list(v) for k, v in base_right_chains.items()}
+    
+    # Track globally used physical qubits to enforce disjointness
+    used_qubits = set()
+    for chain in left_chains.values(): used_qubits.update(chain)
+    for chain in right_chains.values(): used_qubits.update(chain)
+    if locked_qubits:
+        used_qubits.update(locked_qubits)
+    
+    iteration = 1
+    current_min_hits = start_min_hits
+    
+    while iteration <= max_iterations:
+        print(f"\n{'='*40}")
+        print(f"--- Expansion Iteration {iteration} | Min Hits Required: {current_min_hits} ---")
+        print(f"{'='*40}")
+        
+        gains_made = False
+        
+        # --- PASS 1: Expand Right Chains (Hidden Layer) ---
+        print(f"\n[Pass 1] Targeting Left Chains ({len(left_chains)}) to generate new Right candidates...")
+        candidates_right = generate_candidate_chains(
+            adjacency, used_qubits, left_chains, 
+            max_len=max_len, min_hits=current_min_hits, target_pool_size=pool_size
+        )
+        
+        if candidates_right:
+            new_right = select_optimal_chains_ilp(candidates_right)
+            if new_right:
+                gains_made = True
+                start_idx = len(right_chains)
+                for i, chain in enumerate(new_right):
+                    # Assign unique logical keys to the new expanded chains
+                    new_key = f"h_exp_{start_idx + i}"
+                    right_chains[new_key] = list(chain)
+                    used_qubits.update(chain)
+                print(f" -> Success: Added {len(new_right)} new Right chains.")
+                print(f" -> Total Right Chains: {len(right_chains)}")
+        else:
+            print(" -> No viable Right candidates found under current constraints.")
+
+        # --- PASS 2: Expand Left Chains (Visible Layer) ---
+        # Note: We now target the newly expanded right_chains pool
+        print(f"\n[Pass 2] Targeting Right Chains ({len(right_chains)}) to generate new Left candidates...")
+        candidates_left = generate_candidate_chains(
+            adjacency, used_qubits, right_chains, 
+            max_len=max_len, min_hits=current_min_hits, target_pool_size=pool_size
+        )
+        
+        if candidates_left:
+            new_left = select_optimal_chains_ilp(candidates_left)
+            if new_left:
+                gains_made = True
+                start_idx = len(left_chains)
+                for i, chain in enumerate(new_left):
+                    new_key = f"v_exp_{start_idx + i}"
+                    left_chains[new_key] = list(chain)
+                    used_qubits.update(chain)
+                print(f" -> Success: Added {len(new_left)} new Left chains.")
+                print(f" -> Total Left Chains: {len(left_chains)}")
+        else:
+            print(" -> No viable Left candidates found under current constraints.")
+
+        # --- Termination & Decay Logic ---
+        if not gains_made:
+            # If we failed to add chains, try lowering the connectivity standard
+            # before completely terminating the algorithm.
+            if current_min_hits > 32:
+                print(f"\nStagnation reached at min_hits={current_min_hits}. Decaying threshold by 1...")
+                current_min_hits -= 1
+            else:
+                print("\nAbsolute convergence reached. No more chains can be added to the chip.")
+                break
+        else:
+            iteration += 1
+            
+    if iteration > max_iterations:
+        print(f"\nTerminated after reaching max iterations ({max_iterations}).")
+
+    return left_chains, right_chains
 
 
 def validate_and_repair_chains(sampler, left_chains, right_chains):
