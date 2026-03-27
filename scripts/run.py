@@ -22,7 +22,10 @@ from omegaconf import OmegaConf, open_dict
 from torch import device
 from torch.nn import DataParallel
 from torch.cuda import is_available
-    
+
+# Multi GPU support
+import torch.distributed as dist
+from torch.nn.parallel import DistributedDataParallel as DDP
 # Weights and Biases
 import wandb
 
@@ -33,9 +36,8 @@ logger = logging.getLogger(__name__)
 from data.dataManager import DataManager, DataManagerLayersShowers
 from model.modelCreator import ModelCreator
 from engine.engine import Engine
-# from utils.plotting.plotProvider import PlotProvider
-# from utils.stats.partition import get_Zs, save_plot, create_filenames_dict
-# from utils.helpers import get_epochs, get_project_id
+
+
 
 @hydra.main(config_path="../config", config_name="config", version_base=None)
 def main(cfg=None):
@@ -60,78 +62,92 @@ def main(cfg=None):
     run(engine, callback)
 
 def set_device(config=None):
-    if (config.device == 'gpu') and config.gpu_list:
+    if is_distributed():
+        local_rank = int(os.environ["LOCAL_RANK"])
+        
+        torch.cuda.set_device(local_rank) 
+        dev = torch.device(f"cuda:{local_rank}")
+        logger.info(f"DDP active: Process mapped to {dev}")
+        
+    elif (config.device == 'gpu') and config.gpu_list and torch.cuda.is_available():
+        # Standard Single-GPU Mode fallback
         logger.info('Requesting GPUs. GPU list :' + str(config.gpu_list))
         devids = ["cuda:{0}".format(x) for x in list(config.gpu_list)]
         logger.info("Main GPU : " + devids[0])
+        dev = torch.device(devids[0])
         
-        if is_available():
-            print(devids[0])
-            dev = device(devids[0])
-            if len(devids) > 1:
-                logger.info(f"Using DataParallel on {devids}")
-                model = DataParallel(model, device_ids=list(config.gpu_list))
-            logger.info("CUDA available")
-        else:
-            dev = device('cpu')
-            logger.info("CUDA unavailable")
     else:
         logger.info('Requested CPU or unable to use GPU. Setting CPU as device.')
-        dev = device('cpu')
+        dev = torch.device('cpu')
+        
     return dev
 
-
 def setup_model(config=None):
-    """
-    Run m
-    """
-    if config.use_u:
+    if is_distributed():
+        dist.init_process_group(backend="nccl")
+        local_rank = int(os.environ["LOCAL_RANK"])
+    else:
+        local_rank = 0
+
+    if getattr(config, "use_u", False):
         dataMgr = DataManagerLayersShowers(config)
     else:
         dataMgr = DataManager(config)
 
-    #create model handling object
     modelCreator = ModelCreator(config)
-
-    #instantiate the chosen model
-    #loads from file 
-    model=modelCreator.init_model()
-    #create the NN infrastructure
+    model = modelCreator.init_model()
     model.create_networks()
     model.print_model_info()
-    # if not config.engine.train_vae_separate:
-    model.prior._n_batches = len(dataMgr.train_loader) - 1
 
-    # Load the model on the GPU if applicable
+
     dev = set_device(config)
-        
-    # Send the model to the selected device
     model.to(dev)
 
-    # For some reason, need to use postional parameter cfg instead of named parameter
-    # with updated Hydra - used to work with named param but now is cfg=None 
-    engine=instantiate(config.engine, config)
-    #add dataMgr instance to engine namespace
-    engine.data_mgr=dataMgr
-    #add device instance to engine namespace
-    engine.device=dev    
-    #instantiate and register optimisation algorithm
-    params = list(model.encoder.parameters()) + list(model.decoder.parameters())
+    if not config.load_state and getattr(config, "use_u", False):
+        logger.info("Handling initial stats from raw dataset...")
+        
+        #  isolate data init to rank 0
+        if local_rank == 0:
+            raw_min, raw_max = dataMgr.get_raw_feature_ranges() 
+            # Move to device immediately so they can be copied to model buffers
+            model.feature_min.copy_(raw_min.to(dev))
+            model.feature_max.copy_(raw_max.to(dev))
+        
+        if is_distributed():
+            # NCCL requires tensors to be on the GPU to broadcast
+            dist.broadcast(model.feature_min, src=0)
+            dist.broadcast(model.feature_max, src=0)
+        
+        dataMgr.apply_stats_and_build_loaders(model.feature_min, model.feature_max)
+
+        if config.model.loss_coeff.get("geom_loss", 0.0) > 0.0:
+            geom_dict = dataMgr.get_geom_features()
+            for key, value in geom_dict.items():
+                model.register_buffer(f"geom_{key}", value.to(dev))
+        
+
+    if hasattr(model, "prior") and model.prior is not None:
+        model.prior._n_batches = len(dataMgr.train_loader) - 1
+
+    if is_distributed():
+        model = DDP(model, device_ids=[local_rank])
+        base_model = model.module
+    else:
+        base_model = model
+
+    engine = instantiate(config.engine, config)
+    engine.data_mgr = dataMgr
+    engine.device = dev    
+
+    params = list(base_model.encoder.parameters()) + list(base_model.decoder.parameters())
     params = [p for p in params if p.requires_grad]
-    engine.optimiser = torch.optim.AdamW(params,
-                                        lr=config.engine.learning_rate,
-                                        weight_decay=getattr(config.engine, 'weight_decay', 0.0))
-    model.prior.initOpt()
-    #add the model instance to the engine namespace
+    
+    engine.optimiser = torch.optim.AdamW(params, lr=config.engine.learning_rate)
+    if hasattr(base_model, "prior") and base_model.prior is not None:
+        base_model.prior.initOpt()
+    
     engine.model = model
-    # add the modelCreator instance to engine namespace
     engine.model_creator = modelCreator
-    
-    # for name, param in engine.model.named_parameters():
-    #     if 'prior' in name:
-    #         param.requires_grad = False
-    #     print(name, param.requires_grad)
-    
     return engine
 
 def run(engine, _callback=lambda _: False):
@@ -140,15 +156,19 @@ def run(engine, _callback=lambda _: False):
         for epoch in range(engine._config.epoch_start, engine._config.n_epochs):
             engine.fit_ae(epoch)
 
-            total_loss_dict = engine.evaluate_ae(engine.data_mgr.val_loader, epoch)
-            chi2 = engine.generate_plots(epoch, "ae")
-            if epoch > 10:
-                engine.track_best_val_loss(total_loss_dict, chi2, epoch)
-
-            
-            if (epoch+1) % 10 == 0:
-                engine._save_model(name=str(epoch))
-            
+            if is_master():
+                total_loss_dict = engine.evaluate_ae(engine.data_mgr.val_loader, epoch)
+                chi2 = engine.generate_plots(epoch, "ae")
+                
+                if epoch > 10:
+                    engine.track_best_val_loss(total_loss_dict, chi2, epoch)
+                
+                if (epoch+1) % 10 == 0:
+                    engine._save_model(name=str(epoch))
+        
+            # Force all other GPUs to wait until master finishes evaluating/saving
+            if torch.distributed.is_initialized():
+                torch.distributed.barrier()            
             if _callback(engine, epoch):
                 break
             
@@ -246,6 +266,15 @@ def load_model_instance(cfg, adjust_epoch_start=True):
     self = setup_model(config)
     self._model_creator.load_state(config.run_path, self.device, vae_opt=self.optimiser, rbm_opt=self.model.prior.opt)
     return self
+
+
+def is_distributed():
+    return "LOCAL_RANK" in os.environ
+
+def is_master():
+    return int(os.environ.get("RANK", 0)) == 0
+
+
 
 if __name__=="__main__":
     logger.info("Starting main executable.")
