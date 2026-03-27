@@ -16,8 +16,9 @@ def main(cfg=None):
         wandb.watch(engine.model)
     else:
         engine = setup_model(config=cfg)
-        wandb.init(tags = [cfg.data.dataset_name], project=cfg.wandb.project, entity=cfg.wandb.entity, config=OmegaConf.to_container(cfg, resolve=True), mode=mode)
-        wandb.watch(engine.model)
+        if not is_distributed() or is_master():
+            wandb.init(tags = [cfg.data.dataset_name], project=cfg.wandb.project, entity=cfg.wandb.entity, config=OmegaConf.to_container(cfg, resolve=True), mode=mode)
+            wandb.watch(engine.model)
     print(OmegaConf.to_yaml(cfg, resolve=True))
 
     run(engine, callback)
