@@ -24,12 +24,13 @@ class RBM_TwoPartite:
     
     def init_mask(self):
         mask_path = getattr(self.config.rbm, "mask_path", None)
-        if mask_path and os.path.exists(mask_path):
+        if mask_path and os.path.exists(mask_path) and getattr(self.config.rbm, "use_mask", False):
             logger.info(f"Loading weight mask from {mask_path}")
             mask_np = np.load(mask_path)
             self.weight_mask = torch.tensor(mask_np, dtype=torch.float32, device=self.device)
+            self.weight_mask = self.weight_mask[:self.num_visible, :] # match visible nodes
             assert self.weight_mask.shape == (self.num_visible, self.num_hidden), \
-                f"Mask shape {self.weight_mask.shape} does not match RBM dims ({self.num_visible}, {self.num_hidden})"
+                f"Weight mask shape mismatch: {self.weight_mask.shape} != ({self.num_visible}, {self.num_hidden})"
         else:
             logger.info(f"No valid mask found. Proceeding without a weight mask.")
             self.weight_mask = None

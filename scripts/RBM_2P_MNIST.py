@@ -348,7 +348,7 @@ def save_clamped_samples_for_vae(
                 f"Will generate {n_samples} samples in {n_batches} batches.")
     
     for i in range(n_batches):
-        logger.info(f"Generating clamped batch {i+1}/{n_batches} (gibbs_steps={gibbs_steps})...")
+        # logger.info(f"Generating clamped batch {i+1}/{n_batches} (gibbs_steps={gibbs_steps})...")
         
         # 1. Get the data slice for this batch
         start_idx = i * gen_batch_size
