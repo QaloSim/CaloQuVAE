@@ -91,6 +91,7 @@ def train_and_evaluate(cfg, trial_index, gpu_id, save_dir, eval_window, config_n
             # The orchestrator can now safely call compose()
             current_obj, results_map = orchestrator.evaluate_objective()
             logger.info(f"Trial {trial_index}, Epoch {epoch}: Objective = {current_obj}")
+            wandb.log({"objective": current_obj})
             
             if current_obj < best_objective:
                 best_objective = current_obj
