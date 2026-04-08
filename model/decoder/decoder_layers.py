@@ -45,27 +45,6 @@ class IrregularFiLMBlock(nn.Module):
         x = self.attn(x)
         return x
 
-class IrregularUpsamplingFiLMBlock(nn.Module):
-    """A flexible block that includes upsampling followed by 3D periodic conv, FiLM, activation, and attention."""
-    def __init__(self, upsample_layer, conv_layer, out_channels, cond_channels, use_act=True, use_attn=False):
-        super().__init__()
-        self.upsample = upsample_layer
-        self.conv = conv_layer
-        self.norm = nn.GroupNorm(8, out_channels)  # Using GroupNorm for better stabilit
-        self.film = FiLMLayer(cond_channels, out_channels)
-        
-        self.act = nn.SiLU() if use_act else nn.Identity()
-        self.attn = LinearAttention(out_channels, cylindrical=False) if use_attn else nn.Identity()
-
-    def forward(self, x, cond):
-        x = self.upsample(x)
-        x = self.conv(x)
-        x = self.norm(x)
-        x = self.film(x, cond) # Apply unique FiLM parameters
-        x = self.act(x)
-        x = self.attn(x)
-        return x
-
 class FirstSubdecoderLayers(nn.Module):
     def __init__(self, cfg, cond_channels=1):
         super().__init__()
@@ -148,86 +127,6 @@ class FirstSubdecoderLayers(nn.Module):
         return x1 * x2
 
 
-class UpsamplingFirstSubdecoder(nn.Module):
-    def __init__(self, cfg, cond_channels=1):
-        super().__init__()
-        self._config = cfg
-        # Target size: (z, phi, r) -> (5, 24, 14)
-        self.shower_size = (5, 24, 14) 
-        self.n_latent_nodes = self._config.model.cond_p_size + (self._config.rbm.partitions - 1) * self._config.rbm.latent_nodes_per_p
-
-        # --- Gradual Upsampling Trunk ---
-        self.layer1_1 = IrregularUpsamplingFiLMBlock(
-            upsample_layer=nn.Upsample(size=(3, 3, 3), mode='nearest'),
-            conv_layer=PeriodicConv3dPadding(self.n_latent_nodes, 512, kernel_size=3, padding=1),
-            out_channels=512, cond_channels=cond_channels, use_act=True
-        )
-        self.layer1_2 = IrregularUpsamplingFiLMBlock(
-            upsample_layer=nn.Upsample(size=(5, 5, 5), mode='nearest'),
-            conv_layer=PeriodicConv3dPadding(512, 256, kernel_size=3, padding=1),
-            out_channels=256, cond_channels=cond_channels, use_act=True
-        )
-        self.layer1_3 = IrregularUpsamplingFiLMBlock(
-            upsample_layer=nn.Upsample(size=(5, 9, 7), mode='nearest'),
-            conv_layer=PeriodicConv3dPadding(256, 128, kernel_size=3, padding=1),
-            out_channels=128, cond_channels=cond_channels, use_act=False
-        )
-
-        in_channels_L2 = 128 
-
-        # --- Branch: Activations ---
-        self.layer2_act_1 = IrregularUpsamplingFiLMBlock(
-            upsample_layer=nn.Upsample(size=(5, 14, 10), mode='nearest'),
-            conv_layer=PeriodicConv3dPadding(in_channels_L2, 64, kernel_size=3, padding=1),
-            out_channels=64, cond_channels=cond_channels, use_act=True, use_attn=True
-        )
-        self.layer2_act_2 = IrregularUpsamplingFiLMBlock(
-            upsample_layer=nn.Upsample(size=(5, 19, 12), mode='nearest'),
-            conv_layer=PeriodicConv3dPadding(64, 64, kernel_size=3, padding=1),
-            out_channels=64, cond_channels=cond_channels, use_act=True, use_attn=True
-        )
-        self.layer2_act_3 = IrregularUpsamplingFiLMBlock(
-            upsample_layer=nn.Upsample(size=(5, 24, 14), mode='nearest'),
-            conv_layer=PeriodicConv3dPadding(64, 32, kernel_size=3, padding=1),
-            out_channels=32, cond_channels=cond_channels, use_act=True, use_attn=True
-        )
-
-        # --- Branch: Hits ---
-        self.layer2_hits_1 = IrregularUpsamplingFiLMBlock(
-            upsample_layer=nn.Upsample(size=(5, 14, 10), mode='nearest'),
-            conv_layer=PeriodicConv3dPadding(in_channels_L2, 64, kernel_size=3, padding=1),
-            out_channels=64, cond_channels=cond_channels, use_act=True, use_attn=True
-        )
-        self.layer2_hits_2 = IrregularUpsamplingFiLMBlock(
-            upsample_layer=nn.Upsample(size=(5, 19, 12), mode='nearest'),
-            conv_layer=PeriodicConv3dPadding(64, 64, kernel_size=3, padding=1),
-            out_channels=64, cond_channels=cond_channels, use_act=True, use_attn=True
-        )
-        self.layer2_hits_3 = IrregularUpsamplingFiLMBlock(
-            upsample_layer=nn.Upsample(size=(5, 24, 14), mode='nearest'),
-            conv_layer=PeriodicConv3dPadding(64, 32, kernel_size=3, padding=1),
-            out_channels=32, cond_channels=cond_channels, use_act=True, use_attn=True
-        )
-
-    def forward(self, x, x0):
-        if x0.dim() > 2:
-            x0 = x0.view(x0.shape[0], -1)
-
-        x = self.layer1_1(x, x0)
-        x = self.layer1_2(x, x0)
-        x = self.layer1_3(x, x0)
-
-        x1 = self.layer2_act_1(x, x0)
-        x1 = self.layer2_act_2(x1, x0)
-        x1 = self.layer2_act_3(x1, x0)
-
-        x2 = self.layer2_hits_1(x, x0)
-        x2 = self.layer2_hits_2(x2, x0)
-        x2 = self.layer2_hits_3(x2, x0)
-        
-        return x1 * x2
-
-
 class FiLMBlock3D(nn.Module):
     def __init__(self, in_channels, out_channels, cond_channels=32):
         super().__init__()
@@ -257,36 +156,6 @@ class FiLMBlock3D(nn.Module):
         beta = beta.view(-1, beta.shape[1], 1, 1, 1)
         
         # 3. Apply FiLM conditioning
-        x = (1 + gamma) * x + beta
-        
-        x = self.act(x)
-        x = self.attn(x)
-        return x
-
-class UpsamplingFiLMBlock3D(nn.Module):
-    def __init__(self, in_channels, out_channels, cond_channels=32):
-        super().__init__()
-        # Padding=1 ensures spatial dimensions do not shrink
-        self.conv = PeriodicConv3dPadding(in_channels, out_channels, kernel_size=3, stride=1, padding=1)
-        self.norm = nn.GroupNorm(num_groups=8, num_channels=out_channels)
-        
-        self.film_proj = nn.Linear(cond_channels, 2 * out_channels)
-        nn.init.zeros_(self.film_proj.weight)
-        nn.init.zeros_(self.film_proj.bias)
-        
-        self.act = nn.SiLU()
-        self.attn = LinearAttention(out_channels, cylindrical=False)
-
-    def forward(self, x, cond):
-        x = self.conv(x)
-        x = self.norm(x)
-        
-        film_params = self.film_proj(cond)
-        gamma, beta = torch.chunk(film_params, 2, dim=1)
-        
-        gamma = gamma.view(-1, gamma.shape[1], 1, 1, 1)
-        beta = beta.view(-1, beta.shape[1], 1, 1, 1)
-        
         x = (1 + gamma) * x + beta
         
         x = self.act(x)
@@ -367,63 +236,6 @@ class SubdecoderLayers(nn.Module):
 
 
 
-class UpsamplingSubdecoder(nn.Module):
-    def __init__(self, cfg, last_subdecoder=False):
-        super().__init__()
-        self._config = cfg
-        self.last_subdecoder = last_subdecoder
-
-        in_ch = 32 + 1
-        
-        self.cond_embedding = nn.Sequential(
-            nn.Linear(8, 32),
-            nn.SiLU()
-        )
-
-        if self.last_subdecoder:
-            self.act_blocks = nn.ModuleList([
-                UpsamplingFiLMBlock3D(in_ch, 32, cond_channels=32),
-                UpsamplingFiLMBlock3D(32, 32, cond_channels=32),
-                UpsamplingFiLMBlock3D(32, 32, cond_channels=32)
-            ])
-            self.act_final = PeriodicConv3dPadding(32, 1, kernel_size=3, padding=1)
-            
-            self.hit_blocks = nn.ModuleList([
-                UpsamplingFiLMBlock3D(in_ch, 32, cond_channels=32),
-                UpsamplingFiLMBlock3D(32, 32, cond_channels=32),
-                UpsamplingFiLMBlock3D(32, 32, cond_channels=32)
-            ])
-            self.hit_final = PeriodicConv3dPadding(32, 1, kernel_size=3, padding=1)
-            
-        else:
-            self.blocks = nn.ModuleList([
-                UpsamplingFiLMBlock3D(in_ch, 32, cond_channels=32),
-                UpsamplingFiLMBlock3D(32, 32, cond_channels=32),
-                UpsamplingFiLMBlock3D(32, 32, cond_channels=32)
-            ])
-
-    def forward(self, x, x0):
-        cond = self.cond_embedding(x0)
-
-        if self.last_subdecoder:
-            act_x = x
-            for block in self.act_blocks:
-                act_x = block(act_x, cond)
-            activations = self.act_final(act_x)
-            
-            hit_x = x
-            for block in self.hit_blocks:
-                hit_x = block(hit_x, cond)
-            hits = self.hit_final(hit_x)
-            
-            return hits, activations
-            
-        else:
-            for block in self.blocks:
-                x = block(x, cond)
-            return x
-
-
 
 
 class DecoderLayers(DecoderFullGeoATLASCompact):
@@ -489,8 +301,8 @@ class DecoderLayers(DecoderFullGeoATLASCompact):
             else:  # last level
                 output_hits, output_activations = curr_subdecoder(x, cond_vec)
                 if getattr(self._config.model, "transpose", False):
-                    output_hits = output_hits.transpose(2, 3).contiguous() # Swap phi and r: [14, 24] -> [24, 14]
-                    output_activations = output_activations.transpose(2, 3).contiguous()
+                    output_hits = output_hits.transpose(3, 4).contiguous() # Swap phi and r: [14, 24] -> [24, 14]
+                    output_activations = output_activations.transpose(3, 4).contiguous()
 
                 output_hits = output_hits.reshape(output_hits.shape[0], self.z*self.phi*self.r)
                 output_activations = output_activations.reshape(output_activations.shape[0], self.z*self.phi*self.r)
@@ -510,6 +322,8 @@ class DecoderLayersNoHits(DecoderLayers):
                 self.subdecoders.append(
                     SubdecoderLayers(self._config, last_subdecoder=False)  # No hits head
                 )
+        self.act_final = nn.ConvTranspose3d(32, 1, (3, 3, 3), stride=(1, 1, 1), padding=(1, 1, 1))
+
 
     def forward(self, x, x0, u):
         """
@@ -556,8 +370,7 @@ class DecoderLayersNoHits(DecoderLayers):
 
             else:  # last level
                 output_activations = curr_subdecoder(x, cond_vec)
-                act_final = nn.ConvTranspose3d(32, 1, (3, 3, 3), stride=(1, 1, 1), padding=(1, 1, 1)).to(output_activations.device)
-                output_activations = act_final(output_activations)
+                output_activations = self.act_final(output_activations)
                 if getattr(self._config.model, "transpose", False):
                     output_activations = output_activations.transpose(2, 3).contiguous() # Swap phi and r: [14, 24] -> [24, 14]
 
@@ -565,7 +378,40 @@ class DecoderLayersNoHits(DecoderLayers):
                 output_hits = torch.zeros_like(output_activations)  # Placeholder for hits, since this model doesn't predict them
                 return output_hits, output_activations
 
-class UpsamplingDecoderLayers(DecoderLayers):
+
+class FirstSubdecoderLayersGated(FirstSubdecoderLayers):
+    """
+    Inherits from FirstSubdecoderLayers but fixes the unconstrained 
+    multiplication bottleneck by applying a sigmoid gate.
+    """
+    def forward(self, x, x0):
+        if x0.dim() > 2:
+            x0 = x0.view(x0.shape[0], -1)
+
+        x = self.layer1_1(x, x0)
+        x = self.layer1_2(x, x0)
+        x = self.layer1_3(x, x0)
+
+        # Process Activations Branch
+        x1 = self.layer2_act_1(x, x0)
+        x1 = self.layer2_act_2(x1, x0)
+        x1 = self.layer2_act_3(x1, x0)
+        x1 = x1.reshape(x1.shape[0], 32, self.shower_size[0], self.shower_size[1], self.shower_size[2])
+
+        # Process Hits Branch
+        x2 = self.layer2_hits_1(x, x0)
+        x2 = self.layer2_hits_2(x2, x0)
+        x2 = self.layer2_hits_3(x2, x0)
+        x2 = x2.reshape(x2.shape[0], 32, self.shower_size[0], self.shower_size[1], self.shower_size[2])
+
+        # THE FIX: Bound the hit logits to [0, 1] so they act as a proper gate
+        return x1 * torch.sigmoid(x2)
+
+
+class DecoderLayersGated(DecoderLayers):
+    """
+    Drop-in replacement for DecoderLayers that uses the stabilized gated subdecoder.
+    """
     def _create_hierarchy_networks(self):
         self.subdecoders = nn.ModuleList()
         cond_dim = 8 
@@ -573,30 +419,70 @@ class UpsamplingDecoderLayers(DecoderLayers):
         for i in range(self.n_latent_hierarchy_lvls):
             if i == 0:
                 self.subdecoders.append(
-                    UpsamplingFirstSubdecoder(self._config, cond_channels=cond_dim)
+                    FirstSubdecoderLayersGated(self._config, cond_channels=cond_dim)
                 )
             else:
                 self.subdecoders.append(
-                    UpsamplingSubdecoder(self._config, last_subdecoder=(i == self.n_latent_hierarchy_lvls - 1))
+                    SubdecoderLayers(self._config, last_subdecoder=(i == self.n_latent_hierarchy_lvls - 1))
                 )
 
-    def _create_skip_connections(self):
-        self.skip_connections = nn.ModuleList()
-        if hasattr(self, 'cond_p_size'):
-            start = self.cond_p_size + self.p_size
-        else:
-            start = self.p_size * 2
-        for i in range(self.n_latent_hierarchy_lvls-1):
-            skip_connection = nn.Sequential(
-                nn.ConvTranspose3d(start + i * self.p_size, 64, (3, 7, 5), (1, 1, 1), padding=0),
-                nn.GroupNorm(8, 64),
-                nn.SiLU(),
-                # upscales to (64, 3, 7, 5)
-                nn.ConvTranspose3d(64, 32, (3, 7, 5), (1, 2, 1), padding=0),
-                nn.GroupNorm(8, 32),
-                nn.SiLU(),
-                # upscales to (32, 5, 12, 8)
-                nn.ConvTranspose3d(32, 1, (3, 6, 6), (1, 1, 1), padding=(1, 0, 0)),
-                nn.SiLU(),
-            ) #outputs (1, 5, 24, 14)
-            self.skip_connections.append(skip_connection)
+    def forward(self, x, x0, u):
+        """
+        Forward pass of the hierarchical decoder.
+        Extends previous decoders by adding layer-wise conditioning and FiLM at every block.
+        Args:
+            x: latent representation, shape (Batch, n_latent_nodes)
+            x0: incident energy, shape (Batch, 1)
+            u: layer-wise energies, shape (Batch, n_l)
+        Returns:
+            output_hits: predicted hits, shape (Batch, n_voxels)
+            output_activations: predicted activations, shape (Batch, n_voxels)
+        """
+        x_lat = x
+        x0 = self.trans_energy_multibasis(x0) # Shape: (b, 3)
+        
+        # Fuse the incidence energy and layer-wise energies into one condition vector
+        cond_vec = torch.cat([x0, u], dim=1) # Shape: (b, 8)
+
+        # if self.training:
+        #     drop_prob = 0.5 
+        #     # Create a binary mask of shape (b, 1) to drop entire conditions per sample
+        #     mask = (torch.rand(cond_vec.shape[0], 1, device=cond_vec.device) > drop_prob).float()
+        #     # Apply mask without scaling (we don't want to artificially inflate energy values)
+        #     cond_vec = cond_vec * mask
+        
+        x = x.view(x.shape[0], self.n_latent_nodes, 1, 1, 1)  
+        
+        prev_output = None
+        partition_idx_start = self.n_latent_nodes - self.p_size 
+        partition_idx_end = partition_idx_start + self.p_size 
+
+        for lvl in range(self.n_latent_hierarchy_lvls):
+            curr_subdecoder = self.subdecoders[lvl]
+            
+            if lvl < self.n_latent_hierarchy_lvls - 1:
+                output = curr_subdecoder(x, cond_vec)
+                
+                if prev_output is not None:
+                    output += prev_output  
+                prev_output = output
+                
+                enc_z = torch.cat((x_lat[:, 0:self.cond_p_size], x_lat[:, partition_idx_start:partition_idx_end]), dim=1)  
+                enc_z = torch.unflatten(enc_z, 1, (self.cond_p_size + self.p_size*(1+lvl), 1, 1, 1))
+                
+                # Apply skip connection
+                enc_z = self.skip_connections[lvl](enc_z)
+                partition_idx_start -= self.p_size  
+                
+                x = torch.cat((output, enc_z), dim=1)  
+
+            else:  # last level
+                output_hits, output_activations = curr_subdecoder(x, cond_vec)
+                if getattr(self._config.model, "transpose", False):
+                    # print("swapped")
+                    output_hits = output_hits.transpose(3, 4).contiguous() # Swap phi and r: [14, 24] -> [24, 14]
+                    output_activations = output_activations.transpose(3, 4).contiguous()
+
+                output_hits = output_hits.reshape(output_hits.shape[0], self.z*self.phi*self.r)
+                output_activations = output_activations.reshape(output_activations.shape[0], self.z*self.phi*self.r)
+                return output_hits, output_activations

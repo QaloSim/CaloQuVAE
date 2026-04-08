@@ -120,7 +120,7 @@ class AutoEncoderSeparate(AutoEncoderBase):
             squared_diff = torch.pow((input_data - output_activations), 2)
             arg = self._config.model.mse_weight * input_data
             # Clamp to avoid overflow (approx 80 is safe for float32)
-            energy_weighting = torch.exp(torch.clamp(arg, max=80))            
+            energy_weighting = torch.exp(torch.clamp(arg, max=20))            
             ae_loss = squared_diff * energy_weighting * pixel_weights
             ae_loss = torch.clamp(torch.mean(torch.sum(ae_loss, dim=1), dim=0) * self._config.model.coefficient, max=1e30)
 
