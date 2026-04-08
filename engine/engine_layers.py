@@ -61,6 +61,10 @@ class EngineLayers(Engine):
             self.optimiser.zero_grad()
             loss_dict["loss"].backward()
             torch.nn.utils.clip_grad_norm_(self.model.parameters(), max_norm=1.0)
+            # Check the gradient norm of the absolute bottleneck
+            # last_enc_layer = self.model.encoder._networks[-1].seq2[-2].conv
+            # grad_norm = last_enc_layer.weight.grad.norm().item() if last_enc_layer.weight.grad is not None else 0.0
+            # print(f"Latent Bottleneck Gradient Norm: {grad_norm}")
             self.optimiser.step()
         
             if (i % log_batch_idx) == 0 and is_master():
@@ -166,8 +170,26 @@ class EngineLayers(Engine):
             safe_wandb_log = {k: (v.item() if isinstance(v, torch.Tensor) else v) for k, v in wandb_log.items()}
             wandb.log(safe_wandb_log)
 
-        mean_hlf_ws = np.mean([val for key, val in metrics.items() if "ws_HLF" in key])
-        return mean_hlf_ws
+        raw_weights = getattr(self._config.model, "layer_weights", None)
+        num_layers = self._config.data.z
+        if raw_weights:
+            w = np.array(raw_weights, dtype=np.float64)
+            layer_weights_norm = w / w.sum()
+        else:
+            layer_weights_norm = np.ones(num_layers) / num_layers
+
+        hlf_vals, hlf_wts = [], []
+        for key, val in metrics.items():
+            if "center" in key or "width" in key:
+                # Key format: ws_HLF_layer_{l}_{feature} e.g. ws_HLF_layer_0_Eta_center
+                layer_idx = int(key.split("_")[3])
+                hlf_vals.append(val)
+                hlf_wts.append(layer_weights_norm[layer_idx])
+        mean_hlf_ws = float(np.average(hlf_vals))
+        wandb.log({"overall_score": mean_hlf_ws})
+
+        mean_hlf_ws_weighted  = float(np.average(hlf_vals, weights=hlf_wts))
+        return mean_hlf_ws_weighted
 
     def track_best_val_loss(self, loss_dict, score, epoch=None):
         # Only the master process should track and save the best model
@@ -175,6 +197,7 @@ class EngineLayers(Engine):
             return
         # Calculate current score once
         current_score = loss_dict["val_ae_loss"] + score * 20000
+        wandb.log({"overall_score_weighted": current_score})
         
         # Check for strict improvement
         if self.best_val_loss > current_score:
@@ -260,7 +283,7 @@ class EngineLayers(Engine):
         """
         x0 = x0.to(self.device)
         u = u.to(self.device)
-        self.post_cond_samples = torch.cat((self.model.encoder.energy_encoding_fct(x0), self.model.encoder.gray_u(u)), dim=1)
+        self.post_cond_samples = torch.cat((self.model.encoder.energy_encoding_fct(x0), self.model.encoder.gray_encoding_fct(u)), dim=1)
 
     def generate_showers_from_rbm(self, rbm_samples, x0, u, E, batch_size=1024):
         """
@@ -305,6 +328,7 @@ class EngineLayers(Engine):
     def evaluate_ae_experimental(self, data_loader, epoch):
         # self.model._hit_smoothing = GumbelNoNoise()
         self.model.eval()
+        all_diagnostics = {}
         with torch.no_grad():
             bs = [data_loader.batch_size for _ in range(len(data_loader))]
             ar_size = len(data_loader.dataset)
@@ -334,8 +358,15 @@ class EngineLayers(Engine):
                     loss_dict = self.model.module.loss(x_reduce, output[2], output[3])
                 else:
                     # output = self.model((x_reduce, x0, u))
-                    output = self.model((x_reduce, x0, u), temperature=0.5)
+                    output = self.model((x_reduce, x0, u))
                     loss_dict = self.model.loss(x_reduce, output[2], output[3])
+                if "diagnostic_data" in loss_dict:
+                    batch_diag = loss_dict.pop("diagnostic_data")
+                    for key, data in batch_diag.items():
+                        if key not in all_diagnostics:
+                            all_diagnostics[key] = {'error': [], 'val_gt': []}
+                        all_diagnostics[key]['error'].append(data['error'])
+                        all_diagnostics[key]['val_gt'].append(data['val_gt'])
                 loss_dict["loss"] = torch.stack([loss_dict[key] * self._config.model.loss_coeff[key]  for key in loss_dict.keys() if "loss" != key and key in self._config.model.loss_coeff]).sum()
                 for key in list(loss_dict.keys()):
                     loss_dict['val_'+key] = loss_dict[key]
@@ -352,3 +383,11 @@ class EngineLayers(Engine):
                 self.post_logits[idx1:idx2,:] = torch.cat(output[0],dim=1).cpu()            
                 self.hits_recon[idx1:idx2,:] = output[2].cpu()
                 self.u[idx1:idx2,:] = u.cpu()
+
+                self.diagnostics = {
+                    key: {
+                        'error': torch.cat(data['error'], dim=0),
+                        'val_gt': torch.cat(data['val_gt'], dim=0)
+                    }
+                    for key, data in all_diagnostics.items()
+                }
