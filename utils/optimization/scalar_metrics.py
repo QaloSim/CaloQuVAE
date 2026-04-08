@@ -178,3 +178,63 @@ class ScalarMetricCalculator:
                 total_loss += res_spatial.score
 
         return total_loss, results
+
+    def calculate_correlations(self, gt_showers, recon_showers, bins=50) -> Dict[str, dict]:
+        """
+        Calculates 2D histograms for paired GT and reconstructed showers.
+        Requires gt_showers and recon_showers to be ordered exactly the same.
+        """
+        feats_gt = self._get_features(gt_showers)
+        feats_recon = self._get_features(recon_showers)
+
+        results = {}
+        
+        # 1. Global Energy
+        H, xedges, yedges = np.histogram2d(feats_gt['E_tot'], feats_recon['E_tot'], bins=bins)
+        results["global_Etot"] = {
+            "name": "Global Energy", "hist": H, "xedges": xedges, "yedges": yedges
+        }
+
+        # 2. Layer-wise Evaluation
+        for i, layer_id in enumerate(self.geo.relevant_layers):
+            layer_key = f"L{layer_id}"
+            
+            # -- Energy --
+            e_gt = feats_gt['E_layer'][:, i]
+            e_recon = feats_recon['E_layer'][:, i]
+            
+            # Use dynamic binning based on the global min/max of the layer
+            min_e = min(e_gt.min(), e_recon.min())
+            max_e = max(e_gt.max(), e_recon.max())
+            bin_edges = np.linspace(min_e, max_e, bins + 1)
+            
+            H, xedges, yedges = np.histogram2d(e_gt, e_recon, bins=bin_edges)
+            results[f"{layer_key}_E"] = {
+                "name": f"Layer {layer_id} Energy", "hist": H, "xedges": xedges, "yedges": yedges
+            }
+
+            # -- Spatial properties --
+            # Mask out cases where GT had no energy to avoid skewing spatial correlations with zeros
+            mask_gt = e_gt > 1e-6
+            
+            for prop in ['Eta_center', 'Phi_center', 'Eta_width', 'Phi_width']:
+                readable_name = prop.replace('Eta_', 'eta_').replace('Phi_', 'phi_')
+                full_name = f"{layer_key}_{readable_name}"
+                
+                val_gt = feats_gt[prop][:, i][mask_gt]
+                val_recon = feats_recon[prop][:, i][mask_gt]
+                
+                if len(val_gt) > 0 and len(val_recon) > 0:
+                    min_val = min(val_gt.min(), val_recon.min())
+                    max_val = max(val_gt.max(), val_recon.max())
+                    spatial_bins = np.linspace(min_val, max_val, bins + 1)
+                    
+                    H, xedges, yedges = np.histogram2d(val_gt, val_recon, bins=spatial_bins)
+                else:
+                    H, xedges, yedges = np.zeros((bins, bins)), np.zeros(bins+1), np.zeros(bins+1)
+                
+                results[full_name] = {
+                    "name": f"Layer {layer_id} {readable_name}", "hist": H, "xedges": xedges, "yedges": yedges
+                }
+
+        return results
