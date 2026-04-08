@@ -70,6 +70,59 @@ class RBM_TwoPartite:
         self.chains["h"] = torch.randint(0, 2, size=(num_chains, num_hiddens), device=device, dtype=torch.float32)
         self.chains["mv"] = torch.zeros(size=(num_chains, num_visibles), device=device, dtype=torch.float32)
         self.chains["mh"] = torch.zeros(size=(num_chains, num_hiddens), device=device, dtype=torch.float32)
+    
+    def init_dataset_chains(self, full_dataset: torch.Tensor, n_cond: int) -> None:
+        """
+        Initializes a persistent chain for every single datapoint in the dataset.
+        The conditioning nodes are clamped to the data, and the rest are random.
+        """
+        num_samples = full_dataset.shape[0]
+        logger.info(f"Initializing aggressive PCD chain bank for {num_samples} datapoints.")
+        
+        self.dataset_chains_v = torch.zeros((num_samples, self.num_visible), device=self.device, dtype=torch.float32)
+        
+        # Clamp the conditioning nodes to the actual data
+        self.dataset_chains_v[:, :n_cond] = full_dataset[:, :n_cond].to(self.device)
+        
+        # Initialize the rest of the visible units randomly
+        self.dataset_chains_v[:, n_cond:] = torch.randint(
+            0, 2, (num_samples, self.num_visible - n_cond), 
+            device=self.device, dtype=torch.float32
+        )
+        
+        # Initialize hidden chains based on the initial visible states
+        beta = 1.0
+        mh = torch.sigmoid(beta * (self.params["hbias"] + self.dataset_chains_v @ self.params["weight_matrix"]))
+        self.dataset_chains_h = torch.bernoulli(mh)
+    
+
+    def init_proximity_buffer(self, full_dataset: torch.Tensor, full_labels: torch.Tensor, n_cond: int) -> None:
+        """
+        Initializes a persistent chain and label bank, pre-sorted by incidence energy 
+        for ultra-fast binary search lookups during training.
+        """
+        num_samples = full_dataset.shape[0]
+        logger.info(f"Initializing and Sorting Proximity Replay Buffer with {num_samples} chains.")
+        
+        # 1. Flatten labels and get sort indices
+        dataset_labels = full_labels.to(self.device).float().squeeze()
+        sorted_labels, sort_indices = torch.sort(dataset_labels)
+        self.dataset_labels = sorted_labels
+        
+        # 2. Initialize visible chains
+        dataset_chains_v = torch.zeros((num_samples, self.num_visible), device=self.device, dtype=torch.float32)
+        dataset_chains_v[:, :n_cond] = full_dataset[:, :n_cond].to(self.device)
+        dataset_chains_v[:, n_cond:] = torch.randint(
+            0, 2, (num_samples, self.num_visible - n_cond), 
+            device=self.device, dtype=torch.float32
+        )
+        
+        # Apply the sort permutation so the chains align with the sorted labels
+        self.dataset_chains_v = dataset_chains_v[sort_indices]
+        
+        # 3. Initialize hidden chains based on the sorted visible states
+        mh = torch.sigmoid(self.params["hbias"] + self.dataset_chains_v @ self.params["weight_matrix"])
+        self.dataset_chains_h = torch.bernoulli(mh)
 
     
     def compute_gradient(
@@ -173,6 +226,22 @@ class RBM_TwoPartite:
             # re-clamp the conditional slice
             self.chains["v"][:, :n_cond] = data_dict["v"][:, :n_cond]
     
+    def sample_state_pccd(self, data_dict: Dict[str, torch.Tensor], n_cond: int, beta: float = 1.0) -> None:
+        """
+        Runs Gibbs sampling for Persistent CCD. 
+        Crucially, this DOES NOT reset the unclamped nodes to random noise, 
+        allowing the chains to persist across epochs.
+        """
+        # Ensure conditioning nodes are exactly matched to the current batch's data
+        self.chains["v"][:, :n_cond] = data_dict["v"][:, :n_cond]
+        
+        for _ in range(self.config.rbm.bgs_steps):
+            self.sample_hidden(beta)
+            self.sample_visibles(beta)
+            # Re-clamp the conditional slice after visible sampling
+            self.chains["v"][:, :n_cond] = data_dict["v"][:, :n_cond]
+
+    
 
 
     def reset_chains(self) -> None:
@@ -245,6 +314,108 @@ class RBM_TwoPartite:
         """
         self.sample_state_conditional(data, n_cond)
         self.update_parameters(data, centered)
+    
+
+    def fit_batch_cpcd(
+        self,
+        data: Dict[str, torch.Tensor],
+        indices: torch.Tensor,
+        n_cond: int,
+        centered: bool=True
+    ) -> None:
+        """
+        Retrieves the exact persistent chains for this batch's datapoints, 
+        steps them forward, updates parameters, and saves the chains back.
+        """
+        # 1. Retrieve the persistent chains for this specific batch
+        self.chains["v"] = self.dataset_chains_v[indices]
+        self.chains["h"] = self.dataset_chains_h[indices]
+        
+        # 2. Run persistent conditional MCMC steps
+        self.sample_state_pccd(data, n_cond)
+        
+        # 3. Store the stepped chains back into the memory bank
+        self.dataset_chains_v[indices] = self.chains["v"].detach()
+        self.dataset_chains_h[indices] = self.chains["h"].detach()
+        
+        # 4. Update parameters
+        self.update_parameters(data, centered)
+
+    def fit_batch_proximity(
+        self,
+        data_dict: Dict[str, torch.Tensor],
+        batch_labels: torch.Tensor,
+        n_cond: int,
+        k_neighbors: int,
+        noise_prob: float = 0.05,
+        centered: bool = True
+    ) -> None:
+        """
+        Fits the model using a Proximity-Based Replay Buffer via O(log N) Binary Search.
+        """
+        batch_size = data_dict["v"].shape[0]
+        buffer_size = self.dataset_labels.shape[0]
+        
+        if k_neighbors >= buffer_size: # no need for searchs
+            sampled_buffer_indices = torch.randint(0, buffer_size, (batch_size,), device=self.device)
+            
+        else: # search mode
+            # Ensure 1D
+            batch_labels = batch_labels.to(self.device).float().squeeze()
+            
+            # Binary Search for the closest incidence energies
+            closest_indices = torch.searchsorted(self.dataset_labels, batch_labels).clamp(max=buffer_size - 1)
+            
+            # Calculate uniform sampling window bounds
+            half_k = k_neighbors // 2
+            lower = closest_indices - half_k
+            upper = lower + k_neighbors
+            
+            # Shift bounds if they exceed array limits to maintain a strict window size of K
+            shift_down = (upper - buffer_size).clamp(min=0)
+            lower = lower - shift_down
+            upper = upper - shift_down
+            
+            shift_up = (0 - lower).clamp(min=0)
+            lower = lower + shift_up
+            upper = upper + shift_up
+            
+            # Final safety clamp
+            lower = lower.clamp(min=0, max=buffer_size - 1)
+            upper = upper.clamp(min=1, max=buffer_size)
+            
+            # Uniformly sample an index from each window
+            rand_offsets = torch.rand(batch_size, device=self.device)
+            sampled_buffer_indices = (lower + (rand_offsets * (upper - lower)).long()).clamp(max=buffer_size - 1)        
+        # Retrieve chains
+        self.chains["v"] = self.dataset_chains_v[sampled_buffer_indices].clone()
+        self.chains["h"] = self.dataset_chains_h[sampled_buffer_indices].clone()
+        
+        # Inject Noise
+        noise_mask = torch.rand(batch_size, device=self.device) < noise_prob
+        num_noise = noise_mask.sum().item()
+        
+        if num_noise > 0:
+            self.chains["v"][noise_mask, n_cond:] = torch.randint(
+                0, 2, (num_noise, self.num_visible - n_cond), 
+                device=self.device, dtype=torch.float32
+            )
+            mh_noise = torch.sigmoid(
+                self.params["hbias"] + self.chains["v"][noise_mask] @ self.params["weight_matrix"]
+            )
+            self.chains["h"][noise_mask] = torch.bernoulli(mh_noise)
+
+        # Step chains
+        self.sample_state_pccd(data_dict, n_cond)
+        
+        # Write stepped chains back
+        self.dataset_chains_v[sampled_buffer_indices] = self.chains["v"].detach()
+        self.dataset_chains_h[sampled_buffer_indices] = self.chains["h"].detach()
+        
+        # Update parameters
+        self.update_parameters(data_dict, centered)
+
+
 
     def compute_energy(self, v_nodes: torch.Tensor) -> torch.Tensor:
         """
@@ -603,7 +774,64 @@ class RBM_TwoPartite:
             
             return loaded_epoch
 
-
+    def estimate_mixing_time(
+        self, 
+        data_v: torch.Tensor, 
+        n_cond: int,
+        max_steps: int = 5000, 
+        min_steps: int = 10,
+        z_score: float = 2.0, 
+        beta: float = 1.0
+    ) -> int:
+        """
+        Estimates the conditional thermalization time (t_therm) for CCD.
+        Both chains have their first n_cond units clamped to the data.
+        """
+        batch_size = data_v.shape[0]
+        num_visibles = data_v.shape[1]
+        
+        # Extract the clamped slice from the data
+        clamped_slice = data_v[:, :n_cond].clone().to(self.device)
+        
+        # Chain 1: initialized entirely from the dataset
+        v_data = data_v.clone().to(self.device)
+        
+        # Chain 2: initialized with clamped data + completely random noise for the rest
+        v_rand = torch.zeros((batch_size, num_visibles), device=self.device, dtype=torch.float32)
+        v_rand[:, :n_cond] = clamped_slice
+        v_rand[:, n_cond:] = torch.randint(
+            0, 2, size=(batch_size, num_visibles - n_cond), device=self.device, dtype=torch.float32
+        )
+        
+        for step in range(1, max_steps + 1):
+            # --- Step Chain 1 (Data) ---
+            h_data, _ = self._sample_h_given_v(v_data, beta)
+            v_data, _ = self._sample_v_given_h(h_data, beta)
+            v_data[:, :n_cond] = clamped_slice  # Re-clamp
+            
+            # --- Step Chain 2 (Random) ---
+            h_rand, _ = self._sample_h_given_v(v_rand, beta)
+            v_rand, _ = self._sample_v_given_h(h_rand, beta)
+            v_rand[:, :n_cond] = clamped_slice  # Re-clamp
+            
+            # --- Convergence Check (Free Energy) ---
+            # Because the clamped units are identical in both chains, the Free Energy 
+            # difference is driven entirely by the conditional distribution of the unclamped units.
+            F_data = self.compute_energy(v_data)
+            F_rand = self.compute_energy(v_rand)
+            
+            mean_F_data = F_data.mean()
+            mean_F_rand = F_rand.mean()
+            
+            var_F_data = F_data.var(unbiased=True)
+            var_F_rand = F_rand.var(unbiased=True)
+            
+            se_diff = torch.sqrt((var_F_data + var_F_rand) / batch_size + 1e-8)
+            
+            if torch.abs(mean_F_data - mean_F_rand) < z_score * se_diff:
+                return max(step, min_steps)  # Ensure at least min_steps are taken
+                
+        return max_steps
 
     def prune_weights(self, tolerance: float) -> int:
             """

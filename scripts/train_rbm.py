@@ -119,14 +119,37 @@ def main(cfg: DictConfig):
     )
 
     # --- RBM Initialization ---
-    sample_batch, _ = next(iter(train_loader))
-    print(type(sample_batch))
+    sample_batch, _, _ = next(iter(train_loader))
     sample_batch_flat = sample_batch.to(dev).view(sample_batch.size(0), -1)
     rbm = RBM_TwoPartite(cfg, data=sample_batch_flat)
     logger.info(f"Initialized RBM: {rbm.num_visible} visible, {rbm.num_hidden} hidden units")
     training_mode = cfg.rbm.method
+    if training_mode == "CPCD":
+        logger.info("Extracting full dataset for Aggressive PCD chain initialization...")
+        all_data = []
+        for batch in train_loader:
+            x = batch[0] # The data tensor
+            all_data.append(x.view(x.size(0), -1))
+        full_dataset_flat = torch.cat(all_data, dim=0)
+        rbm.init_dataset_chains(full_dataset_flat, n_cond=cfg.model.cond_p_size)
+        del all_data, full_dataset_flat
+    elif training_mode == "PBRB":
+        logger.info("Extracting dataset and labels for Proximity-Based Replay Buffer...")
+        all_data = []
+        all_labels = []
+        for batch in train_loader:
+            x = batch[0] 
+            y = batch[1] # Targets (Incidence energies)
+            all_data.append(x.view(x.size(0), -1))
+            all_labels.append(y)
+        full_dataset_flat = torch.cat(all_data, dim=0)
+        full_labels_flat = torch.cat(all_labels, dim=0)
+        rbm.init_proximity_buffer(full_dataset_flat, full_labels_flat, n_cond=cfg.model.cond_p_size)
+        del all_data, all_labels, full_dataset_flat, full_labels_flat
+
     logger.info(f"Training method: {training_mode}")
     weight_max = getattr(cfg.rbm, "weight_max", float('inf'))
+    logger.info(f"Weights clipped at: {weight_max}. Clamped Nodes: {cfg.model.cond_p_size}. Weight Decay: {cfg.rbm.gamma}")
 
     # --- Output Directory Setup ---
     run_timestamp = datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
@@ -143,7 +166,12 @@ def main(cfg: DictConfig):
     for epoch in range(num_epochs):
         logger.info(f"Starting Epoch {epoch+1}/{num_epochs}")
 
-        for batch_idx, (x, _) in enumerate(train_loader):
+        if getattr(cfg.rbm, "adaptive_k", False) and epoch % cfg.rbm.adaptive_k_interval == 0:
+            adaptive_k = rbm.estimate_mixing_time(sample_batch_flat, max_steps=int(1e5), n_cond=cfg.model.cond_p_size)
+            rbm.config.rbm.bgs_steps = adaptive_k
+            logger.info(f"Adaptive k updated to: {adaptive_k} MCMC steps for this epoch.")
+
+        for batch_idx, (x, targets, indices) in enumerate(train_loader):
             v_data = x.to(dev).view(x.size(0), -1)
 
             
@@ -169,6 +197,21 @@ def main(cfg: DictConfig):
                 rbm.fit_batch(data_dict, centered=True)
             elif training_mode == "CCD":
                 rbm.fit_batch_ccd(data_dict, n_cond=cfg.model.cond_p_size, centered=True)
+            elif training_mode == "CPCD":
+                rbm.fit_batch_cpcd(data_dict, indices=indices, n_cond=cfg.model.cond_p_size, centered=True)
+            elif training_mode == "PBRB":
+                pct = getattr(cfg.rbm, "k_neighbors_percent", 0.10)
+                k_val = max(1, int(pct * len(train_loader.dataset)))
+                noise = getattr(cfg.rbm, "noise_prob", 0.05)
+                
+                rbm.fit_batch_proximity(
+                    data_dict=data_dict,
+                    batch_labels=targets, # Passes the incidence energies
+                    n_cond=cfg.model.cond_p_size,
+                    k_neighbors=k_val,
+                    noise_prob=noise,
+                    centered=True
+                )
             else:
                 raise ValueError(f"Unsupported training method: {training_mode}")
             
@@ -186,14 +229,24 @@ def main(cfg: DictConfig):
                    f"min={rbm.params['weight_matrix'].min():.4f}")
 
         # Save Checkpoint
-        if (epoch + 1) % cfg.rbm.checkpoint_interval == 0 or (epoch + 1) == num_epochs:
+        current_epoch = epoch + 1
+        # A number is a power of 2 if (N & (N - 1)) == 0
+        is_power_of_two = (current_epoch & (current_epoch - 1)) == 0
+        
+        if is_power_of_two or current_epoch == num_epochs:
             try:
-                checkpoint_file = os.path.join(save_dir, f"training_checkpoint_epoch_{epoch+1}.h5")
+                checkpoint_file = os.path.join(save_dir, f"training_checkpoint_epoch_{current_epoch}.h5")
                 rbm.save_checkpoint(checkpoint_file, epoch, cfg)
                 logger.info(f"Checkpoint saved to {checkpoint_file}")
             except Exception as e:
                 logger.error(f"Failed to save checkpoint: {e}")
-
+    
+    try:
+        final_model_file = os.path.join(save_dir, f"training_checkpoint_epoch_{num_epochs}.h5")
+        rbm.save_checkpoint(final_model_file, num_epochs, cfg)
+        logger.info(f"Final model saved to {final_model_file}")
+    except Exception as e:
+        logger.error(f"Failed to save final model: {e}")
     logger.info("Training complete!")
 
 if __name__ == "__main__":
