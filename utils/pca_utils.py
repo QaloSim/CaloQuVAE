@@ -220,3 +220,64 @@ def run_pca_pipeline(
         proj_gen = (data_gen @ U) / scale
         
     return proj_real.detach().cpu().numpy(), proj_gen.detach().cpu().numpy()
+
+
+
+
+def calculate_variance_explained(data: torch.Tensor, U: torch.Tensor) -> torch.Tensor:
+    """
+    Calculates the proportion of total variance in 'data' explained by each component in 'U'.
+    """
+    # Center the data
+    mean_vec = data.mean(dim=0)
+    centered_data = data - mean_vec
+    
+    # Total variance is the sum of variances of all individual features (Trace of Covariance)
+    total_variance = centered_data.var(dim=0, unbiased=True).sum()
+    
+    # Project data onto the basis U
+    projected_data = centered_data @ U
+    
+    # Variance captured by each principal component
+    explained_variance_per_pc = projected_data.var(dim=0, unbiased=True)
+    
+    # Return as a ratio
+    return explained_variance_per_pc / total_variance
+
+def orchestrate_basis_evaluation(
+    data_marginal: torch.Tensor,
+    data_c_real: torch.Tensor,
+    n_components: int = 4,
+) -> dict:
+    """
+    Evaluates how well the marginalized PCs explain the conditional distribution.
+    """
+    device = data_marginal.device
+    
+    print("1. Extracting Marginal Basis (U_m)...")
+    M_marg = data_marginal - data_marginal.mean(0)
+    w_marg = torch.ones(M_marg.shape[0], 1, device=device)
+    U_m = compute_U(M_marg, w_marg, d=n_components, device=device, dtype=torch.float32)
+    
+    print("2. Extracting Conditional Basis (U_c) for Ground Truth...")
+    M_cond = data_c_real - data_c_real.mean(0)
+    w_cond = torch.ones(M_cond.shape[0], 1, device=device)
+    U_c = compute_U(M_cond, w_cond, d=n_components, device=device, dtype=torch.float32)
+    
+    print("3. Calculating Subspace Alignment (Cosine Similarity)...")
+    # Absolute dot product between eigenvectors (since sign is arbitrary)
+    cos_sim_matrix = torch.abs(U_m.T @ U_c).detach().cpu().numpy()
+    
+    print("4. Calculating Variance Explained on Conditional Data...")
+    # How well does the native basis explain the conditional data? (The theoretical max)
+    var_explained_native = calculate_variance_explained(data_c_real, U_c).detach().cpu().numpy()
+    
+    # How well does the marginalized basis explain the conditional data? (Your experiment)
+    var_explained_marginal = calculate_variance_explained(data_c_real, U_m).detach().cpu().numpy()
+    
+    return {
+        "cosine_similarity": cos_sim_matrix,
+        "var_native": var_explained_native,
+        "var_marginal": var_explained_marginal,
+        "n_components": n_components
+    }
