@@ -96,9 +96,12 @@ class ChainAnalysisResult:
     
     # --- 5. Spin Reversal Transform Data ---
     srt_active: bool = True
-    srt_mask: np.ndarray = None  
-    
-    # --- 6. Orbit / Permutation Data (NEW) ---
+    srt_mask: np.ndarray = None
+
+    # --- 6. Susceptibility Compensation ---
+    susceptibility_applied: bool = False
+
+    # --- 7. Orbit / Permutation Data ---
     orbit_seed: Union[int, str, None] = None
     vis_mapping: List[int] = None
     hid_mapping: List[int] = None
@@ -251,12 +254,16 @@ def sample_physical_with_analysis_srt(
     h_phys, J_phys = dwave.embedding.embed_ising(
         h_logical, J_logical, embedding, target_adj, chain_strength=chain_strength
     )
-    
+    print("J_phys range before clamp:", min(J_phys.values()), max(J_phys.values()))
+
     # Clamp values
     h_min, h_max = raw_sampler.properties['h_range']
     j_min, j_max = raw_sampler.properties['extended_j_range']
     h_phys = {k: max(h_min, min(v, h_max)) for k, v in h_phys.items()}
     J_phys = {k: max(j_min, min(v, j_max)) for k, v in J_phys.items()}
+
+    print("J_phys range after clamp:", min(J_phys.values()), max(J_phys.values()))
+
 
     # --- 2. Construct BQM ---
     bqm_phys = dimod.BinaryQuadraticModel.from_ising(h_phys, J_phys)
@@ -363,88 +370,91 @@ def sample_physical_with_analysis_srt(
 
 
 
-def sample_physical_arbitrary(
-    raw_sampler, 
-    h_logical, 
-    J_logical, 
-    embedding, 
+def sample_physical_with_analysis_logical_srt(
+    raw_sampler,
+    h_logical,
+    J_logical,
+    embedding,
     flux_biases,
-    num_samples=1, 
+    num_samples=1,
     chain_strength=None,
     device='cpu',
     metadata: dict = None,
     save_dir: str = None,
-    use_srt: bool = True,
-    # --- New Orbit Args ---
-    orbit_seed: Union[int, str, None] = None,
-    vis_mapping: List[int] = None,
-    hid_mapping: List[int] = None
+    use_srt: bool = True
 ):
     """
-    Executes physical sampling with SRT and wraps results in ChainAnalysisResult.
-    Now supports Orbit tracking.
+    Like sample_physical_with_analysis_srt, but applies SRT at the logical level.
+
+    SpinReversalTransformComposite flips individual physical qubits randomly,
+    which can disrupt intrachain ferromagnetic alignment. This version instead
+    flips whole logical variables — entire chains flip together — so:
+      - Intrachain couplers (ferromagnetic): unchanged (both endpoints flip together).
+      - Interchain couplers: sign-flipped by flip_i * flip_j.
+      - h fields: sign-flipped by flip_i.
+      - Flux biases: flipped for all physical qubits in flipped chains.
+
+    Conditioning node fragments (string keys like "C0_1234") are excluded from
+    the SRT flip. They have no intrachain couplers — their collective behaviour
+    is maintained only by identical flux biases — so flipping them independently
+    would break the clamping. Their h and flux biases stay fixed; interchain
+    couplings to flipped free variables get the correct sign through those
+    neighbours' flips automatically.
     """
     if metadata is None: metadata = {}
 
-    # --- 1. Embed ---
+    # --- 1. Apply Logical SRT (before embedding) ---
+    variables = list(h_logical.keys())
+
+    if use_srt:
+        # Conditioning fragments have string keys (e.g. "C0_1234"); only flip free vars
+        flips = {
+            v: (1 if isinstance(v, str) else int(np.random.choice([-1, 1])))
+            for v in variables
+        }
+        h_srt = {v: h * flips[v] for v, h in h_logical.items()}
+        J_srt = {(i, j): J * flips[i] * flips[j] for (i, j), J in J_logical.items()}
+    else:
+        flips = {v: 1 for v in variables}
+        h_srt = h_logical
+        J_srt = J_logical
+
+    # --- 2. Embed (using SRT-transformed h/J) ---
     target_adj = raw_sampler.adjacency
     h_phys, J_phys = dwave.embedding.embed_ising(
-        h_logical, J_logical, embedding, target_adj, chain_strength=chain_strength
+        h_srt, J_srt, embedding, target_adj, chain_strength=chain_strength
     )
-    
-    # Clamp values
     h_min, h_max = raw_sampler.properties['h_range']
     j_min, j_max = raw_sampler.properties['extended_j_range']
     h_phys = {k: max(h_min, min(v, h_max)) for k, v in h_phys.items()}
     J_phys = {k: max(j_min, min(v, j_max)) for k, v in J_phys.items()}
 
-    # --- 2. Construct BQM ---
+    # --- 3. Construct BQM ---
     bqm_phys = dimod.BinaryQuadraticModel.from_ising(h_phys, J_phys)
 
-    # --- 3. Prepare Sampler & SRT ---
-    active_flux_biases = list(flux_biases) 
-    final_srt_mask = None 
+    # --- 4. Flip flux biases for chains whose logical variable was flipped ---
+    active_flux_biases = list(flux_biases)
+    final_srt_mask = None
 
     if use_srt:
-        # Standard SRT Implementation
-        active_sampler = SpinReversalTransformComposite(raw_sampler)
-        
-        # 3a. Generate Random Mask
-        mask_list = []
-        for _ in bqm_phys.variables:
-            mask_list.append(bool(np.random.choice([True, False])))
-        
-        final_srt_mask = np.array([mask_list], dtype=bool)
+        for logical_var, flip in flips.items():
+            if flip == -1:
+                for qubit in embedding.get(logical_var, []):
+                    if qubit < len(active_flux_biases):
+                        active_flux_biases[qubit] = -active_flux_biases[qubit]
 
-        # 3b. Flip Flux Biases
-        for idx, var_label in enumerate(bqm_phys.variables):
-            if mask_list[idx]: 
-                # Check bounds to avoid index errors if bias list is shorter than var count
-                if var_label < len(active_flux_biases):
-                    active_flux_biases[var_label] = -active_flux_biases[var_label]
-        
-        sample_kwargs = {
-            'num_reads': num_samples, 
-            'answer_mode': 'raw', 
-            'auto_scale': False,
-            'flux_biases': active_flux_biases,
-            'flux_drift_compensation': False,
-            'srts': final_srt_mask
-        }
-    else:
-        active_sampler = raw_sampler
-        sample_kwargs = {
-            'num_reads': num_samples, 
-            'answer_mode': 'raw', 
-            'auto_scale': False,
-            'flux_biases': flux_biases,
-            'flux_drift_compensation': False
-        }
+    # --- 5. Sample (raw sampler, no SpinReversalTransformComposite) ---
+    sample_kwargs = {
+        'num_reads': num_samples,
+        'answer_mode': 'raw',
+        'auto_scale': False,
+        'flux_biases': active_flux_biases,
+        'flux_drift_compensation': False,
+    }
+    physical_response = raw_sampler.sample(bqm_phys, **sample_kwargs)
+    physical_response = physical_response.change_vartype(dimod.SPIN, inplace=False)
 
-    # --- 4. Sample ---
-    physical_response = active_sampler.sample(bqm_phys, **sample_kwargs)
-    
-    # --- 5. Unembed ---
+    # --- 6. Unembed ---
     source_bqm = dimod.BinaryQuadraticModel.from_ising(h_logical, J_logical)
     logical_response = dwave.embedding.unembed_sampleset(
         target_sampleset=physical_response,
@@ -453,54 +463,247 @@ def sample_physical_arbitrary(
         chain_break_method=dwave.embedding.chain_breaks.majority_vote,
         chain_break_fraction=True
     )
-    
-    # --- 6. Analyze Chains ---
-    logical_vars_ordered = list(logical_response.variables)
-    
-    # Quick Check: Ensure logical_vars_ordered aligns with expected size if possible
-    # (Optional safety check, skipping for speed)
 
+    # --- 7. Undo Logical SRT ---
+    logical_vars_ordered = list(logical_response.variables)
+    log_samples = logical_response.record.sample.copy()  # (n_samples, n_logical)
+
+    if use_srt:
+        flip_array = np.array([flips[v] for v in logical_vars_ordered])
+        log_samples = log_samples * flip_array
+        final_srt_mask = np.array([[flips[v] == -1 for v in logical_vars_ordered]], dtype=bool)
+
+    # --- 8. Analyze Chains ---
     phys_matrix = physical_response.record.sample
+    n_logical = len(logical_vars_ordered)
     n_samples_actual = phys_matrix.shape[0]
-    break_matrix = np.zeros((n_samples_actual, len(logical_vars_ordered)), dtype=bool)
-    
+    break_matrix = np.zeros((n_samples_actual, n_logical), dtype=bool)
+
     phys_labels = list(physical_response.variables)
     phys_label_to_col = {lbl: i for i, lbl in enumerate(phys_labels)}
 
     for col_idx, logical_var in enumerate(logical_vars_ordered):
         chain = embedding.get(logical_var, [])
-        if len(chain) <= 1: continue 
+        if len(chain) <= 1: continue
         chain_cols = [phys_label_to_col[q] for q in chain if q in phys_label_to_col]
         if not chain_cols: continue
         chain_vals = phys_matrix[:, chain_cols]
-        # A break is when min != max (i.e., not all spins are identical)
         break_matrix[:, col_idx] = (np.min(chain_vals, axis=1) != np.max(chain_vals, axis=1))
 
-    # --- 7. Pack & Save ---
-    # Ensure tensor is on correct device
-    log_tensor = torch.tensor(
-        logical_response.record.sample, 
-        dtype=torch.float32, 
-        device=device
-    )
-        
+    # --- 9. Pack & Save ---
+    log_tensor = torch.tensor(log_samples, dtype=torch.float32, device=device)
+
     result = ChainAnalysisResult(
-        logical_samples = log_tensor,
-        variable_labels = logical_vars_ordered,
-        metadata = metadata,
-        break_matrix = break_matrix,
-        physical_matrix = phys_matrix,
-        physical_labels = phys_labels,
-        embedding = embedding,
-        physical_response = physical_response,
-        srt_active = use_srt,
-        srt_mask = final_srt_mask,
-        # -- New Orbit Data --
-        orbit_seed = orbit_seed,
-        vis_mapping = vis_mapping,
-        hid_mapping = hid_mapping
+        logical_samples=log_tensor,
+        variable_labels=logical_vars_ordered,
+        metadata=metadata,
+        break_matrix=break_matrix,
+        physical_matrix=phys_matrix,
+        physical_labels=phys_labels,
+        embedding=embedding,
+        physical_response=physical_response,
+        srt_active=use_srt,
+        srt_mask=final_srt_mask
     )
-    
+
+    if save_dir:
+        prefix = f"{metadata.get('source', 'dwave')}_"
+        result.save(directory=save_dir, prefix=prefix)
+
+    return result
+
+
+def sample_physical_arbitrary(
+    raw_sampler,
+    h_logical,
+    J_logical,
+    embedding,
+    flux_biases,
+    num_samples=1,
+    chain_strength=None,
+    device='cpu',
+    metadata: dict = None,
+    save_dir: str = None,
+    use_srt: bool = True,
+    logical_srt: bool = False,
+    # --- Orbit Args ---
+    orbit_seed: Union[int, str, None] = None,
+    vis_mapping: List[int] = None,
+    hid_mapping: List[int] = None,
+    susceptibility_applied: bool = False
+):
+    """
+    Executes physical sampling with SRT and wraps results in ChainAnalysisResult.
+
+    use_srt: Whether to apply spin reversal transforms at all.
+    logical_srt: When use_srt=True, selects the SRT mode:
+        - False (default): intrachain SRT via SpinReversalTransformComposite — flips
+          individual physical qubits randomly, which can disrupt intrachain ferromagnetic
+          alignment.
+        - True: interchain (logical) SRT — flips whole logical variables (entire chains
+          together), preserving intrachain couplers. Conditioning fragments (string keys)
+          are excluded from flipping.
+    """
+    if metadata is None: metadata = {}
+
+    if use_srt and logical_srt:
+        # --- Logical (Interchain) SRT Path ---
+
+        # 1. Apply logical SRT before embedding: flip whole logical variables
+        variables = list(h_logical.keys())
+        flips = {
+            v: (1 if isinstance(v, str) else int(np.random.choice([-1, 1])))
+            for v in variables
+        }
+        h_srt = {v: h * flips[v] for v, h in h_logical.items()}
+        J_srt = {(i, j): J * flips[i] * flips[j] for (i, j), J in J_logical.items()}
+
+        # 2. Embed using SRT-transformed h/J
+        target_adj = raw_sampler.adjacency
+        h_phys, J_phys = dwave.embedding.embed_ising(
+            h_srt, J_srt, embedding, target_adj, chain_strength=chain_strength
+        )
+        h_min, h_max = raw_sampler.properties['h_range']
+        j_min, j_max = raw_sampler.properties['extended_j_range']
+        h_phys = {k: max(h_min, min(v, h_max)) for k, v in h_phys.items()}
+        J_phys = {k: max(j_min, min(v, j_max)) for k, v in J_phys.items()}
+
+        # 3. Construct BQM
+        bqm_phys = dimod.BinaryQuadraticModel.from_ising(h_phys, J_phys)
+
+        # 4. Flip flux biases for every physical qubit in a flipped chain
+        active_flux_biases = list(flux_biases)
+        for logical_var, flip in flips.items():
+            if flip == -1:
+                for qubit in embedding.get(logical_var, []):
+                    if qubit < len(active_flux_biases):
+                        active_flux_biases[qubit] = -active_flux_biases[qubit]
+
+        # 5. Sample (raw sampler — no SpinReversalTransformComposite needed)
+        sample_kwargs = {
+            'num_reads': num_samples,
+            'answer_mode': 'raw',
+            'auto_scale': False,
+            'flux_biases': active_flux_biases,
+            'flux_drift_compensation': False,
+        }
+        physical_response = raw_sampler.sample(bqm_phys, **sample_kwargs)
+        physical_response = physical_response.change_vartype(dimod.SPIN, inplace=False)
+
+        # 6. Unembed
+        source_bqm = dimod.BinaryQuadraticModel.from_ising(h_logical, J_logical)
+        logical_response = dwave.embedding.unembed_sampleset(
+            target_sampleset=physical_response,
+            embedding=embedding,
+            source_bqm=source_bqm,
+            chain_break_method=dwave.embedding.chain_breaks.majority_vote,
+            chain_break_fraction=True
+        )
+
+        # 7. Undo logical SRT on the output samples
+        logical_vars_ordered = list(logical_response.variables)
+        log_samples = logical_response.record.sample.copy()
+        flip_array = np.array([flips[v] for v in logical_vars_ordered])
+        log_samples = log_samples * flip_array
+        final_srt_mask = np.array([[flips[v] == -1 for v in logical_vars_ordered]], dtype=bool)
+
+    else:
+        # --- Physical (Intrachain) SRT Path ---
+
+        # 1. Embed
+        target_adj = raw_sampler.adjacency
+        h_phys, J_phys = dwave.embedding.embed_ising(
+            h_logical, J_logical, embedding, target_adj, chain_strength=chain_strength
+        )
+        h_min, h_max = raw_sampler.properties['h_range']
+        j_min, j_max = raw_sampler.properties['extended_j_range']
+        h_phys = {k: max(h_min, min(v, h_max)) for k, v in h_phys.items()}
+        J_phys = {k: max(j_min, min(v, j_max)) for k, v in J_phys.items()}
+
+        # 2. Construct BQM
+        bqm_phys = dimod.BinaryQuadraticModel.from_ising(h_phys, J_phys)
+
+        # 3. Prepare sampler & SRT mask
+        active_flux_biases = list(flux_biases)
+        final_srt_mask = None
+
+        if use_srt:
+            active_sampler = SpinReversalTransformComposite(raw_sampler)
+            mask_list = [bool(np.random.choice([True, False])) for _ in bqm_phys.variables]
+            final_srt_mask = np.array([mask_list], dtype=bool)
+            for idx, var_label in enumerate(bqm_phys.variables):
+                if mask_list[idx] and var_label < len(active_flux_biases):
+                    active_flux_biases[var_label] = -active_flux_biases[var_label]
+            sample_kwargs = {
+                'num_reads': num_samples,
+                'answer_mode': 'raw',
+                'auto_scale': False,
+                'flux_biases': active_flux_biases,
+                'flux_drift_compensation': False,
+                'srts': final_srt_mask
+            }
+        else:
+            active_sampler = raw_sampler
+            sample_kwargs = {
+                'num_reads': num_samples,
+                'answer_mode': 'raw',
+                'auto_scale': False,
+                'flux_biases': flux_biases,
+                'flux_drift_compensation': False
+            }
+
+        # 4. Sample
+        physical_response = active_sampler.sample(bqm_phys, **sample_kwargs)
+
+        # 5. Unembed
+        source_bqm = dimod.BinaryQuadraticModel.from_ising(h_logical, J_logical)
+        logical_response = dwave.embedding.unembed_sampleset(
+            target_sampleset=physical_response,
+            embedding=embedding,
+            source_bqm=source_bqm,
+            chain_break_method=dwave.embedding.chain_breaks.majority_vote,
+            chain_break_fraction=True
+        )
+
+        logical_vars_ordered = list(logical_response.variables)
+        log_samples = logical_response.record.sample
+
+    # --- Analyze Chains (common to both paths) ---
+    phys_matrix = physical_response.record.sample
+    n_samples_actual = phys_matrix.shape[0]
+    break_matrix = np.zeros((n_samples_actual, len(logical_vars_ordered)), dtype=bool)
+
+    phys_labels = list(physical_response.variables)
+    phys_label_to_col = {lbl: i for i, lbl in enumerate(phys_labels)}
+
+    for col_idx, logical_var in enumerate(logical_vars_ordered):
+        chain = embedding.get(logical_var, [])
+        if len(chain) <= 1: continue
+        chain_cols = [phys_label_to_col[q] for q in chain if q in phys_label_to_col]
+        if not chain_cols: continue
+        chain_vals = phys_matrix[:, chain_cols]
+        break_matrix[:, col_idx] = (np.min(chain_vals, axis=1) != np.max(chain_vals, axis=1))
+
+    # --- Pack & Save ---
+    log_tensor = torch.tensor(log_samples, dtype=torch.float32, device=device)
+
+    result = ChainAnalysisResult(
+        logical_samples=log_tensor,
+        variable_labels=logical_vars_ordered,
+        metadata=metadata,
+        break_matrix=break_matrix,
+        physical_matrix=phys_matrix,
+        physical_labels=phys_labels,
+        embedding=embedding,
+        physical_response=physical_response,
+        srt_active=use_srt,
+        srt_mask=final_srt_mask,
+        susceptibility_applied=susceptibility_applied,
+        orbit_seed=orbit_seed,
+        vis_mapping=vis_mapping,
+        hid_mapping=hid_mapping
+    )
+
     if save_dir:
         prefix = f"{metadata.get('source', 'dwave')}_"
         result.save(directory=save_dir, prefix=prefix)
