@@ -112,11 +112,15 @@ def setup_model(config=None):
             # Move to device immediately so they can be copied to model buffers
             model.feature_min.copy_(raw_min.to(dev))
             model.feature_max.copy_(raw_max.to(dev))
+
+            u_edges = dataMgr.get_u_bin_edges(config.model.u_bits, model.feature_min, model.feature_max)
+            model.encoder.u_bin_edges.copy_(u_edges.to(dev))
         
         if is_distributed():
             # NCCL requires tensors to be on the GPU to broadcast
             dist.broadcast(model.feature_min, src=0)
             dist.broadcast(model.feature_max, src=0)
+            dist.broadcast(model.encoder.u_bin_edges, src=0)
         
         dataMgr.apply_stats_and_build_loaders(model.feature_min, model.feature_max)
 
