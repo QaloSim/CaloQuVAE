@@ -9,6 +9,36 @@ import itertools
 from typing import Tuple, List, Optional
 from utils.pca_utils import compute_U, plot_PCA
 
+def plot_weight_distribution(rbm, abs_tol: float, bins: int = 100):
+    """
+    Plots the distribution of the weight matrix from an RBM object 
+    and overlays the absolute clipping tolerance.
+    """
+    if "weight_matrix" not in rbm.params:
+        raise ValueError("The provided RBM object lacks a 'weight_matrix' in its params dictionary.")
+
+    # Detach from graph, move to CPU, and flatten to 1D array
+    weights = rbm.params["weight_matrix"].detach().cpu().numpy().flatten()
+    
+    plt.figure(figsize=(8, 5))
+    
+    # Plot the histogram of the weights
+    plt.hist(weights, bins=bins, color='steelblue', edgecolor='black', alpha=0.7, density=True, label='Weights')
+    
+    # Add vertical lines for the absolute tolerance boundaries
+    plt.axvline(x=abs_tol, color='crimson', linestyle='dashed', linewidth=2, label=f'+Tol ({abs_tol})')
+    plt.axvline(x=-abs_tol, color='crimson', linestyle='dashed', linewidth=2, label=f'-Tol ({-abs_tol})')
+    
+    plt.title("RBM Weight Distribution under Clipping")
+    plt.xlabel("Weight Value")
+    plt.ylabel("Density")
+    plt.legend()
+    plt.grid(axis='y', linestyle='--', alpha=0.6)
+    plt.yscale("log")
+    plt.tight_layout()
+
+    
+    plt.show()
 
 def prepare_dataframe(proj_real, proj_gen, n_components):
     pc_cols = [f"PC{i}" for i in range(n_components)]
@@ -565,3 +595,52 @@ def plot_pca_analysis_with_features(
     g.fig.colorbar(sm_feat, cax=cbar_ax_feat, label=feature_name)
     
     return g
+
+
+
+def plot_basis_evaluation(metrics: dict):
+    """
+    Generates a two-panel plot showing Basis Alignment and Cumulative Variance Explained.
+    """
+    fig, axes = plt.subplots(1, 2, figsize=(14, 6))
+    
+    n_components = metrics["n_components"]
+    pc_labels = [f"PC{i}" for i in range(n_components)]
+    
+    # --- Panel 1: Absolute Cosine Similarity Heatmap ---
+    sns.heatmap(
+        metrics["cosine_similarity"], 
+        annot=True, 
+        cmap="Blues", 
+        vmin=0, vmax=1,
+        xticklabels=[f"Cond {pc}" for pc in pc_labels],
+        yticklabels=[f"Marg {pc}" for pc in pc_labels],
+        ax=axes[0]
+    )
+    axes[0].set_title("Absolute Cosine Similarity: $U_m^T U_c$")
+    axes[0].set_xlabel("Conditional Basis ($U_c$)")
+    axes[0].set_ylabel("Marginalized Basis ($U_m$)")
+    
+    # --- Panel 2: Cumulative Variance Explained ---
+    # Convert individual PC variances to cumulative sum
+    cum_var_native = np.cumsum(metrics["var_native"])
+    cum_var_marginal = np.cumsum(metrics["var_marginal"])
+    
+    x_axis = np.arange(n_components)
+    
+    axes[1].plot(x_axis, cum_var_native, marker='o', linestyle='-', color='black', label="Native Basis ($U_c$)")
+    axes[1].plot(x_axis, cum_var_marginal, marker='s', linestyle='--', color='red', label="Marginal Basis ($U_m$)")
+    
+    # Formatting
+    axes[1].set_title("Cumulative Variance Explained on Conditional Data")
+    axes[1].set_xlabel("Principal Component Index")
+    axes[1].set_ylabel("Fraction of Total Variance")
+    axes[1].set_xticks(x_axis)
+    axes[1].set_xticklabels(pc_labels)
+    axes[1].set_ylim(0, 1.05)
+    axes[1].grid(True, alpha=0.3)
+    axes[1].legend()
+    
+    plt.tight_layout()
+    plt.show()
+
