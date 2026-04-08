@@ -188,7 +188,37 @@ class DataManagerLayersShowers():
         geom_features = extractor(target_hits)
         geom_features = {k: feature.std(dim=0) for k, feature in geom_features.items()}  # (N, num_layers)
         return geom_features
+    
+    def get_u_bin_edges(self, u_bits, feature_min, feature_max):
+        """
+        Computes the quantile edges for CDF-based gray coding on the scaled data passed into the encoder.
+        Returns a tensor of shape (num_layers, 2^u_bits - 1).
+        """
+        logger.info(f"Computing CDF quantile edges for {u_bits}-bit precision on scaled data...")
+        
+        u_raw = self.f["layer_energies_transformed"] 
+        
+        dev = feature_min.device
+        u_raw = u_raw.to(dev)
+        
+        # Apply the exact same scaling logic as apply_stats_and_build_loaders
+        denominator = (feature_max - feature_min)
+        if isinstance(denominator, torch.Tensor):
+            denominator = torch.where(denominator == 0, torch.tensor(1e-6, device=dev), denominator)
+        elif denominator == 0:
+            denominator = 1e-6
+            
+        u_scaled = (u_raw - feature_min) / denominator
+        
+        num_edges = (2 ** u_bits) - 1
+        
+        # Calculate quantiles on the SCALED data
+        quantiles = torch.linspace(0, 1, num_edges + 2, device=dev)[1:-1]
+        u_bin_edges = torch.quantile(u_scaled.float(), quantiles, dim=0).T
+        
+        return u_bin_edges
 
+        
     def apply_stats_and_build_loaders(self, feature_min, feature_max):
         """
         Transforms the dataset using provided stats and constructs dataloaders.
