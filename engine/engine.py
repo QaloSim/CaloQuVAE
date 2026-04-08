@@ -262,6 +262,7 @@ class Engine():
     def track_best_val_loss(self, loss_dict, chi2, epoch=None):
         # Calculate current score once
         current_score = loss_dict["val_ae_loss"] + chi2 * 10
+        wandb.log({"overall_score": current_score})
         
         # Check for strict improvement
         if self.best_val_loss > current_score:
