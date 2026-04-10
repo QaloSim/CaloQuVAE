@@ -162,7 +162,7 @@ class EngineTransfusion():
                 samples = self.model.net(incidence_energy=x0_cond, rev=True)
                 self.feature_mean = self.feature_mean.to(samples.device)
                 self.feature_std = self.feature_std.to(samples.device)
-                samples, x0_inv = reduce_inverse(samples, x0, self.feature_mean, self.feature_std)
+                samples, x0_inv = reduce_inverse(samples, x0, self.feature_mean, self.feature_std, f=1.30)
                 x, x0_inv = reduce_inverse(x, x0, self.feature_mean, self.feature_std)
 
                 
@@ -171,5 +171,20 @@ class EngineTransfusion():
                 all_x0.append(x0_inv.cpu())
 
                 
-        return torch.cat(all_samples), torch.cat(all_x), torch.cat(all_x0)     
+        return torch.cat(all_samples), torch.cat(all_x), torch.cat(all_x0)
+
+    def sample_tfusion_given_energy(self, incidence_energy):
+        """
+        Generates samples given a single tensor of incidence energies.
+        Different than sample_tfusion, does not require a DataLoader
+        """
+        self.model.eval()
+        with torch.no_grad():
+            incidence_energy = incidence_energy.to(self._device)
+            x0_cond = incidence_energy.unsqueeze(-1) # (batch_size, 1, 1)
+            samples = self.model.net(incidence_energy=x0_cond, rev=True)
+            self.feature_mean = self.feature_mean.to(samples.device)
+            self.feature_std = self.feature_std.to(samples.device)
+            samples, x0_inv = reduce_inverse(samples, incidence_energy, self.feature_mean, self.feature_std, f=1.30)
+            return samples
 
