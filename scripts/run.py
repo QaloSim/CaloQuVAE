@@ -8,11 +8,10 @@ Year: 2025
 
 #external libraries
 import os
+import random
 
 import torch
-torch.manual_seed(32)
 import numpy as np
-np.random.seed(32)
 import hydra
 from hydra.utils import instantiate
 
@@ -41,6 +40,7 @@ from engine.engine import Engine
 
 @hydra.main(config_path="../config", config_name="config", version_base=None)
 def main(cfg=None):
+    set_seed(cfg.seed)
     mode = cfg.wandb.mode
     if cfg.load_state:
         logger.info(f"Loading config from {cfg.config_path}")
@@ -271,6 +271,16 @@ def load_model_instance(cfg, adjust_epoch_start=True):
     self._model_creator.load_state(config.run_path, self.device, vae_opt=self.optimiser, rbm_opt=self.model.prior.opt)
     return self
 
+
+def set_seed(seed: int):
+    """Set all RNG seeds for reproducibility."""
+    random.seed(seed)
+    np.random.seed(seed)
+    torch.manual_seed(seed)
+    torch.cuda.manual_seed_all(seed)
+    torch.backends.cudnn.deterministic = True
+    torch.backends.cudnn.benchmark = False
+    logger.info(f"Global seed set to {seed}")
 
 def is_distributed():
     return "LOCAL_RANK" in os.environ
