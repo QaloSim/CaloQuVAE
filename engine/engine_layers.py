@@ -23,6 +23,7 @@ class EngineLayers(Engine):
 
     def __init__(self, cfg, **kwargs):
         super().__init__(cfg, **kwargs)
+        self.lr_scheduler = None
 
     def fit_ae(self, epoch):
         log_batch_idx = max(len(self.data_mgr.train_loader)//self._config.engine.n_batches_log_train, 1)
@@ -68,11 +69,16 @@ class EngineLayers(Engine):
             self.optimiser.step()
         
             if (i % log_batch_idx) == 0 and is_master():
-                    logger.info('Epoch: {} [{}/{} ({:.0f}%)]\t beta_latent: {:.3f}, beta_hits: {:.3f}, slope: {:.3f} \t Batch Loss: {:.4f}'.format(epoch,
+                    current_lr = self.optimiser.param_groups[0]['lr']
+                    logger.info('Epoch: {} [{}/{} ({:.0f}%)]\t beta_latent: {:.3f}, beta_hits: {:.3f}, slope: {:.3f}, lr: {:.2e} \t Batch Loss: {:.4f}'.format(epoch,
                         i, len(self.data_mgr.train_loader),100.*i/len(self.data_mgr.train_loader),
-                        self.beta_latent, self.beta_hits, self.slope, loss_dict["loss"]))
+                        self.beta_latent, self.beta_hits, self.slope, current_lr, loss_dict["loss"]))
                     safe_wandb_dict = {k: v.item() if isinstance(v, torch.Tensor) else v for k, v in loss_dict.items()}
+                    safe_wandb_dict['lr'] = current_lr
                     wandb.log(safe_wandb_dict)
+
+        if self.lr_scheduler is not None:
+            self.lr_scheduler.step()
 
     def evaluate_ae(self, data_loader, epoch):
         log_batch_idx = max(len(data_loader)//self._config.engine.n_batches_log_val, 1)

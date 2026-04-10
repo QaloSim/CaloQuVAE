@@ -1,8 +1,8 @@
 _target_: engine.engine_layers.EngineLayers
-learning_rate: 0.00005
+learning_rate: 0.0001
 weight_decay: 0.0
 
-n_batches_log_train: 4
+n_batches_log_train: 10
 n_batches_log_val: 1
 
 beta_latent_start: 1.0
@@ -11,10 +11,13 @@ beta_hits_start: 1.0
 beta_hits_end: 3.0
 beta_gumbel_epoch_start: 0
 beta_gumbel_end: 2.0
-beta_gumbel_duration: 25     # Duration in epochs (replaces epoch_end)
+beta_gumbel_duration: 100     # Duration in epochs (replaces epoch_end)
 
 slope_act_fct_start: 0.05
 slope_act_fct_end: 0.
+
+lr_scheduler_T_max: 500       # Epochs over which LR decays from base to eta_min
+lr_scheduler_eta_min: 1.0e-6
 
 # train_vae_separate: 1
 training_mode: ae
