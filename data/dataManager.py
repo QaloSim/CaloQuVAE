@@ -2,10 +2,18 @@ import torch
 import h5py
 import numpy as np
 import os
+import random
 from torch.utils.data import DataLoader, Dataset
 from CaloQuVAE import logging
 from torch.utils.data.distributed import DistributedSampler
 import torch.distributed as dist
+
+
+def _seed_worker(worker_id):
+    """Propagate the base seed into each DataLoader worker's numpy/random state."""
+    worker_seed = torch.initial_seed() % 2**32
+    np.random.seed(worker_seed)
+    random.seed(worker_seed)
 
 # for atlas dataset
 from data.atlas import get_atlas_dataset
@@ -106,11 +114,15 @@ class DataManagerLayers():
         # Apply standardization to loaded dataset
         layer_energies = (layer_energies - feature_mean) / feature_std        
         if tr > 0:
+            _g = torch.Generator()
+            _g.manual_seed(getattr(self._config, 'seed', 42))
             self.train_loader = DataLoader(
                 LayerDatasets((layer_energies[:tr, :], incident_energies[:tr, :])),
                 batch_size=self._config.data.batch_size_tr,
                 shuffle=True,
-                num_workers=self._config.data.num_workers
+                num_workers=self._config.data.num_workers,
+                generator=_g,
+                worker_init_fn=_seed_worker
             )
             logger.info("{0}: {2} events, {1} batches".format(
                 "Train", len(self.train_loader), len(self.train_loader.dataset)))
@@ -260,22 +272,26 @@ class DataManagerLayersShowers():
         layers_transformed = getattr(self, "layers_scaled", self.f["layer_energies_transformed"])
 
         if tr > 0:
+            _seed = getattr(self._config, 'seed', 42)
             train_dataset = LayerShowersDataset((showers[:tr, :], incident_energies[:tr, :], layers_transformed[:tr, :], layers_raw[:tr, :]))
             # Check if DDP is active
             if dist.is_initialized():
-                train_sampler = DistributedSampler(train_dataset)
+                train_sampler = DistributedSampler(train_dataset, seed=_seed)
                 shuffle_flag = False # Sampler handles shuffling
             else:
                 train_sampler = None
                 shuffle_flag = True  # Fallback to standard shuffle for single GPU
-                
+            _g = torch.Generator()
+            _g.manual_seed(_seed)
             self.train_loader = DataLoader(
                 train_dataset,
                 batch_size=self._config.data.batch_size_tr,
                 sampler=train_sampler,
                 shuffle=shuffle_flag,
                 num_workers=self._config.data.num_workers,
-                pin_memory=True
+                pin_memory=True,
+                generator=_g,
+                worker_init_fn=_seed_worker
             )
             logger.info("{0}: {2} events, {1} batches".format(
                 "Train", len(self.train_loader), len(self.train_loader.dataset)))
@@ -359,11 +375,15 @@ class DataManager():
             
             # --- Train Loader ---
             if tr > 0:
+                _g = torch.Generator()
+                _g.manual_seed(getattr(self._config, 'seed', 42))
                 self.train_loader = DataLoader(
                     CaloDataset((showers[:tr, :], energies[:tr, :])),
                     batch_size=self._config.data.batch_size_tr,
                     shuffle=True,
-                    num_workers=self._config.data.num_workers
+                    num_workers=self._config.data.num_workers,
+                    generator=_g,
+                    worker_init_fn=_seed_worker
                 )
                 logger.info("{0}: {2} events, {1} batches".format(
                     "Train", len(self.train_loader), len(self.train_loader.dataset)))
