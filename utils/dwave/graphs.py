@@ -1,10 +1,13 @@
 from __future__ import annotations  # 1. Must be the very first line!
 
-from typing import Dict, List, Tuple, Union
+from typing import Dict, List, Tuple, Union, Optional
+from dataclasses import dataclass, field
 import numpy as np
 from collections import defaultdict
+import minorminer
 from dwave.system import DWaveSampler
-from dwave.embedding.zephyr import find_biclique_embedding
+from dwave.embedding.zephyr import find_biclique_embedding as find_biclique_embedding_zephyr
+from dwave.embedding.pegasus import find_biclique_embedding as find_biclique_embedding_pegasus
 from dwave.system.composites import FixedEmbeddingComposite
 from utils.FluxBiases import h_to_fluxbias 
 from typing import TYPE_CHECKING
@@ -28,6 +31,10 @@ def get_sampler_and_biclique_embedding(num_visible, num_hidden, solver_name):
         return None, None, None
 
     working_graph = raw_sampler.to_networkx_graph()
+    if "Advantage2" in solver_name:
+        find_biclique_embedding = find_biclique_embedding_zephyr
+    else:
+        find_biclique_embedding = find_biclique_embedding_pegasus
     try:
         left_dict, right_dict = find_biclique_embedding(
             num_visible, num_hidden, target_graph=working_graph
@@ -426,6 +433,10 @@ def run_embedding(left_size, right_size, solver_name):
         return target_sampler, None, None, None, None
 
     print(f"Successfully fetched QPU graph with {len(working_graph.nodes)} nodes.")
+    if "Advantage2" in TARGET_SOLVER:
+        find_biclique_embedding = find_biclique_embedding_zephyr
+    else:
+        find_biclique_embedding = find_biclique_embedding_pegasus
 
     try:
         left_chains, right_chains = find_biclique_embedding(
@@ -849,6 +860,109 @@ def select_optimal_side_exact(sampler, q_used, left_chains, right_chains, thresh
         print("===" * 15)
         return cond_sets_right, 'right'
 
+def augment_cond_sets_from_visible_chains(
+    cond_sets, left_chains, right_chains, selected_side, n_extra,
+    strategy='last', n_visible=None
+):
+    """
+    When cond_sets is empty or too small, borrow chains from the visible side
+    (the side NOT selected as hidden) and promote them to conditioning nodes.
+
+    The visible side chains are standard biclique chains that are guaranteed
+    to be connected to the hidden side, so they work as conditioning nodes
+    even when no neighbor-qubit conditioning sets could be found.
+
+    Parameters
+    ----------
+    cond_sets : list of sets
+        Existing conditioning sets (may be empty).
+    left_chains : dict  {key -> set/list of qubits}
+    right_chains : dict {key -> set/list of qubits}
+    selected_side : str  'left' or 'right'  (the HIDDEN side returned by select_optimal_side_exact)
+    n_extra : int
+        How many visible chains to promote to conditioning nodes.
+        If n_extra exceeds the number of available visible chains, all are taken.
+    strategy : str
+        'last'  – borrow from the tail of sorted visible keys (default)
+        'first' – borrow from the head
+    n_visible : int or None
+        If given, trim the returned visible chains dict (after borrowing) to
+        exactly this many entries, keeping the first n_visible sorted keys.
+        Use this to match the RBM's visible layer size.
+        If None, no trimming is applied.
+
+    Returns
+    -------
+    augmented_cond_sets : list of sets
+        Original cond_sets + newly promoted chain sets.
+    new_left_chains : dict
+        left_chains with any borrowed/trimmed chains removed.
+    new_right_chains : dict
+        right_chains with any borrowed/trimmed chains removed.
+    borrowed_keys : list
+        The sorted keys that were removed from the visible side dict
+        (includes both conditioning-borrowed and trimmed keys).
+    """
+    if n_extra <= 0 and n_visible is None:
+        return list(cond_sets), dict(left_chains), dict(right_chains), []
+
+    # Identify the visible side (opposite of the hidden/selected side)
+    if selected_side == 'right':
+        visible_chains = left_chains
+        hidden_chains  = right_chains
+        visible_label  = 'left'
+    elif selected_side == 'left':
+        visible_chains = right_chains
+        hidden_chains  = left_chains
+        visible_label  = 'right'
+    else:
+        raise ValueError(f"selected_side must be 'left' or 'right', got {selected_side!r}")
+
+    sorted_keys = sorted(visible_chains.keys())
+    n_take = min(max(n_extra, 0), len(sorted_keys))
+
+    if strategy == 'last':
+        borrowed_keys = sorted_keys[-n_take:] if n_take > 0 else []
+    elif strategy == 'first':
+        borrowed_keys = sorted_keys[:n_take]
+    else:
+        raise ValueError(f"strategy must be 'first' or 'last', got {strategy!r}")
+
+    # Build the new conditioning sets from the borrowed chains
+    extra_cond_sets = [set(visible_chains[k]) for k in borrowed_keys]
+    augmented_cond_sets = list(cond_sets) + extra_cond_sets
+
+    # Remove borrowed keys from the visible dict
+    borrowed_set = set(borrowed_keys)
+    new_visible = {k: v for k, v in visible_chains.items() if k not in borrowed_set}
+
+    # Trim to n_visible if requested
+    trimmed_keys = []
+    if n_visible is not None:
+        remaining_sorted = sorted(new_visible.keys())
+        if len(remaining_sorted) > n_visible:
+            trimmed_keys = remaining_sorted[n_visible:]
+            trim_set = set(trimmed_keys)
+            new_visible = {k: v for k, v in new_visible.items() if k not in trim_set}
+
+    if selected_side == 'right':
+        new_left_chains, new_right_chains = new_visible, dict(right_chains)
+    else:
+        new_left_chains, new_right_chains = dict(left_chains), new_visible
+
+    n_orig = len(cond_sets)
+    n_aug  = len(augmented_cond_sets)
+    msg = (f"augment_cond_sets_from_visible_chains: "
+           f"borrowed {n_take} chains from the '{visible_label}' (visible) side. "
+           f"cond_sets: {n_orig} -> {n_aug}. "
+           f"Remaining visible chains: {len(new_visible)}")
+    if trimmed_keys:
+        msg += f" (trimmed {len(trimmed_keys)} extra to match n_visible={n_visible})"
+    print(msg + ".")
+
+    all_removed_keys = borrowed_keys + trimmed_keys
+    return augmented_cond_sets, new_left_chains, new_right_chains, all_removed_keys
+
 def build_target_neighborhoods(target_chains, adjacency):
     """Pre-computes the physical neighbors for every target logical chain for $O(1)$ lookups."""
     neighborhoods = {}
@@ -968,14 +1082,15 @@ def select_optimal_chains_ilp(candidates):
 
 
 def orchestrate_bipartite_expansion(
-    sampler, 
-    base_left_chains, 
-    base_right_chains, 
+    sampler,
+    base_left_chains,
+    base_right_chains,
     locked_qubits=None,
-    max_len=10, 
-    start_min_hits=35, 
-    pool_size=1500, 
-    max_iterations=10
+    max_len=10,
+    start_min_hits=35,
+    pool_size=1500,
+    max_iterations=10,
+    min_hits_floor=32,  # Set equal to start_min_hits to disable decay
 ):
     """
     Iteratively expands a bipartite embedding on the QPU.
@@ -1052,7 +1167,7 @@ def orchestrate_bipartite_expansion(
         if not gains_made:
             # If we failed to add chains, try lowering the connectivity standard
             # before completely terminating the algorithm.
-            if current_min_hits > 32:
+            if current_min_hits > min_hits_floor:
                 print(f"\nStagnation reached at min_hits={current_min_hits}. Decaying threshold by 1...")
                 current_min_hits -= 1
             else:
@@ -1153,3 +1268,329 @@ def get_orbit_mappings(
         return vis_mapping, hid_mapping
         
     raise ValueError(f"Unknown seed format: {seed}")
+
+
+# --- D. Pareto Frontier Search ---
+
+@dataclass
+class EmbeddingPoint:
+    """
+    A single point on the size-vs-connectivity Pareto frontier.
+
+    Connectivity metrics:
+      - density:     fraction of all (n_vis * n_hid) possible edges that are present
+      - min_degree:  worst-case node degree (a value of 0 means a dead / isolated unit)
+      - mean_degree: average degree across all logical nodes
+    """
+    density_floor: float       # the sparsity parameter used for this run (0.0–1.0)
+    min_hits_used: int         # absolute min_hits = round(density_floor * base_n)
+    n_vis: int
+    n_hid: int
+    density: float
+    min_degree: int
+    mean_degree: float
+    left_chains: Dict  = field(repr=False)
+    right_chains: Dict = field(repr=False)
+
+    @property
+    def total_nodes(self) -> int:
+        return self.n_vis + self.n_hid
+
+
+def compute_connectivity_matrix(left_chains: Dict, right_chains: Dict, adjacency) -> np.ndarray:
+    """
+    Computes the biadjacency matrix M where M[i,j]=1 iff left chain i has at least
+    one physical coupler to right chain j.
+
+    Returns an (n_vis, n_hid) int8 array.
+    """
+    left_keys  = sorted(left_chains.keys(),  key=str)
+    right_keys = sorted(right_chains.keys(), key=str)
+
+    # Pre-compute physical neighborhoods for every right chain (avoids O(n^2) adjacency lookups)
+    right_neighbor_sets = []
+    for rk in right_keys:
+        nbrs = set()
+        for q in right_chains[rk]:
+            nbrs.update(adjacency[q])
+        right_neighbor_sets.append(nbrs)
+
+    mat = np.zeros((len(left_keys), len(right_keys)), dtype=np.int8)
+    for i, lk in enumerate(left_keys):
+        lset = set(left_chains[lk])
+        for j, nbrs in enumerate(right_neighbor_sets):
+            if lset & nbrs:
+                mat[i, j] = 1
+    return mat
+
+
+def _connectivity_stats(mat: np.ndarray) -> Tuple[float, int, float]:
+    """Returns (density, min_degree, mean_degree) for a biadjacency matrix."""
+    n_vis, n_hid = mat.shape
+    row_deg = mat.sum(axis=1)  # each visible node's degree
+    col_deg = mat.sum(axis=0)  # each hidden node's degree
+    all_deg = np.concatenate([row_deg, col_deg])
+    density     = float(mat.sum()) / (n_vis * n_hid)
+    min_degree  = int(all_deg.min())
+    mean_degree = float(all_deg.mean())
+    return density, min_degree, mean_degree
+
+
+def pareto_sweep_expansion(
+    sampler,
+    base_left_chains: Dict,
+    base_right_chains: Dict,
+    density_floors: Optional[List[float]] = None,
+    locked_qubits=None,
+    max_len: int = 10,
+    pool_size: int = 1500,
+    max_iterations: int = 15,
+) -> List[EmbeddingPoint]:
+    """
+    Sweeps over sparsity thresholds to map the size-vs-connectivity Pareto frontier.
+
+    Each sweep starts fresh from the biclique seed (base_left_chains, base_right_chains)
+    and runs expansion with a FIXED min_hits threshold (no decay), so every point is
+    independent and comparable.
+
+    Args:
+        density_floors: Fractions in (0, 1] relative to the biclique base size.
+                        A value of 1.0 means new chains must connect to *every*
+                        existing opposite-side chain (maximally dense, fewest additions).
+                        A value of 0.3 means new chains need only 30% connectivity
+                        (sparser, but more chains can typically be added).
+                        Defaults to 9 evenly-spaced values from 0.3 to 1.0.
+
+    Returns:
+        List of EmbeddingPoint, one per density_floor value, sorted by density_floor.
+    """
+    if density_floors is None:
+        density_floors = [round(f, 2) for f in np.linspace(0.3, 1.0, 9)]
+
+    # Biclique base size — fixed reference for computing min_hits
+    base_n = max(len(base_left_chains), len(base_right_chains))
+
+    results: List[EmbeddingPoint] = []
+
+    for f in sorted(density_floors):
+        min_hits = max(1, round(f * base_n))
+        print(f"\n{'='*55}")
+        print(f"  Pareto sweep: density_floor={f:.2f}  min_hits={min_hits}/{base_n}")
+        print(f"{'='*55}")
+
+        # Independent expansion from the biclique seed, no decay
+        left, right = orchestrate_bipartite_expansion(
+            sampler,
+            base_left_chains,
+            base_right_chains,
+            locked_qubits=locked_qubits,
+            max_len=max_len,
+            start_min_hits=min_hits,
+            pool_size=pool_size,
+            max_iterations=max_iterations,
+            min_hits_floor=min_hits,  # disables decay
+        )
+
+        mat = compute_connectivity_matrix(left, right, sampler.adjacency)
+        density, min_deg, mean_deg = _connectivity_stats(mat)
+
+        pt = EmbeddingPoint(
+            density_floor=f,
+            min_hits_used=min_hits,
+            n_vis=len(left),
+            n_hid=len(right),
+            density=density,
+            min_degree=min_deg,
+            mean_degree=mean_deg,
+            left_chains=left,
+            right_chains=right,
+        )
+        results.append(pt)
+        print(f"  -> {pt.n_vis}v × {pt.n_hid}h  |  density={density:.3f}  "
+              f"min_deg={min_deg}  mean_deg={mean_deg:.1f}")
+
+    return results
+
+
+def extract_pareto_frontier(
+    results: List[EmbeddingPoint],
+    size_metric: str = "total",
+    min_degree_threshold: int = 0,
+) -> List[EmbeddingPoint]:
+    """
+    Returns the Pareto-optimal subset of EmbeddingPoints.
+
+    A point A dominates B if:
+      size(A) >= size(B)  AND  density(A) >= density(B)
+    with strict inequality in at least one dimension.
+
+    Args:
+        size_metric: 'total' uses n_vis + n_hid;
+                     'min' uses min(n_vis, n_hid) (balanced RBM measure).
+        min_degree_threshold: Drop any point where min_degree < this value
+                              (e.g., 1 removes points with dead/isolated units).
+
+    Returns:
+        Non-dominated points sorted by ascending size.
+    """
+    def size_of(p: EmbeddingPoint) -> int:
+        return p.total_nodes if size_metric == "total" else min(p.n_vis, p.n_hid)
+
+    # Optional filter: remove points with dead units
+    candidates = [p for p in results if p.min_degree >= min_degree_threshold]
+
+    pareto = []
+    for p in candidates:
+        dominated = any(
+            size_of(q) >= size_of(p) and q.density >= p.density
+            and (size_of(q) > size_of(p) or q.density > p.density)
+            for q in candidates if q is not p
+        )
+        if not dominated:
+            pareto.append(p)
+
+    return sorted(pareto, key=size_of)
+
+
+def _build_sparse_bipartite_logical_graph(
+    n_vis: int, n_hid: int, density: float, rng: np.random.Generator
+) -> nx.Graph:
+    """
+    Builds a bipartite logical graph where each visible node is connected to
+    exactly round(density * n_hid) randomly chosen hidden nodes.
+
+    Node labelling: visible = 0..n_vis-1, hidden = n_vis..n_vis+n_hid-1.
+    At density=1.0 this produces the complete bipartite K_{n_vis, n_hid}.
+    """
+    G = nx.Graph()
+    G.add_nodes_from(range(n_vis),          bipartite=0)
+    G.add_nodes_from(range(n_vis, n_vis + n_hid), bipartite=1)
+
+    k = max(1, round(density * n_hid))
+    hidden = np.arange(n_vis, n_vis + n_hid)
+    for v in range(n_vis):
+        neighbours = rng.choice(hidden, size=min(k, n_hid), replace=False)
+        for h in neighbours:
+            G.add_edge(v, int(h))
+    return G
+
+
+def pareto_sweep_minorminer(
+    sampler,
+    base_left_chains: Dict,
+    base_right_chains: Dict,
+    density_floors: Optional[List[float]] = None,
+    step: int = 4,
+    max_extra: int = 40,
+    n_tries: int = 3,
+    random_seed: int = 42,
+    **miner_kwargs,
+) -> List[EmbeddingPoint]:
+    """
+    Alternative Pareto sweep using minorminer.find_embedding seeded with the
+    biclique chains, instead of the BFS + ILP expansion.
+
+    For each density_floor, we incrementally increase (n_vis, n_hid) by `step`
+    until minorminer fails, recording every successful embedding as a Pareto
+    point.  The biclique chains are passed as initial_chains so minorminer can
+    build on top of them rather than starting from scratch.
+
+    Why this differs from the BFS+ILP approach
+    -------------------------------------------
+    - minorminer optimises globally for *short chains* (fewer physical qubits
+      per logical node).  It has no concept of RBM connectivity.
+    - Our BFS+ILP approach greedily maximises per-chain connectivity to the
+      opposite side, which is exactly what an RBM needs.
+    - Sparser logical graphs let minorminer relax chain-adjacency requirements,
+      potentially fitting more nodes — but the resulting connectivity is
+      whatever the physical layout happens to give, not the maximised value our
+      method targets.
+
+    Args:
+        density_floors: Target logical graph densities to sweep. Defaults to
+                        [0.4, 0.6, 0.8, 1.0].
+        step:       How many nodes to add to each side per increment.
+        max_extra:  Maximum additional nodes beyond the biclique base to try.
+        n_tries:    Number of minorminer attempts per configuration (best kept).
+        random_seed: For reproducible logical graph generation.
+        **miner_kwargs: Forwarded to minorminer.find_embedding (e.g.,
+                        max_no_improvement=10, timeout=30).
+    """
+    qpu_graph = sampler.to_networkx_graph()
+    adjacency  = sampler.adjacency
+
+    base_left_keys  = sorted(base_left_chains.keys(),  key=str)
+    base_right_keys = sorted(base_right_chains.keys(), key=str)
+    base_n = len(base_left_chains)
+    base_m = len(base_right_chains)
+
+    if density_floors is None:
+        density_floors = [0.4, 0.6, 0.8, 1.0]
+
+    rng = np.random.default_rng(random_seed)
+    results: List[EmbeddingPoint] = []
+
+    for f in sorted(density_floors):
+        print(f"\n{'='*55}")
+        print(f"  minorminer Pareto sweep  density_floor={f:.2f}")
+        print(f"{'='*55}")
+
+        for extra in range(0, max_extra + 1, step):
+            n_vis = base_n + extra
+            n_hid = base_m + extra
+
+            # ── 1. Build sparse logical graph ────────────────────────────────
+            G = _build_sparse_bipartite_logical_graph(n_vis, n_hid, f, rng)
+
+            # ── 2. Seed from biclique chains ─────────────────────────────────
+            # Visible nodes 0..base_n-1 get biclique left chains.
+            # Hidden  nodes n_vis..n_vis+base_m-1 get biclique right chains.
+            # Extra nodes beyond the biclique get no initial chain.
+            initial_chains: Dict = {}
+            for i in range(base_n):
+                initial_chains[i] = list(base_left_chains[base_left_keys[i]])
+            for j in range(base_m):
+                initial_chains[n_vis + j] = list(base_right_chains[base_right_keys[j]])
+
+            # ── 3. Run minorminer (multiple tries) ───────────────────────────
+            best_emb = None
+            best_total_len = float("inf")
+            for _ in range(n_tries):
+                emb = minorminer.find_embedding(
+                    G, qpu_graph,
+                    initial_chains=initial_chains,
+                    **miner_kwargs,
+                )
+                if emb:
+                    total_len = sum(len(c) for c in emb.values())
+                    if total_len < best_total_len:
+                        best_emb = emb
+                        best_total_len = total_len
+
+            if not best_emb:
+                print(f"  -> Failed at {n_vis}v × {n_hid}h — stopping this density floor.")
+                break
+
+            # ── 4. Extract chains and measure actual physical connectivity ───
+            left_chains  = {i:        list(best_emb[i])             for i in range(n_vis)}
+            right_chains = {n_vis + j: list(best_emb[n_vis + j])    for j in range(n_hid)}
+
+            mat = compute_connectivity_matrix(left_chains, right_chains, adjacency)
+            density, min_deg, mean_deg = _connectivity_stats(mat)
+
+            pt = EmbeddingPoint(
+                density_floor=f,
+                min_hits_used=round(f * max(n_vis, n_hid)),
+                n_vis=n_vis,
+                n_hid=n_hid,
+                density=density,
+                min_degree=min_deg,
+                mean_degree=mean_deg,
+                left_chains=left_chains,
+                right_chains=right_chains,
+            )
+            results.append(pt)
+            print(f"  -> {n_vis}v × {n_hid}h  |  density={density:.3f}  "
+                  f"min_deg={min_deg}  mean_deg={mean_deg:.1f}")
+
+    return results
