@@ -530,7 +530,8 @@ def sample_physical_arbitrary(
     orbit_seed: Union[int, str, None] = None,
     vis_mapping: List[int] = None,
     hid_mapping: List[int] = None,
-    susceptibility_applied: bool = False
+    susceptibility_applied: bool = False,
+    flux_drift_compensation: bool = True
 ):
     """
     Executes physical sampling with SRT and wraps results in ChainAnalysisResult.
@@ -585,7 +586,7 @@ def sample_physical_arbitrary(
             'answer_mode': 'raw',
             'auto_scale': False,
             'flux_biases': active_flux_biases,
-            'flux_drift_compensation': False,
+            'flux_drift_compensation': flux_drift_compensation,
         }
         physical_response = raw_sampler.sample(bqm_phys, **sample_kwargs)
         physical_response = physical_response.change_vartype(dimod.SPIN, inplace=False)
@@ -639,7 +640,7 @@ def sample_physical_arbitrary(
                 'answer_mode': 'raw',
                 'auto_scale': False,
                 'flux_biases': active_flux_biases,
-                'flux_drift_compensation': False,
+                'flux_drift_compensation': flux_drift_compensation,
                 'srts': final_srt_mask
             }
         else:
@@ -649,7 +650,7 @@ def sample_physical_arbitrary(
                 'answer_mode': 'raw',
                 'auto_scale': False,
                 'flux_biases': flux_biases,
-                'flux_drift_compensation': False
+                'flux_drift_compensation': flux_drift_compensation
             }
 
         # 4. Sample
