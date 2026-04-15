@@ -13,7 +13,7 @@ import seaborn as sns
 import dwave.embedding
 from typing import TYPE_CHECKING
 from utils.dwave.physics import rbm_to_expanded_ising
-from utils.dwave.graphs import build_expanded_embedding
+from utils.dwave.graphs import build_expanded_embedding, EmbeddingPoint
 
 if TYPE_CHECKING:
     from utils.dwave.sampling_backend import ChainAnalysisResult
@@ -105,6 +105,10 @@ import networkx as nx
 def visualize_embedding_poster(sampler, graph, left_chains_dict, right_chains_dict, conditioning_sets):
     print("\n--- Generating Poster Visualization (Cropped) ---")
     
+    # --- 0. DETERMINE TOPOLOGY ---
+    # Cast sampler to string to safely check its name whether it's an object or string
+    is_zephyr = "Advantage2" in str(sampler)
+
     # --- 1. CONFIGURATION ---
     c_palette = {
         'left': '#D55E00',      # Vermilion
@@ -141,20 +145,31 @@ def visualize_embedding_poster(sampler, graph, left_chains_dict, right_chains_di
     # --- 3. PLOTTING & CROPPING ---
     fig, ax = plt.subplots(figsize=(12, 12), dpi=300) 
     
-    # We need the layout positions to calculate the zoom limits
-    # dnx uses this layout internally, so we call it here just for the math
-    pos = dnx.zephyr_layout(graph)
-    
-    dnx.draw_zephyr_embedding(
-        graph, 
-        emb=emb,
-        chain_color=chain_color,
-        unused_color=c_palette['unused_rgba'], 
-        node_size=20,       
-        show_labels=False,
-        width=0.2,
-        ax=ax
-    )
+    # Dynamically select layout and draw function based on the sampler
+    if is_zephyr:
+        pos = dnx.zephyr_layout(graph)
+        dnx.draw_zephyr_embedding(
+            graph, 
+            emb=emb,
+            chain_color=chain_color,
+            unused_color=c_palette['unused_rgba'], 
+            node_size=20,       
+            show_labels=False,
+            width=0.2,
+            ax=ax
+        )
+    else:
+        pos = dnx.pegasus_layout(graph)
+        dnx.draw_pegasus_embedding(
+            graph, 
+            emb=emb,
+            chain_color=chain_color,
+            unused_color=c_palette['unused_rgba'], 
+            node_size=20,       
+            show_labels=False,
+            width=0.2,
+            ax=ax
+        )
 
     # --- CALCULATE BOUNDING BOX ---
     # Gather all active physical qubits
@@ -164,7 +179,7 @@ def visualize_embedding_poster(sampler, graph, left_chains_dict, right_chains_di
     xs = [pos[q][0] for q in all_active_qubits]
     ys = [pos[q][1] for q in all_active_qubits]
     
-    # Add a small margin so nodes aren't cut off at the edge (0.5 is usually one unit block)
+    # Add a small margin so nodes aren't cut off at the edge
     margin = 0.1
     ax.set_xlim(min(xs) - margin, max(xs) + margin)
     ax.set_ylim(min(ys) - margin, max(ys) + margin)
@@ -190,13 +205,11 @@ def visualize_embedding_poster(sampler, graph, left_chains_dict, right_chains_di
               edgecolor='black')
 
     plt.axis('off')
-    # tight_layout will now work relative to the new cropped limits
     plt.tight_layout()
-    
-    # filename = "embedding_poster_cropped.png"
-    # plt.savefig(filename, bbox_inches='tight', transparent=True)
-    # print(f"Plot saved to {filename}")
     plt.show()
+    
+    
+    
 def plot_beta_optimization(
     beta_hist: list | np.ndarray, 
     rbm_e_hist: list | np.ndarray, 
@@ -255,6 +268,7 @@ def plot_energy_comparison(rbm_energies, qpu_energies, beta):
     # Convert tensors to numpy arrays
     rbm_e = rbm_energies.detach().cpu().numpy().flatten()
     qpu_e = qpu_energies.detach().cpu().numpy().flatten()
+    
     num_samples = min(len(rbm_e), len(qpu_e))
     
     plt.figure(figsize=(10, 6))
@@ -1595,58 +1609,91 @@ def plot_orbit_sweep_analysis(sweep_results):
 def plot_permutation_sweep_analysis(sweep_results):
     """
     Visualizes Monte Carlo Permutation Sweep.
-    
-    Row 1: [Error Hist] | [Chain Break Hist] | [Scatter: Error vs Breaks]
-    Row 2: Classical    | Default            | Best
-    Row 3: [Empty]      | Diff (Default-Cl)  | Diff (Best-Cl)
+
+    When ``sweep_results`` contains an ``"aggregated_orbit"`` key (produced by
+    the upgraded run_monte_carlo_permutation_sweep / run_mc_permutation_sweep_single),
+    a 4-column layout is used that adds the orbit-aggregation strategy as a
+    direct competitor alongside Default and Best:
+
+    Row 0: [Error Hist] | [Chain Break Hist] | [Scatter: Error vs Breaks] | [Bar: Strategy Comparison]
+    Row 1: Classical    | Default            | Best                        | Aggregated (all orbits)
+    Row 2: [Empty]      | Diff (Default-Cl)  | Diff (Best-Cl)              | Diff (Aggregated-Cl)
+
+    If ``"aggregated_orbit"`` is absent (legacy results), the original 3-column
+    layout is used with Default and Best only.
     """
     metrics = sweep_results["perm_metrics"]
     mat_classical = sweep_results["classical_matrix"]
-    
+
     default_run = sweep_results["default_orbit"]
     best_run = sweep_results["best_orbit"]
-    
-    # Extract data arrays
+    agg_run = sweep_results.get("aggregated_orbit")  # None for legacy results
+
     all_errors = [m['error_norm'] for m in metrics]
     all_breaks = [m['chain_break_frac'] for m in metrics]
-    
-    # Create Figure
-    fig = plt.figure(figsize=(18, 15)) 
-    
-    # Grid: 3 Rows, 3 Cols
-    gs = fig.add_gridspec(3, 3, height_ratios=[0.25, 0.4, 0.4]) 
+
+    has_agg = agg_run is not None
+    n_cols = 4 if has_agg else 3
+    fig_width = 24 if has_agg else 18
+
+    fig = plt.figure(figsize=(fig_width, 15))
+    gs = fig.add_gridspec(3, n_cols, height_ratios=[0.25, 0.4, 0.4])
 
     # --- TOP ROW: STATS ---
-    
-    # 1. Error Histogram (Top Left)
+
+    # 1. Error Histogram
     ax_hist_err = fig.add_subplot(gs[0, 0])
     ax_hist_err.hist(all_errors, bins=15, color='lightgray', edgecolor='white', alpha=0.8)
     ax_hist_err.axvline(default_run['error_norm'], color='firebrick', ls='--', lw=2, label='Default')
     ax_hist_err.axvline(best_run['error_norm'], color='forestgreen', ls='--', lw=2, label='Best')
+    if has_agg:
+        ax_hist_err.axvline(agg_run['error_norm'], color='mediumpurple', ls='--', lw=2, label='Aggregated')
     ax_hist_err.set_title("Distribution of Error Norms", fontweight='bold')
     ax_hist_err.set_xlabel("Euclidean Error")
     ax_hist_err.legend()
 
-    # 2. Chain Break Histogram (Top Center)
+    # 2. Chain Break Histogram
     ax_hist_brk = fig.add_subplot(gs[0, 1])
     ax_hist_brk.hist(all_breaks, bins=15, color='peachpuff', edgecolor='white', alpha=0.8)
-    ax_hist_brk.axvline(default_run['chain_break_frac'], color='firebrick', ls='--', lw=2)
-    ax_hist_brk.axvline(best_run['chain_break_frac'], color='forestgreen', ls='--', lw=2)
+    ax_hist_brk.axvline(default_run['chain_break_frac'], color='firebrick', ls='--', lw=2, label='Default')
+    ax_hist_brk.axvline(best_run['chain_break_frac'], color='forestgreen', ls='--', lw=2, label='Best')
+    if has_agg:
+        ax_hist_brk.axvline(agg_run['break_frac'], color='mediumpurple', ls='--', lw=2, label='Aggregated')
     ax_hist_brk.set_title("Distribution of Chain Breaks", fontweight='bold')
     ax_hist_brk.set_xlabel("Fraction of Broken Chains")
 
-    # 3. Scatter: Error vs Breaks (Top Right)
+    # 3. Scatter: Error vs Breaks
     ax_scatter = fig.add_subplot(gs[0, 2])
     ax_scatter.scatter(all_errors, all_breaks, alpha=0.6, c='gray')
-    # Highlight specific points
-    ax_scatter.scatter(default_run['error_norm'], default_run['chain_break_frac'], c='firebrick', s=100, marker='*', label='Default')
-    ax_scatter.scatter(best_run['error_norm'], best_run['chain_break_frac'], c='forestgreen', s=100, marker='*', label='Best')
+    ax_scatter.scatter(default_run['error_norm'], default_run['chain_break_frac'],
+                       c='firebrick', s=100, marker='*', label='Default')
+    ax_scatter.scatter(best_run['error_norm'], best_run['chain_break_frac'],
+                       c='forestgreen', s=100, marker='*', label='Best')
+    if has_agg:
+        ax_scatter.scatter(agg_run['error_norm'], agg_run['break_frac'],
+                           c='mediumpurple', s=100, marker='*', label='Aggregated')
     ax_scatter.set_title("Correlation: Error vs Stability", fontweight='bold')
     ax_scatter.set_xlabel("Error Norm")
     ax_scatter.set_ylabel("Chain Break Fraction")
     ax_scatter.legend()
-    
-    # --- MATRIX SECTIONS (Helper) ---
+
+    # 4. Bar: Strategy Comparison (only when aggregated is available)
+    if has_agg:
+        ax_bar = fig.add_subplot(gs[0, 3])
+        labels = ['Default', 'Best', 'Aggregated']
+        values = [default_run['error_norm'], best_run['error_norm'], agg_run['error_norm']]
+        colors = ['firebrick', 'forestgreen', 'mediumpurple']
+        bars = ax_bar.bar(labels, values, color=colors, alpha=0.8, width=0.5)
+        ax_bar.set_title("Strategy Comparison", fontweight='bold')
+        ax_bar.set_ylabel("Error Norm vs Classical")
+        ax_bar.set_ylim(0, max(values) * 1.25)
+        for bar, v in zip(bars, values):
+            ax_bar.text(bar.get_x() + bar.get_width() / 2, bar.get_height() * 1.02,
+                        f"{v:.3f}", ha='center', va='bottom', fontsize=9, fontweight='bold')
+        ax_bar.spines['top'].set_visible(False)
+        ax_bar.spines['right'].set_visible(False)
+
+    # --- MATRIX HELPER ---
     def plot_mat(ax, data, title, diff=False):
         cmap = 'seismic' if not diff else 'bwr'
         vmin, vmax = (-1, 1) if not diff else (-0.5, 0.5)
@@ -1655,7 +1702,7 @@ def plot_permutation_sweep_analysis(sweep_results):
         ax.axis('off')
         return im
 
-    # -- ROW 2: Absolute Matrices --
+    # -- ROW 1: Absolute Matrices --
     ax_cl = fig.add_subplot(gs[1, 0])
     plot_mat(ax_cl, mat_classical, "Target (Classical RBM)")
 
@@ -1664,8 +1711,12 @@ def plot_permutation_sweep_analysis(sweep_results):
 
     ax_best = fig.add_subplot(gs[1, 2])
     im_main = plot_mat(ax_best, best_run['matrix'], f"Best Permutation\nErr: {best_run['error_norm']:.3f}")
-    
-    # -- ROW 3: Differences --
+
+    if has_agg:
+        ax_agg = fig.add_subplot(gs[1, 3])
+        plot_mat(ax_agg, agg_run['matrix'], f"Aggregated (All Orbits)\nErr: {agg_run['error_norm']:.3f}")
+
+    # -- ROW 2: Differences --
     ax_empty = fig.add_subplot(gs[2, 0])
     ax_empty.axis('off')
 
@@ -1677,6 +1728,11 @@ def plot_permutation_sweep_analysis(sweep_results):
     ax_diff_best = fig.add_subplot(gs[2, 2])
     im_diff = plot_mat(ax_diff_best, diff_best, "Error: Best - Classical", diff=True)
 
+    if has_agg:
+        diff_agg = agg_run['matrix'] - mat_classical
+        ax_diff_agg = fig.add_subplot(gs[2, 3])
+        plot_mat(ax_diff_agg, diff_agg, "Error: Aggregated - Classical", diff=True)
+
     # --- Colorbars ---
     cbar_ax_main = fig.add_axes([0.92, 0.45, 0.015, 0.25])
     fig.colorbar(im_main, cax=cbar_ax_main, label="Pearson Correlation")
@@ -1687,6 +1743,350 @@ def plot_permutation_sweep_analysis(sweep_results):
     plt.tight_layout(rect=[0, 0, 0.9, 1])
     plt.show()
 
+
+def plot_ga_sweep_analysis(ga_results):
+    """
+    Summarises the output of run_ga_permutation_sweep_multi_energy.
+
+    Layout (4 rows × 3 cols)
+    ------------------------
+    Row 0 [stats]:
+        Left   – GA convergence curve (best / mean / median per generation)
+        Centre – Scatter of all evaluated individuals (error vs chain-break-frac),
+                 coloured by generation
+        Right  – Per-energy error bars: identity orbit vs best orbit
+
+    Row 1 [absolute matrices, averaged over energies]:
+        Classical target | Default (identity) orbit | Best orbit
+
+    Row 2 [difference matrices, averaged over energies]:
+        (empty)          | Default − Classical      | Best − Classical
+    """
+    perm_metrics      = ga_results["perm_metrics"]
+    ga_history        = ga_results["ga_history"]
+    classical_matrices = ga_results["classical_matrices"]
+    default_orbit     = ga_results["default_orbit"]
+    best_orbit        = ga_results["best_orbit"]
+    config            = ga_results.get("config", {})
+
+    energies = list(classical_matrices.keys())
+
+    # ---- averaged matrices across energies ----
+    mat_cl_avg = np.mean([classical_matrices[e] for e in energies], axis=0)
+
+    def _avg_qpu_mat(orbit_record):
+        mats = orbit_record.get("matrices", {})
+        if mats:
+            return np.mean([mats[e] for e in energies if e in mats], axis=0)
+        return np.zeros_like(mat_cl_avg)
+
+    mat_def_avg  = _avg_qpu_mat(default_orbit)
+    mat_best_avg = _avg_qpu_mat(best_orbit)
+
+    # ---- per-generation stats ----
+    gens    = [h["generation"] for h in ga_history]
+    g_best  = [h["best"]       for h in ga_history]
+    g_mean  = [h["mean"]       for h in ga_history]
+    g_med   = [h["median"]     for h in ga_history]
+
+    # ---- all-individual arrays ----
+    all_errors  = [m["error_norm"]        for m in perm_metrics]
+    all_breaks  = [m["chain_break_frac"]  for m in perm_metrics]
+    all_gens    = [m["generation"]        for m in perm_metrics]
+
+    n_gen = max(all_gens) + 1 if all_gens else 1
+
+    # ------------------------------------------------------------------ figure
+    fig = plt.figure(figsize=(20, 17))
+    gs  = fig.add_gridspec(3, 3, height_ratios=[0.22, 0.39, 0.39],
+                           hspace=0.28, wspace=0.32)
+
+    # ---- colour palette for generation scatter ----
+    cmap_gen = plt.cm.viridis
+    gen_norm = plt.Normalize(vmin=0, vmax=max(n_gen - 1, 1))
+
+    # ================================================================ ROW 0
+    # --- (0,0) convergence curve ---
+    ax_conv = fig.add_subplot(gs[0, 0])
+    ax_conv.plot(gens, g_best,  color='forestgreen', lw=2,   label='Best',   marker='o', ms=4)
+    ax_conv.plot(gens, g_mean,  color='steelblue',   lw=1.5, label='Mean',   marker='s', ms=3, ls='--')
+    ax_conv.plot(gens, g_med,   color='darkorange',  lw=1.5, label='Median', marker='^', ms=3, ls=':')
+    if default_orbit is not None:
+        ax_conv.axhline(default_orbit["error_norm"], color='firebrick', ls='--',
+                        lw=1.2, label='Identity baseline', alpha=0.7)
+    ax_conv.set_title("GA Convergence", fontweight='bold')
+    ax_conv.set_xlabel("Generation")
+    ax_conv.set_ylabel("Frobenius Error")
+    ax_conv.legend(fontsize=7)
+    pop  = config.get("population_size", "?")
+    xop  = config.get("crossover_op", "?")
+    mop  = config.get("mutation_op",  "?")
+    ax_conv.text(0.98, 0.97,
+                 f"pop={pop}, xover={xop}, mut={mop}",
+                 transform=ax_conv.transAxes, fontsize=7,
+                 ha='right', va='top', color='gray')
+
+    # --- (0,1) scatter: all individuals coloured by generation ---
+    ax_sc = fig.add_subplot(gs[0, 1])
+    sc = ax_sc.scatter(all_errors, all_breaks,
+                       c=all_gens, cmap=cmap_gen, norm=gen_norm,
+                       alpha=0.6, s=20, zorder=2)
+    if default_orbit is not None:
+        ax_sc.scatter(default_orbit["error_norm"], default_orbit["chain_break_frac"],
+                      c='firebrick', s=120, marker='*', zorder=5, label='Identity')
+    ax_sc.scatter(best_orbit["error_norm"], best_orbit["chain_break_frac"],
+                  c='gold',     s=120, marker='*', zorder=5, label='Best',
+                  edgecolors='k', linewidths=0.5)
+    cb_sc = fig.colorbar(sc, ax=ax_sc, pad=0.02)
+    cb_sc.set_label("Generation", fontsize=8)
+    ax_sc.set_title("Population Evolution", fontweight='bold')
+    ax_sc.set_xlabel("Error Norm")
+    ax_sc.set_ylabel("Chain Break Fraction")
+    ax_sc.legend(fontsize=7)
+
+    # --- (0,2) per-energy bar chart: identity vs best ---
+    ax_bar = fig.add_subplot(gs[0, 2])
+    x      = np.arange(len(energies))
+    w      = 0.35
+
+    def_per_e  = [default_orbit["per_energy"].get(e, np.nan) for e in energies] \
+                 if default_orbit and default_orbit.get("per_energy") else [np.nan] * len(energies)
+    best_per_e = [best_orbit["per_energy"].get(e, np.nan) for e in energies] \
+                 if best_orbit.get("per_energy") else [np.nan] * len(energies)
+
+    bars_def  = ax_bar.bar(x - w / 2, def_per_e,  w, label='Identity',
+                           color='firebrick', alpha=0.7)
+    bars_best = ax_bar.bar(x + w / 2, best_per_e, w, label='Best orbit',
+                           color='forestgreen', alpha=0.7)
+
+    for bar, v in zip(list(bars_def) + list(bars_best),
+                      def_per_e + best_per_e):
+        if not np.isnan(v):
+            ax_bar.text(bar.get_x() + bar.get_width() / 2,
+                        bar.get_height() * 1.02,
+                        f"{v:.3f}", ha='center', va='bottom', fontsize=6)
+
+    ax_bar.set_title("Per-Energy Error: Identity vs Best", fontweight='bold')
+    ax_bar.set_ylabel("Frobenius Error")
+    ax_bar.set_xticks(x)
+    ax_bar.set_xticklabels([f"{e}" for e in energies], fontsize=8)
+    ax_bar.set_xlabel("Incidence Energy")
+    ax_bar.legend(fontsize=7)
+
+    # ================================================================ ROW 1 — absolute matrices
+    def _plot_mat(ax, data, title, diff=False):
+        cmap = 'seismic' if not diff else 'bwr'
+        vmin, vmax = (-1, 1) if not diff else (-0.5, 0.5)
+        im = ax.imshow(data, cmap=cmap, vmin=vmin, vmax=vmax, origin='lower')
+        ax.set_title(title, fontsize=10, fontweight='bold')
+        ax.axis('off')
+        return im
+
+    n_e_label = f" (avg {len(energies)} E)" if len(energies) > 1 else f" (E={energies[0]})"
+
+    ax_cl   = fig.add_subplot(gs[1, 0])
+    _plot_mat(ax_cl,   mat_cl_avg,   "Target (Classical RBM)" + n_e_label)
+
+    ax_def  = fig.add_subplot(gs[1, 1])
+    _plot_mat(ax_def,  mat_def_avg,
+              f"Identity Orbit{n_e_label}\nErr: {default_orbit['error_norm']:.3f}" if default_orbit
+              else f"Identity Orbit{n_e_label}")
+
+    ax_best = fig.add_subplot(gs[1, 2])
+    im_main = _plot_mat(ax_best, mat_best_avg,
+                        f"Best Orbit{n_e_label}\nErr: {best_orbit['error_norm']:.3f}")
+
+    # ================================================================ ROW 2 — diff matrices
+    ax_empty = fig.add_subplot(gs[2, 0])
+    ax_empty.axis('off')
+    # summary text in the empty panel
+    if default_orbit is not None:
+        delta_abs = default_orbit["error_norm"] - best_orbit["error_norm"]
+        delta_pct = 100.0 * delta_abs / (default_orbit["error_norm"] + 1e-12)
+        n_unique  = ga_history[-1]["cache_size"] if ga_history else "?"
+        summary = (
+            f"GA Summary\n"
+            f"{'─'*22}\n"
+            f"Generations : {len(ga_history)}\n"
+            f"Population  : {config.get('population_size', '?')}\n"
+            f"Unique orbits: {n_unique}\n\n"
+            f"Identity err : {default_orbit['error_norm']:.4f}\n"
+            f"Best err     : {best_orbit['error_norm']:.4f}\n"
+            f"Improvement  : {delta_abs:.4f} ({delta_pct:.1f}%)\n\n"
+            f"Crossover : {config.get('crossover_op','?')}\n"
+            f"Mutation  : {config.get('mutation_op','?')}\n"
+        )
+        ax_empty.text(0.05, 0.95, summary, transform=ax_empty.transAxes,
+                      fontsize=9, va='top', family='monospace',
+                      bbox=dict(boxstyle='round', facecolor='lightyellow', alpha=0.8))
+
+    diff_def  = mat_def_avg  - mat_cl_avg
+    ax_dd = fig.add_subplot(gs[2, 1])
+    _plot_mat(ax_dd,  diff_def,  "Identity − Classical" + n_e_label, diff=True)
+
+    diff_best = mat_best_avg - mat_cl_avg
+    ax_db = fig.add_subplot(gs[2, 2])
+    im_diff = _plot_mat(ax_db, diff_best, "Best − Classical" + n_e_label, diff=True)
+
+    # --- colorbars ---
+    cbar_ax_main = fig.add_axes([0.93, 0.37, 0.014, 0.25])
+    fig.colorbar(im_main, cax=cbar_ax_main, label="Pearson Correlation")
+
+    cbar_ax_diff = fig.add_axes([0.93, 0.07, 0.014, 0.25])
+    fig.colorbar(im_diff, cax=cbar_ax_diff, label="Correlation Delta")
+
+    plt.suptitle("Genetic Algorithm Orbit Search — Results", fontsize=14, fontweight='bold', y=1.01)
+    plt.tight_layout(rect=[0, 0, 0.92, 1])
+    plt.show()
+
+
+def plot_srt_comparison(comparison_results):
+    """
+    Visualises Physical (inter-chain) vs Logical (intra-chain) SRT comparison.
+
+    Row 0: Error norm bars | Chain break bars | Summary text
+    Row 1: Classical matrix | Physical SRT matrix | Logical SRT matrix
+    Row 2: [empty]          | Diff: Phys - Cl     | Diff: Logical - Cl
+    Row 3: Classical mag    | ΔMag: Phys - Cl     | ΔMag: Logical - Cl
+    """
+    mat_cl = comparison_results["classical_matrix"]
+    phys   = comparison_results["physical_srt"]
+    log    = comparison_results["logical_srt"]
+    mag_cl   = comparison_results.get("classical_magnetization")
+
+    fig = plt.figure(figsize=(16, 19))
+    gs  = fig.add_gridspec(4, 3, height_ratios=[0.15, 0.3, 0.3, 0.25], hspace=0.45, wspace=0.3)
+
+    bar_labels = ["Physical SRT\n(Intra-Chain)", "Logical SRT\n(Inter-Chain)"]
+    bar_colors = ["steelblue", "darkorange"]
+
+    # --- Row 0: Summary Stats ---
+    # Error norm
+    ax_err   = fig.add_subplot(gs[0, 0])
+    vals_err = [phys["error_norm"], log["error_norm"]]
+    bars     = ax_err.bar(bar_labels, vals_err, color=bar_colors, alpha=0.8, width=0.4)
+    ax_err.set_title("Error Norm vs Classical", fontweight='bold')
+    ax_err.set_ylabel("||QPU – Classical||")
+    ax_err.set_ylim(0, max(vals_err) * 1.2)
+    for bar, v in zip(bars, vals_err):
+        ax_err.text(bar.get_x() + bar.get_width() / 2, bar.get_height() * 1.02,
+                    f"{v:.3f}", ha='center', va='bottom', fontsize=8, fontweight='bold')
+
+    # Chain break fraction
+    ax_brk   = fig.add_subplot(gs[0, 1])
+    vals_brk = [phys["break_frac"], log["break_frac"]]
+    bars2    = ax_brk.bar(bar_labels, vals_brk, color=bar_colors, alpha=0.8, width=0.4)
+    ax_brk.set_title("Chain Break Fraction", fontweight='bold')
+    ax_brk.set_ylabel("Fraction of Broken Chains")
+    ax_brk.set_ylim(0, max(vals_brk) * 1.35 + 1e-4)
+    for bar, v in zip(bars2, vals_brk):
+        ax_brk.text(bar.get_x() + bar.get_width() / 2, bar.get_height() * 1.02,
+                    f"{v:.1%}", ha='center', va='bottom', fontsize=8, fontweight='bold')
+
+    # Summary text
+    ax_txt    = fig.add_subplot(gs[0, 2])
+    ax_txt.axis('off')
+    delta_err = phys["error_norm"] - log["error_norm"]
+    winner    = "Logical" if delta_err > 0 else "Physical"
+    summary   = (
+        f"Physical SRT:\n"
+        f"  Error : {phys['error_norm']:.4f}\n"
+        f"  Breaks: {phys['break_frac']:.2%}\n\n"
+        f"Logical SRT:\n"
+        f"  Error : {log['error_norm']:.4f}\n"
+        f"  Breaks: {log['break_frac']:.2%}\n\n"
+        f"Δ Error: {abs(delta_err):.4f}\n"
+        f"Winner: {winner} SRT"
+    )
+    ax_txt.text(0.5, 0.5, summary, transform=ax_txt.transAxes, fontsize=11,
+                verticalalignment='center', horizontalalignment='center', fontfamily='monospace',
+                bbox=dict(boxstyle='round,pad=0.8', facecolor='lightyellow', alpha=0.8))
+
+    # --- Matrix helper ---
+    def plot_mat(ax, data, title, diff=False):
+        vmin, vmax = (-0.5, 0.5) if diff else (-1, 1)
+        im = ax.imshow(data, cmap='seismic', vmin=vmin, vmax=vmax, origin='lower')
+        ax.set_title(title, fontsize=11, fontweight='bold')
+        ax.axis('off')
+        return im
+
+    # --- Row 1: Absolute correlation matrices ---
+    ax_cl = fig.add_subplot(gs[1, 0])
+    plot_mat(ax_cl, mat_cl, "Target (Classical RBM)")
+
+    ax_phys = fig.add_subplot(gs[1, 1])
+    plot_mat(ax_phys, phys["matrix"],
+             f"Physical (Inter-Chain) SRT\nErr: {phys['error_norm']:.3f}")
+
+    ax_log  = fig.add_subplot(gs[1, 2])
+    im_main = plot_mat(ax_log, log["matrix"],
+                       f"Logical (Intra-Chain) SRT\nErr: {log['error_norm']:.3f}")
+
+    # --- Row 2: Difference matrices ---
+    ax_empty = fig.add_subplot(gs[2, 0])
+    ax_empty.axis('off')
+
+    ax_diff_phys = fig.add_subplot(gs[2, 1])
+    plot_mat(ax_diff_phys, phys["matrix"] - mat_cl, "Error: Physical – Classical", diff=True)
+
+    ax_diff_log = fig.add_subplot(gs[2, 2])
+    im_diff = plot_mat(ax_diff_log, log["matrix"] - mat_cl, "Error: Logical – Classical", diff=True)
+
+    # --- Row 3: Magnetization bar charts ---
+    def _style_mag_ax(ax, n_nodes, ylabel):
+        ax.set_xlabel("Latent Node Index", fontsize=9)
+        ax.set_ylabel(ylabel, fontsize=9)
+        ax.set_xlim(-1, n_nodes)
+        ax.tick_params(axis='x', which='both', bottom=False, labelbottom=False)
+        ax.grid(axis='y', linestyle='--', alpha=0.5, zorder=0)
+        ax.spines['top'].set_visible(False)
+        ax.spines['right'].set_visible(False)
+
+    if mag_cl is not None and "magnetization" in phys and "magnetization" in log:
+        n_nodes = len(mag_cl)
+        x = np.arange(n_nodes)
+
+        # col 0: Classical baseline (absolute magnetization)
+        ax_mag_cl = fig.add_subplot(gs[3, 0])
+        ax_mag_cl.bar(x, mag_cl, color='dimgray', alpha=0.75, linewidth=0)
+        ax_mag_cl.set_title("Classical Magnetization\n(Target)", fontsize=11, fontweight='bold')
+        ax_mag_cl.set_ylim(0, 1)
+        _style_mag_ax(ax_mag_cl, n_nodes, r"$\langle\sigma\rangle$")
+
+        # cols 1–2: QPU deltas (diverging, colour-coded by sign)
+        def plot_mag_delta(ax, mag_qpu, title):
+            delta = mag_qpu - mag_cl
+            colors = ['steelblue' if d >= 0 else 'firebrick' for d in delta]
+            ax.bar(x, delta, color=colors, alpha=0.85, linewidth=0)
+            ax.axhline(0, color='black', linewidth=1.0, linestyle='--', zorder=3)
+            ax.set_title(title, fontsize=11, fontweight='bold')
+            lim = max(abs(delta).max() * 1.15, 0.05)
+            ax.set_ylim(-lim, lim)
+            _style_mag_ax(ax, n_nodes, r"$\Delta\langle\sigma\rangle$ (QPU – Classical)")
+
+        ax_mag_phys = fig.add_subplot(gs[3, 1])
+        plot_mag_delta(ax_mag_phys, phys["magnetization"], "ΔMag: Physical – Classical")
+
+        ax_mag_log = fig.add_subplot(gs[3, 2])
+        plot_mag_delta(ax_mag_log, log["magnetization"], "ΔMag: Logical – Classical")
+    else:
+        for col in [0, 1, 2]:
+            ax = fig.add_subplot(gs[3, col])
+            ax.text(0.5, 0.5, "Magnetization data\nnot available",
+                    ha='center', va='center', transform=ax.transAxes, fontsize=10, color='gray')
+            ax.axis('off')
+
+    # Colorbars
+    cbar_main = fig.add_axes([0.92, 0.50, 0.015, 0.20])
+    fig.colorbar(im_main, cax=cbar_main, label="Pearson Correlation")
+
+    cbar_diff = fig.add_axes([0.92, 0.28, 0.015, 0.20])
+    fig.colorbar(im_diff, cax=cbar_diff, label="Correlation Delta")
+
+    fig.suptitle("SRT Comparison: Physical (Inter-Chain) vs Logical (Intra-Chain)",
+                 fontsize=14, fontweight='bold', y=0.98)
+    plt.tight_layout(rect=[0, 0, 0.9, 0.97])
+    plt.show()
 
 
 def plot_orbit_sensitivity_analysis(data):
@@ -2034,3 +2434,667 @@ def plot_hamming_cliff_comparison(results_binary: dict, results_gray: dict, n_co
     plt.tight_layout()
     plt.show()
     return fig
+
+
+def plot_j_phys(j_phys, label="RBM"):
+    """
+    Plots a histogram of physical couplers from a single RBM embedding.
+    """
+    def extract_couplers(j_phys_dict):
+        return [val for val in j_phys_dict.values()]
+
+    couplers = extract_couplers(j_phys)
+
+    # 2. Setup the plot style
+    plt.style.use('seaborn-v0_8-whitegrid')
+    fig, ax = plt.subplots(figsize=(10, 6), dpi=120)
+
+    # Define color
+    c_color = '#4c72b0' # Blue
+
+    # 3. Plot Histogram
+    sns.histplot(
+        couplers, 
+        bins=30,  
+        color=c_color, 
+        edgecolor='white',
+        linewidth=0.5,
+        alpha=0.8,  # Increased alpha since there is no overlapping plot
+        label=label,
+        ax=ax
+    )
+
+    # 4. Add Mean
+    mean_val = np.mean([coupler for coupler in couplers if coupler != -1])  # Exclude chains from mean calculation
+    
+    # Changed mean line to a dark gray for better contrast against the single color
+    ax.axvline(mean_val, color='#333333', linestyle='--', linewidth=2, label=f'{label} Mean: {mean_val:.2f}')
+
+    # 5. Aesthetics
+    ax.set_title("Distribution of Physical Coupler Values ($J_{phys}$)", fontsize=16, fontweight='bold', pad=15)
+    ax.set_xlabel("Coupler Strength", fontsize=12)
+    ax.set_ylabel("Count (Log Scale)", fontsize=12)
+    
+    # Log scale as requested
+    ax.set_yscale("log")
+    
+    # Legend location
+    ax.legend(frameon=True, fontsize=10, loc='upper right')
+
+    # Clean borders
+    sns.despine()
+    plt.tight_layout()
+
+
+def plot_pareto_frontier(
+    results: list,           # List[EmbeddingPoint] — all sweep results
+    pareto: list = None,     # List[EmbeddingPoint] — Pareto-optimal subset (optional)
+    size_metric: str = "total",
+    color_by: str = "density_floor",
+    figsize: tuple = (12, 5),
+):
+    """
+    Visualises the embedding Pareto frontier from a pareto_sweep_expansion run.
+
+    Left panel  — scatter of all sweep points (size vs density), with the Pareto
+                  frontier drawn as a step function.  Points are coloured by the
+                  density_floor parameter used for that run.
+    Right panel — degree quality metrics (min_degree and mean_degree) across the
+                  same sweep, so you can see where dead units appear.
+
+    Args:
+        results:     All EmbeddingPoint objects returned by pareto_sweep_expansion.
+        pareto:      Pareto-optimal subset returned by extract_pareto_frontier.
+                     If None, all points are plotted without a frontier curve.
+        size_metric: 'total' (n_vis + n_hid) or 'min' (min(n_vis, n_hid)).
+        color_by:    Which EmbeddingPoint field drives the colormap ('density_floor'
+                     or 'min_hits_used').
+        figsize:     Overall figure size.
+    """
+    from typing import List
+
+    def size_of(p: EmbeddingPoint) -> int:
+        return p.total_nodes if size_metric == "total" else min(p.n_vis, p.n_hid)
+
+    fig, (ax_pareto, ax_degree) = plt.subplots(1, 2, figsize=figsize)
+
+    # ── colour map ──────────────────────────────────────────────────────────
+    cvals = np.array([getattr(p, color_by) for p in results], dtype=float)
+    norm  = plt.Normalize(cvals.min(), cvals.max())
+    cmap  = plt.cm.viridis_r          # high density_floor → bright (dense, fewer nodes)
+
+    sizes_all   = np.array([size_of(p)   for p in results])
+    density_all = np.array([p.density    for p in results])
+    min_deg_all = np.array([p.min_degree for p in results])
+    mean_deg_all= np.array([p.mean_degree for p in results])
+
+    # ── Left panel: Pareto scatter ───────────────────────────────────────────
+    sc = ax_pareto.scatter(
+        sizes_all, density_all,
+        c=cvals, cmap=cmap, norm=norm,
+        s=80, zorder=3, edgecolors='k', linewidths=0.5,
+    )
+    plt.colorbar(sc, ax=ax_pareto, label=color_by.replace("_", " "))
+
+    # Annotate each point with its density_floor value
+    for p in results:
+        ax_pareto.annotate(
+            f"{p.density_floor:.2f}",
+            (size_of(p), p.density),
+            textcoords="offset points", xytext=(4, 4),
+            fontsize=7, color="0.3",
+        )
+
+    # Draw the Pareto frontier as a step function if provided
+    if pareto:
+        px = np.array([size_of(p) for p in pareto])
+        py = np.array([p.density  for p in pareto])
+        # step-after so the frontier reads as "achievable region"
+        ax_pareto.step(px, py, where="post", color="#D55E00", linewidth=2,
+                       label="Pareto frontier", zorder=4)
+        ax_pareto.scatter(px, py, color="#D55E00", s=100, zorder=5,
+                          edgecolors='k', linewidths=0.8)
+
+    x_label = "n_vis + n_hid" if size_metric == "total" else "min(n_vis, n_hid)"
+    ax_pareto.set_xlabel(f"RBM size  ({x_label})", fontsize=12)
+    ax_pareto.set_ylabel("Edge density  (actual / n_vis × n_hid)", fontsize=12)
+    ax_pareto.set_title("Size vs Connectivity", fontsize=13)
+    if pareto:
+        ax_pareto.legend(fontsize=10)
+    ax_pareto.grid(True, linestyle="--", alpha=0.4)
+    sns.despine(ax=ax_pareto)
+
+    # ── Right panel: degree quality ──────────────────────────────────────────
+    floors = np.array([p.density_floor for p in results])
+    ax_degree.plot(floors, mean_deg_all, marker='o', color='#009E73',
+                   linewidth=1.8, label="mean degree")
+    ax_degree.plot(floors, min_deg_all, marker='s', color='#D55E00',
+                   linewidth=1.8, linestyle='--', label="min degree")
+
+    # Shade the dead-unit danger zone (min_degree == 0)
+    ax_degree.axhline(0, color='red', linewidth=0.8, linestyle=':')
+    ax_degree.fill_between(floors, 0, min_deg_all,
+                           where=(min_deg_all == 0), alpha=0.15, color='red',
+                           label="dead units")
+
+    ax_degree.set_xlabel("density_floor  (sparsity parameter)", fontsize=12)
+    ax_degree.set_ylabel("Node degree", fontsize=12)
+    ax_degree.set_title("Degree Quality vs Sparsity", fontsize=13)
+    ax_degree.legend(fontsize=10)
+    ax_degree.grid(True, linestyle="--", alpha=0.4)
+    sns.despine(ax=ax_degree)
+
+    plt.suptitle("RBM Embedding Pareto Sweep", fontsize=14, fontweight="bold")
+    plt.tight_layout()
+    plt.show()
+    plt.show()
+
+
+def plot_susceptibility_comparison(comparison_results):
+    """
+    Visualises Uniform Spreading vs Susceptibility-Compensated logical-J sampling.
+
+    Layout:
+        Row 0: Error norm bars | Chain break bars | Summary text
+        Row 1: Classical matrix | Uniform matrix  | Compensated matrix
+        Row 2: J distribution   | Diff: Uni - Cl  | Diff: Comp - Cl
+        Row 3: Classical mag    | ΔMag: Uni - Cl  | ΔMag: Comp - Cl
+    """
+    mat_cl   = comparison_results["classical_matrix"]
+    uni      = comparison_results["uniform"]
+    comp     = comparison_results["compensated"]
+    mag_cl   = comparison_results.get("classical_magnetization")
+    j_uni    = comparison_results.get("j_uniform")
+    j_comp   = comparison_results.get("j_compensated")
+
+    fig = plt.figure(figsize=(16, 21))
+    gs  = fig.add_gridspec(4, 3, height_ratios=[0.15, 0.3, 0.3, 0.25],
+                           hspace=0.45, wspace=0.3)
+
+    bar_labels = ["Uniform\nSpreading", "Susceptibility\nCompensated"]
+    bar_colors = ["steelblue", "darkorange"]
+
+    # ── Row 0: Summary Stats ──
+    # Error norm
+    ax_err   = fig.add_subplot(gs[0, 0])
+    vals_err = [uni["error_norm"], comp["error_norm"]]
+    bars     = ax_err.bar(bar_labels, vals_err, color=bar_colors, alpha=0.8, width=0.4)
+    ax_err.set_title("Error Norm vs Classical", fontweight='bold')
+    ax_err.set_ylabel("||QPU – Classical||")
+    ax_err.set_ylim(0, max(vals_err) * 1.2)
+    for bar, v in zip(bars, vals_err):
+        ax_err.text(bar.get_x() + bar.get_width() / 2, bar.get_height() * 1.02,
+                    f"{v:.3f}", ha='center', va='bottom', fontsize=8, fontweight='bold')
+
+    # Chain break fraction
+    ax_brk   = fig.add_subplot(gs[0, 1])
+    vals_brk = [uni["break_frac"], comp["break_frac"]]
+    bars2    = ax_brk.bar(bar_labels, vals_brk, color=bar_colors, alpha=0.8, width=0.4)
+    ax_brk.set_title("Chain Break Fraction", fontweight='bold')
+    ax_brk.set_ylabel("Fraction of Broken Chains")
+    ax_brk.set_ylim(0, max(vals_brk) * 1.35 + 1e-4)
+    for bar, v in zip(bars2, vals_brk):
+        ax_brk.text(bar.get_x() + bar.get_width() / 2, bar.get_height() * 1.02,
+                    f"{v:.1%}", ha='center', va='bottom', fontsize=8, fontweight='bold')
+
+    # Summary text
+    ax_txt = fig.add_subplot(gs[0, 2])
+    ax_txt.axis('off')
+    delta_err = uni["error_norm"] - comp["error_norm"]
+    winner    = "Compensated" if delta_err > 0 else "Uniform"
+    summary   = (
+        f"Uniform Spreading:\n"
+        f"  Error : {uni['error_norm']:.4f}\n"
+        f"  Breaks: {uni['break_frac']:.2%}\n\n"
+        f"Susceptibility Compensated:\n"
+        f"  Error : {comp['error_norm']:.4f}\n"
+        f"  Breaks: {comp['break_frac']:.2%}\n\n"
+        f"Δ Error: {abs(delta_err):.4f}\n"
+        f"Winner: {winner}"
+    )
+    ax_txt.text(0.5, 0.5, summary, transform=ax_txt.transAxes, fontsize=11,
+                verticalalignment='center', horizontalalignment='center',
+                fontfamily='monospace',
+                bbox=dict(boxstyle='round,pad=0.8', facecolor='lightyellow', alpha=0.8))
+
+    # ── Matrix helper ──
+    def plot_mat(ax, data, title, diff=False):
+        vmin, vmax = (-0.5, 0.5) if diff else (-1, 1)
+        im = ax.imshow(data, cmap='seismic', vmin=vmin, vmax=vmax, origin='lower')
+        ax.set_title(title, fontsize=11, fontweight='bold')
+        ax.axis('off')
+        return im
+
+    # ── Row 1: Absolute correlation matrices ──
+    ax_cl = fig.add_subplot(gs[1, 0])
+    plot_mat(ax_cl, mat_cl, "Target (Classical RBM)")
+
+    ax_uni = fig.add_subplot(gs[1, 1])
+    plot_mat(ax_uni, uni["matrix"],
+             f"Uniform Spreading\nErr: {uni['error_norm']:.3f}")
+
+    ax_comp = fig.add_subplot(gs[1, 2])
+    im_main = plot_mat(ax_comp, comp["matrix"],
+                       f"Susceptibility Compensated\nErr: {comp['error_norm']:.3f}")
+
+    # ── Row 2: J-distribution (col 0) + difference matrices (cols 1-2) ──
+    ax_j = fig.add_subplot(gs[2, 0])
+    if j_uni is not None and j_comp is not None:
+        bins = np.linspace(
+            min(j_uni.min(), j_comp.min()),
+            max(j_uni.max(), j_comp.max()),
+            50
+        )
+        ax_j.hist(j_uni, bins=bins, alpha=0.6, color='steelblue',
+                  label='Uniform', edgecolor='k', linewidth=0.3)
+        ax_j.hist(j_comp, bins=bins, alpha=0.6, color='darkorange',
+                  label='Compensated', edgecolor='k', linewidth=0.3)
+        ax_j.set_title("Logical-J Distribution", fontsize=11, fontweight='bold')
+        ax_j.set_xlabel("J value")
+        ax_j.set_ylabel("Count")
+        ax_j.legend(fontsize=8)
+        ax_j.grid(True, alpha=0.3)
+    else:
+        ax_j.axis('off')
+
+    ax_diff_uni = fig.add_subplot(gs[2, 1])
+    plot_mat(ax_diff_uni, uni["matrix"] - mat_cl,
+             "Error: Uniform – Classical", diff=True)
+
+    ax_diff_comp = fig.add_subplot(gs[2, 2])
+    im_diff = plot_mat(ax_diff_comp, comp["matrix"] - mat_cl,
+                       "Error: Compensated – Classical", diff=True)
+
+    # ── Row 3: Magnetization ──
+    def _style_mag_ax(ax, n_nodes, ylabel):
+        ax.set_xlabel("Latent Node Index", fontsize=9)
+        ax.set_ylabel(ylabel, fontsize=9)
+        ax.set_xlim(-1, n_nodes)
+        ax.tick_params(axis='x', which='both', bottom=False, labelbottom=False)
+        ax.grid(axis='y', linestyle='--', alpha=0.5, zorder=0)
+        ax.spines['top'].set_visible(False)
+        ax.spines['right'].set_visible(False)
+
+    if mag_cl is not None and "magnetization" in uni and "magnetization" in comp:
+        n_nodes = len(mag_cl)
+        x = np.arange(n_nodes)
+
+        ax_mag_cl = fig.add_subplot(gs[3, 0])
+        ax_mag_cl.bar(x, mag_cl, color='dimgray', alpha=0.75, linewidth=0)
+        ax_mag_cl.set_title("Classical Magnetization\n(Target)",
+                            fontsize=11, fontweight='bold')
+        ax_mag_cl.set_ylim(0, 1)
+        _style_mag_ax(ax_mag_cl, n_nodes, r"$\langle\sigma\rangle$")
+
+        def plot_mag_delta(ax, mag_qpu, title):
+            delta  = mag_qpu - mag_cl
+            colors = ['steelblue' if d >= 0 else 'firebrick' for d in delta]
+            ax.bar(x, delta, color=colors, alpha=0.85, linewidth=0)
+            ax.axhline(0, color='black', linewidth=1.0, linestyle='--', zorder=3)
+            ax.set_title(title, fontsize=11, fontweight='bold')
+            lim = max(abs(delta).max() * 1.15, 0.05)
+            ax.set_ylim(-lim, lim)
+            _style_mag_ax(ax, n_nodes,
+                          r"$\Delta\langle\sigma\rangle$ (QPU – Classical)")
+
+        ax_mag_uni = fig.add_subplot(gs[3, 1])
+        plot_mag_delta(ax_mag_uni, uni["magnetization"],
+                       "ΔMag: Uniform – Classical")
+
+        ax_mag_comp = fig.add_subplot(gs[3, 2])
+        plot_mag_delta(ax_mag_comp, comp["magnetization"],
+                       "ΔMag: Compensated – Classical")
+    else:
+        for col in [0, 1, 2]:
+            ax = fig.add_subplot(gs[3, col])
+            ax.text(0.5, 0.5, "Magnetization data\nnot available",
+                    ha='center', va='center', transform=ax.transAxes,
+                    fontsize=10, color='gray')
+            ax.axis('off')
+
+    # Colorbars
+    cbar_main = fig.add_axes([0.92, 0.50, 0.015, 0.20])
+    fig.colorbar(im_main, cax=cbar_main, label="Pearson Correlation")
+
+    cbar_diff = fig.add_axes([0.92, 0.28, 0.015, 0.20])
+    fig.colorbar(im_diff, cax=cbar_diff, label="Correlation Delta")
+
+    fig.suptitle(
+        "Susceptibility Compensation: Uniform Spreading vs Logical-J Compensated",
+        fontsize=14, fontweight='bold', y=0.98
+    )
+    plt.tight_layout(rect=[0, 0, 0.9, 0.97])
+    plt.show()
+
+
+def plot_flux_drift_comparison(comparison_results):
+    """
+    Visualises QPU sampling with Flux Drift Compensation off vs on.
+
+    Layout:
+        Row 0: Error norm bars | Chain break bars | Summary text
+        Row 1: Classical matrix | FDC Off matrix  | FDC On matrix
+        Row 2: Diff: FDC Off – Classical           | Diff: FDC On – Classical
+        Row 3: Classical mag    | ΔMag: FDC Off    | ΔMag: FDC On
+    """
+    mat_cl  = comparison_results["classical_matrix"]
+    no_fdc  = comparison_results["no_fdc"]
+    fdc     = comparison_results["fdc"]
+    mag_cl  = comparison_results.get("classical_magnetization")
+
+    fig = plt.figure(figsize=(16, 21))
+    gs  = fig.add_gridspec(4, 3, height_ratios=[0.15, 0.3, 0.3, 0.25],
+                           hspace=0.45, wspace=0.3)
+
+    bar_labels = ["FDC Off\n(baseline)", "FDC On"]
+    bar_colors = ["steelblue", "darkorange"]
+
+    # ── Row 0: Summary Stats ──
+    ax_err   = fig.add_subplot(gs[0, 0])
+    vals_err = [no_fdc["error_norm"], fdc["error_norm"]]
+    bars     = ax_err.bar(bar_labels, vals_err, color=bar_colors, alpha=0.8, width=0.4)
+    ax_err.set_title("Error Norm vs Classical", fontweight='bold')
+    ax_err.set_ylabel("||QPU – Classical||")
+    ax_err.set_ylim(0, max(vals_err) * 1.2)
+    for bar, v in zip(bars, vals_err):
+        ax_err.text(bar.get_x() + bar.get_width() / 2, bar.get_height() * 1.02,
+                    f"{v:.3f}", ha='center', va='bottom', fontsize=8, fontweight='bold')
+
+    ax_brk   = fig.add_subplot(gs[0, 1])
+    vals_brk = [no_fdc["break_frac"], fdc["break_frac"]]
+    bars2    = ax_brk.bar(bar_labels, vals_brk, color=bar_colors, alpha=0.8, width=0.4)
+    ax_brk.set_title("Chain Break Fraction", fontweight='bold')
+    ax_brk.set_ylabel("Fraction of Broken Chains")
+    ax_brk.set_ylim(0, max(vals_brk) * 1.35 + 1e-4)
+    for bar, v in zip(bars2, vals_brk):
+        ax_brk.text(bar.get_x() + bar.get_width() / 2, bar.get_height() * 1.02,
+                    f"{v:.1%}", ha='center', va='bottom', fontsize=8, fontweight='bold')
+
+    ax_txt = fig.add_subplot(gs[0, 2])
+    ax_txt.axis('off')
+    delta_err = no_fdc["error_norm"] - fdc["error_norm"]
+    winner    = "FDC On" if delta_err > 0 else "FDC Off"
+    summary   = (
+        f"FDC Off (baseline):\n"
+        f"  Error : {no_fdc['error_norm']:.4f}\n"
+        f"  Breaks: {no_fdc['break_frac']:.2%}\n\n"
+        f"FDC On:\n"
+        f"  Error : {fdc['error_norm']:.4f}\n"
+        f"  Breaks: {fdc['break_frac']:.2%}\n\n"
+        f"Δ Error: {abs(delta_err):.4f}\n"
+        f"Winner: {winner}"
+    )
+    ax_txt.text(0.5, 0.5, summary, transform=ax_txt.transAxes, fontsize=11,
+                verticalalignment='center', horizontalalignment='center',
+                fontfamily='monospace',
+                bbox=dict(boxstyle='round,pad=0.8', facecolor='lightyellow', alpha=0.8))
+
+    # ── Matrix helper ──
+    def plot_mat(ax, data, title, diff=False):
+        vmin, vmax = (-0.5, 0.5) if diff else (-1, 1)
+        im = ax.imshow(data, cmap='seismic', vmin=vmin, vmax=vmax, origin='lower')
+        ax.set_title(title, fontsize=11, fontweight='bold')
+        ax.axis('off')
+        return im
+
+    # ── Row 1: Absolute correlation matrices ──
+    ax_cl = fig.add_subplot(gs[1, 0])
+    plot_mat(ax_cl, mat_cl, "Target (Classical RBM)")
+
+    ax_nofdc = fig.add_subplot(gs[1, 1])
+    plot_mat(ax_nofdc, no_fdc["matrix"],
+             f"FDC Off\nErr: {no_fdc['error_norm']:.3f}")
+
+    ax_fdc = fig.add_subplot(gs[1, 2])
+    im_main = plot_mat(ax_fdc, fdc["matrix"],
+                       f"FDC On\nErr: {fdc['error_norm']:.3f}")
+
+    # ── Row 2: Difference matrices ──
+    ax_j = fig.add_subplot(gs[2, 0])
+    ax_j.axis('off')
+
+    ax_diff_nofdc = fig.add_subplot(gs[2, 1])
+    plot_mat(ax_diff_nofdc, no_fdc["matrix"] - mat_cl,
+             "Error: FDC Off – Classical", diff=True)
+
+    ax_diff_fdc = fig.add_subplot(gs[2, 2])
+    im_diff = plot_mat(ax_diff_fdc, fdc["matrix"] - mat_cl,
+                       "Error: FDC On – Classical", diff=True)
+
+    # ── Row 3: Magnetization ──
+    def _style_mag_ax(ax, n_nodes, ylabel):
+        ax.set_xlabel("Latent Node Index", fontsize=9)
+        ax.set_ylabel(ylabel, fontsize=9)
+        ax.set_xlim(-1, n_nodes)
+        ax.tick_params(axis='x', which='both', bottom=False, labelbottom=False)
+        ax.grid(axis='y', linestyle='--', alpha=0.5, zorder=0)
+        ax.spines['top'].set_visible(False)
+        ax.spines['right'].set_visible(False)
+
+    if mag_cl is not None and "magnetization" in no_fdc and "magnetization" in fdc:
+        n_nodes = len(mag_cl)
+        x = np.arange(n_nodes)
+
+        ax_mag_cl = fig.add_subplot(gs[3, 0])
+        ax_mag_cl.bar(x, mag_cl, color='dimgray', alpha=0.75, linewidth=0)
+        ax_mag_cl.set_title("Classical Magnetization\n(Target)",
+                            fontsize=11, fontweight='bold')
+        ax_mag_cl.set_ylim(0, 1)
+        _style_mag_ax(ax_mag_cl, n_nodes, r"$\langle\sigma\rangle$")
+
+        def plot_mag_delta(ax, mag_qpu, title):
+            delta  = mag_qpu - mag_cl
+            colors = ['steelblue' if d >= 0 else 'firebrick' for d in delta]
+            ax.bar(x, delta, color=colors, alpha=0.85, linewidth=0)
+            ax.axhline(0, color='black', linewidth=1.0, linestyle='--', zorder=3)
+            ax.set_title(title, fontsize=11, fontweight='bold')
+            lim = max(abs(delta).max() * 1.15, 0.05)
+            ax.set_ylim(-lim, lim)
+            _style_mag_ax(ax, n_nodes,
+                          r"$\Delta\langle\sigma\rangle$ (QPU – Classical)")
+
+        ax_mag_nofdc = fig.add_subplot(gs[3, 1])
+        plot_mag_delta(ax_mag_nofdc, no_fdc["magnetization"],
+                       "ΔMag: FDC Off – Classical")
+
+        ax_mag_fdc = fig.add_subplot(gs[3, 2])
+        plot_mag_delta(ax_mag_fdc, fdc["magnetization"],
+                       "ΔMag: FDC On – Classical")
+    else:
+        for col in [0, 1, 2]:
+            ax = fig.add_subplot(gs[3, col])
+            ax.text(0.5, 0.5, "Magnetization data\nnot available",
+                    ha='center', va='center', transform=ax.transAxes,
+                    fontsize=10, color='gray')
+            ax.axis('off')
+
+    # Colorbars
+    cbar_main = fig.add_axes([0.92, 0.50, 0.015, 0.20])
+    fig.colorbar(im_main, cax=cbar_main, label="Pearson Correlation")
+
+    cbar_diff = fig.add_axes([0.92, 0.28, 0.015, 0.20])
+    fig.colorbar(im_diff, cax=cbar_diff, label="Correlation Delta")
+
+    fig.suptitle(
+        "Flux Drift Compensation: Off vs On",
+        fontsize=14, fontweight='bold', y=0.98
+    )
+    plt.tight_layout(rect=[0, 0, 0.9, 0.97])
+    plt.show()
+
+
+def plot_srt_aggregation_comparison(comparison_results):
+    """
+    Visualises "average all SRT batches" vs "pick the single best SRT batch".
+
+    Layout
+    ------
+    Row 0 : Error norm bars  |  Chain break bars  |  Summary text
+    Row 1 : Classical matrix |  Averaged matrix   |  Best-SRT matrix
+    Row 2 : Per-batch errors |  Diff: Avg – Cl    |  Diff: Best – Cl
+    Row 3 : Classical mag    |  ΔMag: Averaged    |  ΔMag: Best-SRT
+    """
+    mat_cl   = comparison_results["classical_matrix"]
+    avg      = comparison_results["averaged"]
+    best     = comparison_results["best_srt"]
+    mag_cl   = comparison_results.get("classical_magnetization")
+    per_batch = comparison_results.get("per_batch", [])
+    best_idx  = best.get("best_batch_idx", None)
+
+    fig = plt.figure(figsize=(16, 21))
+    gs  = fig.add_gridspec(4, 3, height_ratios=[0.15, 0.3, 0.3, 0.25],
+                           hspace=0.45, wspace=0.3)
+
+    bar_labels = ["Averaged\nSRTs", "Best\nSRT"]
+    bar_colors = ["steelblue", "darkorange"]
+
+    # ── Row 0: Summary Stats ──
+    ax_err   = fig.add_subplot(gs[0, 0])
+    vals_err = [avg["error_norm"], best["error_norm"]]
+    bars     = ax_err.bar(bar_labels, vals_err, color=bar_colors, alpha=0.8, width=0.4)
+    ax_err.set_title("Error Norm vs Classical", fontweight='bold')
+    ax_err.set_ylabel("||QPU – Classical||")
+    ax_err.set_ylim(0, max(vals_err) * 1.2)
+    for bar, v in zip(bars, vals_err):
+        ax_err.text(bar.get_x() + bar.get_width() / 2, bar.get_height() * 1.02,
+                    f"{v:.3f}", ha='center', va='bottom', fontsize=8, fontweight='bold')
+
+    ax_brk   = fig.add_subplot(gs[0, 1])
+    vals_brk = [avg["break_frac"], best["break_frac"]]
+    bars2    = ax_brk.bar(bar_labels, vals_brk, color=bar_colors, alpha=0.8, width=0.4)
+    ax_brk.set_title("Chain Break Fraction", fontweight='bold')
+    ax_brk.set_ylabel("Fraction of Broken Chains")
+    ax_brk.set_ylim(0, max(vals_brk) * 1.35 + 1e-4)
+    for bar, v in zip(bars2, vals_brk):
+        ax_brk.text(bar.get_x() + bar.get_width() / 2, bar.get_height() * 1.02,
+                    f"{v:.1%}", ha='center', va='bottom', fontsize=8, fontweight='bold')
+
+    ax_txt = fig.add_subplot(gs[0, 2])
+    ax_txt.axis('off')
+    delta_err = avg["error_norm"] - best["error_norm"]
+    winner    = "Best SRT" if delta_err > 0 else "Averaged"
+    n_batches = comparison_results.get("srt_batches", len(per_batch))
+    num_reads = comparison_results.get("num_reads", "?")
+    summary   = (
+        f"Averaged ({n_batches} × {num_reads} reads):\n"
+        f"  Error : {avg['error_norm']:.4f}\n"
+        f"  Breaks: {avg['break_frac']:.2%}\n\n"
+        f"Best SRT (batch {best_idx} of {n_batches}):\n"
+        f"  Error : {best['error_norm']:.4f}\n"
+        f"  Breaks: {best['break_frac']:.2%}\n\n"
+        f"Δ Error: {abs(delta_err):.4f}\n"
+        f"Winner: {winner}"
+    )
+    ax_txt.text(0.5, 0.5, summary, transform=ax_txt.transAxes, fontsize=11,
+                verticalalignment='center', horizontalalignment='center',
+                fontfamily='monospace',
+                bbox=dict(boxstyle='round,pad=0.8', facecolor='lightyellow', alpha=0.8))
+
+    # ── Matrix helper ──
+    def plot_mat(ax, data, title, diff=False):
+        vmin, vmax = (-0.5, 0.5) if diff else (-1, 1)
+        im = ax.imshow(data, cmap='seismic', vmin=vmin, vmax=vmax, origin='lower')
+        ax.set_title(title, fontsize=11, fontweight='bold')
+        ax.axis('off')
+        return im
+
+    # ── Row 1: Absolute correlation matrices ──
+    ax_cl = fig.add_subplot(gs[1, 0])
+    plot_mat(ax_cl, mat_cl, "Target (Classical RBM)")
+
+    ax_avg = fig.add_subplot(gs[1, 1])
+    plot_mat(ax_avg, avg["matrix"],
+             f"Averaged SRTs\nErr: {avg['error_norm']:.3f}")
+
+    ax_best = fig.add_subplot(gs[1, 2])
+    im_main = plot_mat(ax_best, best["matrix"],
+                       f"Best SRT (batch {best_idx})\nErr: {best['error_norm']:.3f}")
+
+    # ── Row 2: Per-batch error plot (col 0) + difference matrices ──
+    ax_pb = fig.add_subplot(gs[2, 0])
+    if per_batch:
+        pb_errors = [pb["error_norm"] for pb in per_batch]
+        x_b = np.arange(len(pb_errors))
+        bar_cols = ['darkorange' if i == best_idx else 'steelblue' for i in x_b]
+        ax_pb.bar(x_b, pb_errors, color=bar_cols, alpha=0.8, linewidth=0)
+        ax_pb.axhline(avg["error_norm"], color='dimgray', linewidth=1.5,
+                      linestyle='--', label=f"Avg ({avg['error_norm']:.3f})")
+        if best_idx is not None:
+            ax_pb.scatter([best_idx], [pb_errors[best_idx]], marker='*',
+                          s=180, color='darkorange', zorder=5, label=f"Best (batch {best_idx})")
+        ax_pb.set_title("Per-Batch Error Norms", fontsize=11, fontweight='bold')
+        ax_pb.set_xlabel("Batch Index")
+        ax_pb.set_ylabel("||QPU – Classical||")
+        ax_pb.legend(fontsize=8)
+        ax_pb.grid(axis='y', linestyle='--', alpha=0.4)
+        ax_pb.spines['top'].set_visible(False)
+        ax_pb.spines['right'].set_visible(False)
+    else:
+        ax_pb.axis('off')
+
+    ax_diff_avg = fig.add_subplot(gs[2, 1])
+    plot_mat(ax_diff_avg, avg["matrix"] - mat_cl,
+             "Error: Averaged – Classical", diff=True)
+
+    ax_diff_best = fig.add_subplot(gs[2, 2])
+    im_diff = plot_mat(ax_diff_best, best["matrix"] - mat_cl,
+                       "Error: Best SRT – Classical", diff=True)
+
+    # ── Row 3: Magnetization ──
+    def _style_mag_ax(ax, n_nodes, ylabel):
+        ax.set_xlabel("Latent Node Index", fontsize=9)
+        ax.set_ylabel(ylabel, fontsize=9)
+        ax.set_xlim(-1, n_nodes)
+        ax.tick_params(axis='x', which='both', bottom=False, labelbottom=False)
+        ax.grid(axis='y', linestyle='--', alpha=0.5, zorder=0)
+        ax.spines['top'].set_visible(False)
+        ax.spines['right'].set_visible(False)
+
+    if mag_cl is not None and "magnetization" in avg and "magnetization" in best:
+        n_nodes = len(mag_cl)
+        x = np.arange(n_nodes)
+
+        ax_mag_cl = fig.add_subplot(gs[3, 0])
+        ax_mag_cl.bar(x, mag_cl, color='dimgray', alpha=0.75, linewidth=0)
+        ax_mag_cl.set_title("Classical Magnetization\n(Target)",
+                            fontsize=11, fontweight='bold')
+        ax_mag_cl.set_ylim(0, 1)
+        _style_mag_ax(ax_mag_cl, n_nodes, r"$\langle\sigma\rangle$")
+
+        def plot_mag_delta(ax, mag_qpu, title):
+            delta  = mag_qpu - mag_cl
+            colors = ['steelblue' if d >= 0 else 'firebrick' for d in delta]
+            ax.bar(x, delta, color=colors, alpha=0.85, linewidth=0)
+            ax.axhline(0, color='black', linewidth=1.0, linestyle='--', zorder=3)
+            ax.set_title(title, fontsize=11, fontweight='bold')
+            lim = max(abs(delta).max() * 1.15, 0.05)
+            ax.set_ylim(-lim, lim)
+            _style_mag_ax(ax, n_nodes,
+                          r"$\Delta\langle\sigma\rangle$ (QPU – Classical)")
+
+        ax_mag_avg = fig.add_subplot(gs[3, 1])
+        plot_mag_delta(ax_mag_avg, avg["magnetization"], "ΔMag: Averaged – Classical")
+
+        ax_mag_best = fig.add_subplot(gs[3, 2])
+        plot_mag_delta(ax_mag_best, best["magnetization"], "ΔMag: Best SRT – Classical")
+    else:
+        for col in [0, 1, 2]:
+            ax = fig.add_subplot(gs[3, col])
+            ax.text(0.5, 0.5, "Magnetization data\nnot available",
+                    ha='center', va='center', transform=ax.transAxes,
+                    fontsize=10, color='gray')
+            ax.axis('off')
+
+    # Colorbars
+    cbar_main = fig.add_axes([0.92, 0.50, 0.015, 0.20])
+    fig.colorbar(im_main, cax=cbar_main, label="Pearson Correlation")
+
+    cbar_diff = fig.add_axes([0.92, 0.28, 0.015, 0.20])
+    fig.colorbar(im_diff, cax=cbar_diff, label="Correlation Delta")
+
+    fig.suptitle(
+        "SRT Aggregation: Average All Batches vs Pick Best Batch",
+        fontsize=14, fontweight='bold', y=0.98
+    )
+    plt.tight_layout(rect=[0, 0, 0.9, 0.97])
+    plt.show()

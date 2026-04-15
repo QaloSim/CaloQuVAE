@@ -13,7 +13,10 @@ from .physics import (
     rbm_to_expanded_ising,
     convert_energy_to_binary,
     convert_energy_to_gray,
-    calculate_rms_chain_strength
+    calculate_rms_chain_strength,
+    compute_node_susceptibilities,
+    compute_edge_factors,
+    apply_j_scaling
 )
 from .graphs import (
     get_physical_flux_biases,
@@ -21,6 +24,7 @@ from .graphs import (
     build_manual_embedded_ising,
     get_physical_flux_biases_manual,
     build_expanded_embedding,
+    build_expanded_embedding_arbitrary,
     get_expanded_flux_biases
 )
 from .sampling_backend import (
@@ -28,7 +32,8 @@ from .sampling_backend import (
     sample_ising_flux_bias,
     sample_physical_with_analysis,
     sample_physical_with_analysis_srt,
-    sample_manual_ising
+    sample_manual_ising,
+    sample_physical_arbitrary
     )
 from .postprocessing import (
     process_rbm_samples,
@@ -1207,38 +1212,31 @@ def run_orbit_sweep(
 
 
 def run_monte_carlo_permutation_sweep(
-    incidence_energy: float,
-    engine,
+    cond_vec,
     rbm,
     raw_sampler,
     conditioning_sets,
     left_chains,
     right_chains,
+    hidden_side: str,
     n_cond: int = 53,
     beta: float = 3.0,
-    num_reads_per_perm: int = 1024,
-    num_permutations: int = 20, 
+    num_permutations: int = 20,
+    num_reads_per_perm: int = 512,
     srt_batches: int = 8,
     device: str = 'cpu',
     base_shims = None
 ):
     """
+    Given a fixed conditioning vector (energy) of shape (1, n_cond),
     Runs a Monte Carlo Sweep over permutation space with SRT Batches.
-    
-    Fix: Calls process_analysis_result per batch to extract the correct
-    RBM variables before concatenation.
     """
-    print(f"--- Starting Monte Carlo Permutation Sweep (Energy = {incidence_energy} MeV) ---")
     
     # 1. Target Data & Classical Baseline
-    target_batch = convert_energy_to_binary(
-        incidence_energy=incidence_energy, engine=engine, n_cond=n_cond, 
-        num_reads=num_reads_per_perm, device=device
-    )
     
     print("Generating Classical Baseline...")
     v_cl = rbm.sample_v_given_v_clamped(
-        clamped_v=target_batch, n_clamped=n_cond, gibbs_steps=2000, beta=1.0 
+        clamped_v=cond_vec.repeat(10000, 1), n_clamped=n_cond, gibbs_steps=2000, beta=1.0 
     )
     
     def get_corr(samples):
@@ -1293,11 +1291,14 @@ def run_monte_carlo_permutation_sweep(
                 conditioning_sets=conditioning_sets,
                 left_chains=left_chains,
                 right_chains=right_chains,
-                binary_patterns_batch=target_batch[0:reads_per_batch], 
-                hidden_side='right',
+                binary_patterns_batch=cond_vec.repeat(reads_per_batch, 1),
+                hidden_side=hidden_side,
                 beta=beta,
                 source=f"MC_{run_type}_{seed}_b{b}",
-                use_srt=True,  
+                use_srt=True,
+                logical_srt=True,
+                chain_strength=2.0,
+                flux_drift_compensation=True,
                 additive_flux_offsets=base_shims,
                 vis_mapping=p_vis,
                 hid_mapping=p_hid,
@@ -1343,26 +1344,148 @@ def run_monte_carlo_permutation_sweep(
             "type": run_type,
             "error_norm": error_norm,
             "chain_break_frac": chain_break_frac,
-            "matrix": mat_perm
+            "matrix": mat_perm,
+            "samples": full_samples,
         }
         sweep_results["perm_metrics"].append(record)
-        
+
         if i == 0:
             sweep_results["default_orbit"] = record
 
     # 4. Sort and Finalize
     sorted_metrics = sorted(sweep_results["perm_metrics"], key=lambda x: x['error_norm'])
-    
+
     sweep_results["best_orbit"] = sorted_metrics[0]
     sweep_results["worst_orbit"] = sorted_metrics[-1]
-    
+
+    # 5. Aggregate across all orbits
+    all_orbit_samples = torch.cat([r["samples"] for r in sweep_results["perm_metrics"]], dim=0)
+    mat_agg = get_corr(all_orbit_samples)
+    error_agg = float(np.linalg.norm(mat_agg - mat_classical))
+    avg_break_frac_agg = float(np.mean([r["chain_break_frac"] for r in sweep_results["perm_metrics"]]))
+    sweep_results["aggregated_orbit"] = {
+        "matrix": mat_agg,
+        "error_norm": error_agg,
+        "break_frac": avg_break_frac_agg,
+    }
+
     print(f"\n--- MC Sweep Complete ---")
-    print(f"Default Error: {sweep_results['default_orbit']['error_norm']:.4f}")
-    print(f"Best Error:    {sweep_results['best_orbit']['error_norm']:.4f}")
-    
+    print(f"Default Error:    {sweep_results['default_orbit']['error_norm']:.4f}")
+    print(f"Best Error:       {sweep_results['best_orbit']['error_norm']:.4f}")
+    print(f"Aggregated Error: {error_agg:.4f}")
+
     return sweep_results
 
 
+def run_srt_comparison(
+    cond_vec,
+    rbm,
+    raw_sampler,
+    conditioning_sets,
+    left_chains,
+    right_chains,
+    hidden_side: str,
+    n_cond: int = 53,
+    beta: float = 3.0,
+    srt_batches: int = 8,
+    device: str = 'cpu',
+    base_shims=None,
+    rbm_factor : int=10
+):
+    """
+    Compares physical (inter-chain) vs logical (intra-chain) Spin Reversal Transform sampling.
+
+    Physical SRT (SpinReversalTransformComposite) flips individual physical qubits randomly,
+    which can disrupt intrachain ferromagnetic alignment and effectively scrambles chains.
+    Logical SRT flips entire logical variables (whole chains together), preserving intrachain
+    coupling while still randomising effective field directions.
+
+    Both modes are run for srt_batches batches and compared against a classical Gibbs baseline
+    via latent-variable correlation matrices.
+
+    Returns a dict suitable for plot_srt_comparison.
+    """
+    # 1. Classical Baseline
+    print("Generating Classical Baseline...")
+    v_cl = rbm.sample_v_given_v_clamped(
+        clamped_v=cond_vec.repeat(rbm_factor, 1), n_clamped=n_cond, gibbs_steps=2000, beta=1.0
+    )
+
+    def get_corr(samples):
+        if isinstance(samples, torch.Tensor):
+            samples = samples.float().cpu()
+        corr = torch.corrcoef(samples.T).numpy()
+        latent = corr[n_cond:, n_cond:]
+        np.fill_diagonal(latent, 0)
+        return np.nan_to_num(latent, nan=0.0)
+
+    mat_classical = get_corr(v_cl.cpu())
+    mag_classical = v_cl.float().cpu().mean(dim=0)[n_cond:].numpy()
+
+    results = {
+        "classical_matrix": mat_classical,
+        "classical_magnetization": mag_classical,
+        "physical_srt": {},
+        "logical_srt": {},
+    }
+
+    # 2. Run both SRT modes
+    for mode_key, logical_srt_flag in [("physical_srt", False), ("logical_srt", True)]:
+        mode_label = "Logical (Inter-Chain) SRT" if logical_srt_flag else "Physical (Intra-Chain) SRT"
+        print(f"\n--- Running {mode_label} ({srt_batches} batches) ---")
+
+        batch_samples = []
+        batch_breaks = []
+
+        for b in range(srt_batches):
+            if logical_srt_flag:
+                chain_strength = 2.0
+            else:
+                chain_strength = 1.0
+            res = sample_expanded_flux_arbitrary(
+                rbm=rbm,
+                raw_sampler=raw_sampler,
+                conditioning_sets=conditioning_sets,
+                left_chains=left_chains,
+                right_chains=right_chains,
+                binary_patterns_batch=cond_vec,
+                hidden_side='right',
+                beta=beta,
+                source=f"SRT_{mode_key}_b{b}",
+                use_srt=True,
+                additive_flux_offsets=base_shims,
+                logical_srt=logical_srt_flag,
+                chain_strength= chain_strength
+            )
+
+            v_sample_batch, _ = process_analysis_result(res, rbm, conditioning_sets)
+            batch_samples.append(v_sample_batch.cpu())
+
+            if res.break_matrix is not None:
+                batch_breaks.append(res.break_matrix)
+
+            break_frac = np.mean(res.break_matrix) if res.break_matrix is not None else 0.0
+            print(f"  Batch {b + 1}/{srt_batches} | Break Frac: {break_frac:.2%}")
+
+        full_samples = torch.cat(batch_samples, dim=0)
+        full_break_frac = np.mean(np.vstack(batch_breaks)) if batch_breaks else 0.0
+        mat = get_corr(full_samples)
+        error = np.linalg.norm(mat - mat_classical)
+        mag = full_samples.float().cpu().mean(dim=0)[n_cond:].numpy()
+
+        results[mode_key] = {
+            "matrix": mat,
+            "error_norm": error,
+            "break_frac": full_break_frac,
+            "magnetization": mag,
+        }
+        print(f"  -> Error Norm: {error:.4f} | Avg Break Frac: {full_break_frac:.2%}")
+
+    print("\n--- SRT Comparison Complete ---")
+    print(f"Physical SRT: Error={results['physical_srt']['error_norm']:.4f}  Breaks={results['physical_srt']['break_frac']:.2%}")
+    print(f"Logical  SRT: Error={results['logical_srt']['error_norm']:.4f}  Breaks={results['logical_srt']['break_frac']:.2%}")
+
+    return results
 
 
 def run_orbit_sensitivity_experiment(
@@ -1611,5 +1734,558 @@ def run_hamming_cliff_classical_only(
             "energies": energies,
             "use_gray": use_gray
         }
-        
+
     return results
+
+
+def run_susceptibility_comparison(
+    cond_vec,
+    rbm,
+    raw_sampler,
+    conditioning_sets,
+    left_chains,
+    right_chains,
+    hidden_side,
+    n_cond: int,
+    beta: float = 3.0,
+    srt_batches: int = 8,
+    num_reads: int = 64,
+    device: str = 'cpu',
+    base_shims=None
+):
+    """
+    Compares QPU sampling with uniform spreading vs susceptibility-compensated
+    logical-J values.
+
+    Susceptibility compensation rescales programmed couplings inversely to the
+    pairwise logical susceptibility chi_ab, homogenising effective inter-chain
+    coupling strengths that would otherwise be biased by chain topology.
+
+    Both modes use logical SRT and are run for srt_batches batches, then
+    compared against a classical Gibbs baseline via latent-variable correlation
+    matrices and per-node magnetisations.
+
+    Returns a dict suitable for plot_susceptibility_comparison.
+    """
+    import math as _math
+
+    # ── 1. Classical Baseline ──
+    print("Generating Classical Baseline...")
+    v_cl = rbm.sample_v_given_v_clamped(
+        clamped_v=cond_vec, n_clamped=n_cond, gibbs_steps=2000, beta=1.0
+    )
+
+    def get_corr(samples):
+        if isinstance(samples, torch.Tensor):
+            samples = samples.float().cpu()
+        corr = torch.corrcoef(samples.T).numpy()
+        latent = corr[n_cond:, n_cond:]
+        np.fill_diagonal(latent, 0)
+        return np.nan_to_num(latent, nan=0.0)
+
+    mat_classical = get_corr(v_cl.cpu())
+    mag_classical = v_cl.float().cpu().mean(dim=0)[n_cond:].numpy()
+
+    # ── 2. Compute J distributions for diagnostics ──
+    n_vis = rbm.params["vbias"].shape[0]
+    exp_embedding, fragment_map = build_expanded_embedding_arbitrary(
+        conditioning_sets, left_chains, right_chains,
+        num_visible=n_vis, hidden_side=hidden_side
+    )
+    _, J_exp = rbm_to_expanded_ising(
+        rbm, fragment_map, exp_embedding, raw_sampler.adjacency, beta
+    )
+    print("Computing susceptibility compensation factors...")
+    node_chi = compute_node_susceptibilities(exp_embedding, raw_sampler.adjacency)
+    edge_factors, edge_counts = compute_edge_factors(
+        J_exp, exp_embedding, raw_sampler.adjacency, node_chi
+    )
+    J_compensated = apply_j_scaling(J_exp, edge_factors, edge_counts)
+
+    if edge_factors:
+        chi_vals = np.array(list(edge_factors.values()))
+        log_sum = sum(_math.log(x) for x in edge_factors.values())
+        N_norm = _math.exp(log_sum / len(edge_factors))
+        scale_factors = np.array([
+            N_norm * edge_counts.get((u, v), 1) / edge_factors.get((u, v), 1.0)
+            for (u, v) in J_exp
+        ])
+        print(f"  chi_ab range: [{chi_vals.min():.4f}, {chi_vals.max():.4f}]")
+        print(f"  Scale factor range: [{scale_factors.min():.4f}, {scale_factors.max():.4f}]")
+
+    results = {
+        "classical_matrix": mat_classical,
+        "classical_magnetization": mag_classical,
+        "uniform": {},
+        "compensated": {},
+        "j_uniform": np.array(list(J_exp.values())),
+        "j_compensated": np.array(list(J_compensated.values())),
+    }
+
+    # ── 3. Run Both Modes via high-level sampler ──
+    modes = [
+        ("uniform",      "Uniform Spreading",         False),
+        ("compensated",  "Susceptibility Compensated", True),
+    ]
+
+    binary_patterns_batch = cond_vec[0:1].expand(num_reads, -1)
+
+    for mode_key, mode_label, susceptibility in modes:
+        print(f"\n--- Running {mode_label} ({srt_batches} batches) ---")
+
+        batch_samples = []
+        batch_breaks = []
+
+        for b in range(srt_batches):
+            res = sample_expanded_flux_arbitrary(
+                rbm=rbm,
+                raw_sampler=raw_sampler,
+                conditioning_sets=conditioning_sets,
+                left_chains=left_chains,
+                right_chains=right_chains,
+                binary_patterns_batch=binary_patterns_batch,
+                hidden_side=hidden_side,
+                beta=beta,
+                chain_strength=2.0,
+                additive_flux_offsets=base_shims,
+                use_srt=True,
+                logical_srt=True,
+                use_susceptibility=susceptibility,
+            )
+
+            v_sample_batch, _ = process_analysis_result(res, rbm, conditioning_sets)
+            batch_samples.append(v_sample_batch.cpu())
+
+            if res.break_matrix is not None:
+                batch_breaks.append(res.break_matrix)
+
+            break_frac = np.mean(res.break_matrix) if res.break_matrix is not None else 0.0
+            print(f"  Batch {b + 1}/{srt_batches} | Break Frac: {break_frac:.2%}")
+
+        full_samples = torch.cat(batch_samples, dim=0)
+        full_break_frac = np.mean(np.vstack(batch_breaks)) if batch_breaks else 0.0
+        mat = get_corr(full_samples)
+        error = np.linalg.norm(mat - mat_classical)
+        mag = full_samples.float().cpu().mean(dim=0)[n_cond:].numpy()
+
+        results[mode_key] = {
+            "matrix": mat,
+            "error_norm": error,
+            "break_frac": full_break_frac,
+            "magnetization": mag,
+        }
+        print(f"  -> Error Norm: {error:.4f} | Avg Break Frac: {full_break_frac:.2%}")
+
+    print("\n--- Susceptibility Comparison Complete ---")
+    print(f"Uniform:      Error={results['uniform']['error_norm']:.4f}  Breaks={results['uniform']['break_frac']:.2%}")
+    print(f"Compensated:  Error={results['compensated']['error_norm']:.4f}  Breaks={results['compensated']['break_frac']:.2%}")
+
+    return results
+
+
+def run_flux_drift_comparison(
+    cond_vec,
+    rbm,
+    raw_sampler,
+    conditioning_sets,
+    left_chains,
+    right_chains,
+    hidden_side,
+    n_cond: int,
+    beta: float = 3.0,
+    srt_batches: int = 8,
+    num_reads: int = 64,
+    device: str = 'cpu',
+    base_shims=None
+):
+    """
+    Compares QPU sampling with flux_drift_compensation=False vs True.
+
+    Both modes use logical SRT and are run for srt_batches batches.  Results
+    are compared against a classical Gibbs baseline via latent-variable
+    correlation matrices and per-node magnetisations.
+
+    Returns a dict suitable for plot_flux_drift_comparison.
+    """
+    import math as _math
+
+    # ── 1. Classical Baseline ──
+    print("Generating Classical Baseline...")
+    v_cl = rbm.sample_v_given_v_clamped(
+        clamped_v=cond_vec.repeat(100, 1), n_clamped=n_cond, gibbs_steps=2000, beta=1.0
+    )
+
+    def get_corr(samples):
+        if isinstance(samples, torch.Tensor):
+            samples = samples.float().cpu()
+        corr = torch.corrcoef(samples.T).numpy()
+        latent = corr[n_cond:, n_cond:]
+        np.fill_diagonal(latent, 0)
+        return np.nan_to_num(latent, nan=0.0)
+
+    mat_classical = get_corr(v_cl.cpu())
+    mag_classical = v_cl.float().cpu().mean(dim=0)[n_cond:].numpy()
+
+    results = {
+        "classical_matrix": mat_classical,
+        "classical_magnetization": mag_classical,
+        "no_fdc": {},
+        "fdc": {},
+    }
+
+    # ── 2. Run Both Modes ──
+    modes = [
+        ("no_fdc", "FDC Off (baseline)", False),
+        ("fdc",    "FDC On",             True),
+    ]
+
+    binary_patterns_batch = cond_vec[0:1].expand(num_reads, -1)
+
+    for mode_key, mode_label, fdc in modes:
+        print(f"\n--- Running {mode_label} ({srt_batches} batches) ---")
+
+        batch_samples = []
+        batch_breaks = []
+
+        for b in range(srt_batches):
+            res = sample_expanded_flux_arbitrary(
+                rbm=rbm,
+                raw_sampler=raw_sampler,
+                conditioning_sets=conditioning_sets,
+                left_chains=left_chains,
+                right_chains=right_chains,
+                binary_patterns_batch=binary_patterns_batch,
+                hidden_side=hidden_side,
+                beta=beta,
+                chain_strength=2.0,
+                additive_flux_offsets=base_shims,
+                use_srt=True,
+                logical_srt=True,
+                use_susceptibility=False,
+                flux_drift_compensation=fdc,
+            )
+
+            v_sample_batch, _ = process_analysis_result(res, rbm, conditioning_sets)
+            batch_samples.append(v_sample_batch.cpu())
+
+            if res.break_matrix is not None:
+                batch_breaks.append(res.break_matrix)
+
+            break_frac = np.mean(res.break_matrix) if res.break_matrix is not None else 0.0
+            print(f"  Batch {b + 1}/{srt_batches} | Break Frac: {break_frac:.2%}")
+
+        full_samples = torch.cat(batch_samples, dim=0)
+        full_break_frac = np.mean(np.vstack(batch_breaks)) if batch_breaks else 0.0
+        mat = get_corr(full_samples)
+        error = np.linalg.norm(mat - mat_classical)
+        mag = full_samples.float().cpu().mean(dim=0)[n_cond:].numpy()
+
+        results[mode_key] = {
+            "matrix": mat,
+            "error_norm": error,
+            "break_frac": full_break_frac,
+            "magnetization": mag,
+        }
+        print(f"  -> Error Norm: {error:.4f} | Avg Break Frac: {full_break_frac:.2%}")
+
+    print("\n--- Flux Drift Compensation Comparison Complete ---")
+    print(f"FDC Off:  Error={results['no_fdc']['error_norm']:.4f}  Breaks={results['no_fdc']['break_frac']:.2%}")
+    print(f"FDC On:   Error={results['fdc']['error_norm']:.4f}  Breaks={results['fdc']['break_frac']:.2%}")
+
+    return results
+
+
+def run_mc_permutation_sweep_single(
+    cond_vec,
+    rbm,
+    raw_sampler,
+    conditioning_sets,
+    left_chains,
+    right_chains,
+    hidden_side: str,
+    beta: float = 3.0,
+    num_permutations: int = 20,
+    rbm_gibbs_steps: int = 2000,
+    rbm_factor: int = 1,
+    device: str = 'cpu',
+    base_shims=None,
+    print_interval: int = 50,
+):
+    """
+    Monte Carlo permutation sweep for heterogeneous conditioning vectors.
+
+    Unlike run_monte_carlo_permutation_sweep, cond_vec has shape (num_reads, n_cond)
+    where each row is a distinct conditioning pattern.  Each pattern is sampled
+    independently with a single QPU read (no SRT batches), matching the
+    find_beta_single single_batch=True strategy.
+
+    Args:
+        cond_vec: Tensor of shape (num_reads, n_cond) — one conditioning pattern per row.
+        rbm_factor: Repeat the heterogeneous batch this many times for the classical baseline.
+        print_interval: Print progress every this many patterns per permutation (0 = off).
+
+    Returns:
+        sweep_results dict compatible with plot_permutation_sweep_analysis.
+    """
+    n_cond = cond_vec.shape[1]
+    num_reads = cond_vec.shape[0]
+
+    n_avail_vis = len(left_chains)
+    n_avail_hid = len(right_chains)
+
+    # --- 1. Classical Baseline ---
+    print("Generating Classical Baseline...")
+    rbm_target = cond_vec.repeat(rbm_factor, 1) if rbm_factor > 1 else cond_vec
+    v_cl = rbm.sample_v_given_v_clamped(
+        clamped_v=rbm_target, n_clamped=n_cond, gibbs_steps=rbm_gibbs_steps, beta=1.0
+    )
+
+    def get_corr(samples):
+        if isinstance(samples, torch.Tensor):
+            samples = samples.float().cpu()
+        corr = torch.corrcoef(samples.T).numpy()
+        latent = corr[n_cond:, n_cond:]
+        np.fill_diagonal(latent, 0)
+        return np.nan_to_num(latent, nan=0.0)
+
+    mat_classical = get_corr(v_cl.cpu())
+
+    # --- 2. Setup ---
+    sweep_results = {
+        "classical_matrix": mat_classical,
+        "perm_metrics": [],
+        "default_orbit": None,
+        "best_orbit": None,
+        "worst_orbit": None,
+    }
+
+    # --- 3. Permutation Loop ---
+    for i in range(num_permutations):
+
+        # A. Determine mapping
+        if i == 0:
+            run_type = "IDENTITY"
+            seed = "DEFAULT"
+            p_vis = list(range(n_avail_vis))
+            p_hid = list(range(n_avail_hid))
+            print(f"[{i+1}/{num_permutations}] Running IDENTITY (Single-Read Per Pattern)...")
+        else:
+            run_type = "RANDOM"
+            seed = np.random.randint(0, 1000000)
+            rng = np.random.default_rng(seed)
+            p_vis = rng.permutation(n_avail_vis).tolist()
+            p_hid = rng.permutation(n_avail_hid).tolist()
+            print(f"[{i+1}/{num_permutations}] Running Seed {seed}...")
+
+        # B. Sample each pattern independently (heterogeneous single-read)
+        all_samples = []
+        all_break_fracs = []
+
+        for j, pattern in enumerate(cond_vec):
+            pattern_batch = pattern.unsqueeze(0)  # (1, n_cond)
+
+            res = sample_expanded_flux_arbitrary(
+                rbm=rbm,
+                raw_sampler=raw_sampler,
+                conditioning_sets=conditioning_sets,
+                left_chains=left_chains,
+                right_chains=right_chains,
+                binary_patterns_batch=pattern_batch,
+                hidden_side=hidden_side,
+                beta=beta,
+                source=f"MC_{run_type}_{seed}_p{j}",
+                use_srt=True,
+                logical_srt=True,
+                chain_strength=2.0,
+                flux_drift_compensation=True,
+                additive_flux_offsets=base_shims,
+                vis_mapping=p_vis,
+                hid_mapping=p_hid,
+                perm_seed=seed,
+            )
+
+            v_sample, _ = process_analysis_result(res, rbm, conditioning_sets)
+            all_samples.append(v_sample.cpu())
+
+            if res.break_matrix is not None:
+                all_break_fracs.append(np.mean(res.break_matrix))
+
+            if print_interval > 0 and (j + 1) % print_interval == 0:
+                print(f"  [{j+1}/{num_reads}] patterns sampled...")
+
+        # C. Aggregate
+        full_samples = torch.cat(all_samples, dim=0)
+        chain_break_frac = float(np.mean(all_break_fracs)) if all_break_fracs else 0.0
+
+        # D. Analysis
+        mat_perm = get_corr(full_samples)
+        error_norm = np.linalg.norm(mat_perm - mat_classical)
+        print(f"  -> Error: {error_norm:.4f} | Break Frac: {chain_break_frac:.2%}")
+
+        record = {
+            "seed": seed,
+            "type": run_type,
+            "error_norm": error_norm,
+            "chain_break_frac": chain_break_frac,
+            "matrix": mat_perm,
+            "samples": full_samples,
+        }
+        sweep_results["perm_metrics"].append(record)
+
+        if i == 0:
+            sweep_results["default_orbit"] = record
+
+    # --- 4. Sort and Finalize ---
+    sorted_metrics = sorted(sweep_results["perm_metrics"], key=lambda x: x["error_norm"])
+    sweep_results["best_orbit"] = sorted_metrics[0]
+    sweep_results["worst_orbit"] = sorted_metrics[-1]
+
+    # --- 5. Aggregate across all orbits ---
+    all_orbit_samples = torch.cat([r["samples"] for r in sweep_results["perm_metrics"]], dim=0)
+    mat_agg = get_corr(all_orbit_samples)
+    error_agg = float(np.linalg.norm(mat_agg - mat_classical))
+    avg_break_frac_agg = float(np.mean([r["chain_break_frac"] for r in sweep_results["perm_metrics"]]))
+    sweep_results["aggregated_orbit"] = {
+        "matrix": mat_agg,
+        "error_norm": error_agg,
+        "break_frac": avg_break_frac_agg,
+    }
+
+    print(f"\n--- MC Sweep Complete ---")
+    print(f"Default Error:    {sweep_results['default_orbit']['error_norm']:.4f}")
+    print(f"Best Error:       {sweep_results['best_orbit']['error_norm']:.4f}")
+    print(f"Aggregated Error: {error_agg:.4f}")
+
+    return sweep_results
+
+
+def run_srt_aggregation_comparison(
+    cond_vec,
+    rbm,
+    raw_sampler,
+    conditioning_sets,
+    left_chains,
+    right_chains,
+    hidden_side: str,
+    n_cond: int,
+    beta: float = 3.0,
+    srt_batches: int = 8,
+    num_reads: int = 64,
+    base_shims=None,
+    rbm_factor: int = 100,
+):
+    """
+    Compare two SRT aggregation strategies using the same total read budget.
+
+    Both strategies run exactly ``srt_batches`` SRT batches of ``num_reads``
+    each (total reads = srt_batches * num_reads):
+
+    - **averaged**: all batch samples are pooled together; the correlation
+      matrix is computed on the full aggregate.
+    - **best_srt**: each batch is scored individually against the classical
+      baseline; only the best-scoring batch is reported.
+
+    Results are compared against a classical Gibbs baseline via latent-variable
+    correlation matrices and per-node magnetisations.
+
+    Returns a dict suitable for ``plot_srt_aggregation_comparison``.
+    """
+    # ── 1. Classical Baseline ──
+    print("Generating Classical Baseline...")
+    v_cl = rbm.sample_v_given_v_clamped(
+        clamped_v=cond_vec[0:1].expand(rbm_factor, -1),
+        n_clamped=n_cond,
+        gibbs_steps=2000,
+        beta=1.0,
+    )
+
+    def get_corr(samples):
+        if isinstance(samples, torch.Tensor):
+            samples = samples.float().cpu()
+        corr = torch.corrcoef(samples.T).numpy()
+        latent = corr[n_cond:, n_cond:]
+        np.fill_diagonal(latent, 0)
+        return np.nan_to_num(latent, nan=0.0)
+
+    mat_classical = get_corr(v_cl.cpu())
+    mag_classical = v_cl.float().cpu().mean(dim=0)[n_cond:].numpy()
+
+    binary_patterns_batch = cond_vec[0:1].expand(num_reads, -1)
+
+    # ── 2. Run srt_batches batches, recording each one individually ──
+    print(f"\nRunning {srt_batches} SRT batches ({num_reads} reads each)...")
+    batch_samples_list = []
+    per_batch = []
+
+    for b in range(srt_batches):
+        res = sample_expanded_flux_arbitrary(
+            rbm=rbm,
+            raw_sampler=raw_sampler,
+            conditioning_sets=conditioning_sets,
+            left_chains=left_chains,
+            right_chains=right_chains,
+            binary_patterns_batch=binary_patterns_batch,
+            hidden_side=hidden_side,
+            beta=beta,
+            chain_strength=2.0,
+            additive_flux_offsets=base_shims,
+            use_srt=True,
+            logical_srt=True,
+            flux_drift_compensation=True,
+            source=f"SRT_agg_b{b}",
+        )
+
+        v_sample, _ = process_analysis_result(res, rbm, conditioning_sets)
+        v_sample = v_sample.cpu()
+        batch_samples_list.append(v_sample)
+
+        break_frac = float(np.mean(res.break_matrix)) if res.break_matrix is not None else 0.0
+        mat_b = get_corr(v_sample)
+        error_b = float(np.linalg.norm(mat_b - mat_classical))
+        per_batch.append({
+            "matrix": mat_b,
+            "error_norm": error_b,
+            "break_frac": break_frac,
+            "magnetization": v_sample.float().mean(dim=0)[n_cond:].numpy(),
+        })
+        print(f"  Batch {b + 1}/{srt_batches} | Error: {error_b:.4f} | Break Frac: {break_frac:.2%}")
+
+    # ── 3. Averaged strategy ──
+    full_samples = torch.cat(batch_samples_list, dim=0)
+    avg_break_frac = float(np.mean([pb["break_frac"] for pb in per_batch]))
+    mat_avg = get_corr(full_samples)
+    error_avg = float(np.linalg.norm(mat_avg - mat_classical))
+    mag_avg = full_samples.float().mean(dim=0)[n_cond:].numpy()
+
+    # ── 4. Best-SRT strategy ──
+    best_idx = int(np.argmin([pb["error_norm"] for pb in per_batch]))
+    best = per_batch[best_idx]
+
+    print(f"\n--- SRT Aggregation Comparison ---")
+    print(f"Averaged ({srt_batches} batches): Error={error_avg:.4f}  Breaks={avg_break_frac:.2%}")
+    print(f"Best SRT (batch {best_idx}):      Error={best['error_norm']:.4f}  Breaks={best['break_frac']:.2%}")
+    per_batch_strs = [f"{pb['error_norm']:.4f}" for pb in per_batch]
+    print(f"Per-batch errors: {per_batch_strs}")
+
+    return {
+        "classical_matrix": mat_classical,
+        "classical_magnetization": mag_classical,
+        "averaged": {
+            "matrix": mat_avg,
+            "error_norm": error_avg,
+            "break_frac": avg_break_frac,
+            "magnetization": mag_avg,
+        },
+        "best_srt": {
+            "matrix": best["matrix"],
+            "error_norm": best["error_norm"],
+            "break_frac": best["break_frac"],
+            "magnetization": best["magnetization"],
+            "best_batch_idx": best_idx,
+        },
+        "per_batch": per_batch,
+        "srt_batches": srt_batches,
+        "num_reads": num_reads,
+    }
+
+    return sweep_results
