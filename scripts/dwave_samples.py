@@ -1,284 +1,238 @@
 import torch
-import numpy as np
-import time
-import os
 import json
-from datetime import datetime, timezone, timedelta
-import pytz
+import os
 
-# --- Your Imports ---
-from hydra.utils import instantiate
 from hydra import initialize, compose
-import hydra
 from hydra.core.global_hydra import GlobalHydra
 from omegaconf import OmegaConf
-from scripts.run import setup_model
+
+from scripts.run import setup_model as setup_model_ae
+from scripts.run_transfusion import setup_model as setup_model_transfusion
 from model.rbm.rbm_two_partite import RBM_TwoPartite
-from utils.dwave.workflows import sample_expanded_flux_conditioned, find_beta_flux_bias_expanded
-from utils.dwave.physics import joint_energy
-from utils.dwave.graphs import run_embedding, analyze_target_side, get_sampler_and_biclique_embedding
+from utils.dwave.workflows import find_beta_single, mass_sample_dwave_single
+from utils.dwave.physics import get_cond_vec
+from utils.dwave.graphs import (
+    run_embedding,
+    select_optimal_side_exact,
+    augment_cond_sets_from_visible_chains,
+)
 
-# --- Configuration ---
-OUTPUT_DIR = "./wandb-outputs/dwave_data_campaign"
-INCIDENCE_ENERGIES = [1000, 50000, 100000, 200000, 300000]
-DEADLINE = datetime(2025, 12, 3, 0, 0, 0, tzinfo=timezone.utc) # Dec 3rd UTC is Dec 2nd 4pm PT
 
-# Sampling Params
-CAREFUL_BATCH_SIZE = 256
-CAREFUL_TARGET_TOTAL = 1024
-FAST_BATCH_TOTAL = 1024
-DRIFT_THRESHOLD = 2.0 # If energy diff > 2.0, we consider beta drifted
-DRIFT_LR = 0.05 # How much to nudge beta manually before re-estimating
+def setup_engines(ae_cfg_name="config_layers.yaml", tf_cfg_name="tfusion_config.yaml"):
+    ae_cfg = compose(config_name=ae_cfg_name)
+    ae_config = OmegaConf.load(ae_cfg.config_path)
+    ae_config.gpu_list = ae_cfg.gpu_list
+    ae_config.load_state = True
+    ae_engine = setup_model_ae(ae_config)
+    ae_engine._model_creator.load_state(ae_config.run_path, ae_engine.device)
 
-os.makedirs(OUTPUT_DIR, exist_ok=True)
+    tf_cfg = compose(config_name=tf_cfg_name)
+    tf_config = OmegaConf.load(tf_cfg.config_path)
+    tf_config.gpu_list = ae_config.gpu_list
+    tf_config.load_state = tf_config.load_state
+    tf_engine = setup_model_transfusion(tf_config)
+    tf_engine._model_creator.load_state(tf_config.run_path, tf_engine.device)
 
-def is_time_remaining():
-    now = datetime.now(timezone.utc)
-    remaining = DEADLINE - now
-    if remaining.total_seconds() > 0:
-        print(f"Time remaining: {remaining}")
-        return True
-    print("Deadline reached. Stopping script.")
-    return False
+    return ae_engine, tf_engine, ae_config
 
-def get_conditioning_batch(runner, energy_val, batch_size, device):
-    """
-    Creates the binary conditioning pattern for a specific energy.
-    Assumes runner.model.encoder logic from your snippet.
-    """
-    # Create dummy input tensor for the specific energy
-    # Assuming input needs to be shape (1, 1) or (1,) depending on your encoder
-    # Adjust shape if your encoder expects something else
-    e_tensor = torch.tensor([[energy_val]], dtype=torch.float32).to(device)
-    
-    # Get binary representation
-    # Using the num_clamped_bits logic from your snippet
-    num_clamped_bits = 53
-    with torch.no_grad():
-        bin_energy = runner.model.encoder.binary_energy_refactored(e_tensor)[:, :num_clamped_bits]
-    
-    # Repeat to fill batch
-    return bin_energy.repeat(batch_size, 1)
 
-def save_data(energy_val, mode, batch_idx, v_samples, h_samples, beta, beta_history, drift_val=None):
-    """
-    Saves a unique file for every batch. 
-    Added drift_val to metadata for analysis.
-    """
-    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-    # Filename includes mode (e.g. "careful", "drifted", "fast_bulk")
-    filename = f"samples_E{energy_val}_{mode}_{batch_idx}_{timestamp}.npz"
-    path = os.path.join(OUTPUT_DIR, filename)
-    os.makedirs(os.path.dirname(path), exist_ok=True)
-    
-    v_np = v_samples.detach().cpu().numpy()
-    h_np = h_samples.detach().cpu().numpy()
-    
-    # Save beta history and drift value
-    np.savez_compressed(
-        path, 
-        v_samples=v_np, 
-        h_samples=h_np, 
-        energy_val=energy_val,
-        beta_final=beta,
-        beta_history=beta_history,
-        drift_value=drift_val, # New metadata
-        mode=mode
+def setup_rbm(ae_config, checkpoint_file):
+    dummy_data = torch.zeros(1, ae_config.rbm.latent_nodes_per_p)
+    rbm = RBM_TwoPartite(ae_config, data=dummy_data)
+    loaded_epoch = rbm.load_checkpoint(checkpoint_file, epoch=None)
+    print(f"Loaded RBM checkpoint epoch {loaded_epoch}.")
+    return rbm
+
+
+def setup_embedding(ae_engine, cfg):
+    n_visible = cfg.n_vis
+    n_hidden = cfg.n_hid
+    print(f"RBM dimensions: n_visible={n_visible}, n_hidden={n_hidden}")
+
+    num_clamped_bits = ae_engine._config.model.cond_p_size
+    sampler, _, q_used, left_chains, right_chains = run_embedding(
+        n_visible, n_hidden, cfg.solver_name
     )
-    print(f"[{mode.upper()}] Saved {v_np.shape[0]} samples to {filename}")
-
-
-def check_drift(rbm, v_qpu, h_qpu, binary_patterns_batch):
-    """
-    Compare QPU energy to RBM baseline to detect drift.
-    """
-    # 1. Calculate QPU Energy
-    with torch.no_grad():
-        e_qpu = joint_energy(rbm, v_qpu, h_qpu)
-        mean_qpu = e_qpu.mean().item()
-
-    # 2. Calculate RBM Baseline Energy
-    # We produce a quick RBM sample batch for comparison
-    n_clamped = binary_patterns_batch.shape[1]
-    v_rbm = rbm.sample_v_given_v_clamped(
-        clamped_v=binary_patterns_batch, 
-        n_clamped=n_clamped, 
-        gibbs_steps=500, # Lower steps for speed in check
-        beta=1.0
-    )
-    h_rbm, _ = rbm._sample_h_given_v(v_rbm, beta=1.0)
-    
-    with torch.no_grad():
-        e_rbm = joint_energy(rbm, v_rbm, h_rbm)
-        mean_rbm = e_rbm.mean().item()
-        
-    diff = mean_qpu - mean_rbm
-    return diff, mean_qpu, mean_rbm
-
-
-def main(cfg=None):
-    # --- Initialization ---
-    SOLVER_NAME = "Advantage2_system1.8" 
-    
-    # Load Model
-    runner = setup_model(cfg) # Renamed 'self' to 'runner'
-    dummy_data = torch.zeros(1, cfg.rbm.latent_nodes_per_p).to(runner.device)
-    CHECKPOINT_FILE = "/home/leozhu/CaloQuVAE/wandb-outputs/run_2025-11-15_19-47-10_RBM_TwoPartite/training_checkpoint.h5"
-    
-    rbm = RBM_TwoPartite(cfg, data=dummy_data)
-    try:
-        loaded_epoch = rbm.load_checkpoint(CHECKPOINT_FILE, epoch=None) 
-        print(f"Loaded checkpoint epoch {loaded_epoch}.")
-    except Exception as e:
-        print(f"Error loading checkpoint: {e}")
-        exit(1)
-
-    # Setup D-Wave
-    raw_sampler, embedding, qpu_sampler = get_sampler_and_biclique_embedding(
-        rbm.num_visible, rbm.num_hidden, solver_name=SOLVER_NAME
-    )
-    
-    # Setup Topology
-    # Note: Using rbm.params["hbias"].shape[0] for num_hidden
-    sampler_emb, working_graph, q_used, left_chains, right_chains = run_embedding(
-        rbm.params["hbias"].shape[0], SOLVER_NAME
-    )
-    target_nodes_right = list(right_chains.values())
-    num_nodes_right, conditioning_sets = analyze_target_side(
-        "Right Chains", sampler_emb, target_nodes_right, q_used
+    cond_sets, selected_side = select_optimal_side_exact(
+        sampler, q_used, left_chains, right_chains
     )
 
-    # --- Main Execution Loop ---
-    
-    while is_time_remaining():
-        
-        for energy in INCIDENCE_ENERGIES:
-            if not is_time_remaining(): break
-            
-            print(f"\n{'='*10} Processing Energy {energy} {'='*10}")
-            
-            # 1. Prepare Data for this energy
-            # We need a batch for estimation and checking
-            batch_pattern = get_conditioning_batch(runner, energy, CAREFUL_BATCH_SIZE, rbm.device)
-            
-            # 2. Initial Beta Estimation
-            print("Estimating initial Beta...")
-            current_beta, beta_hist, _, _ = find_beta_flux_bias_expanded(
-                rbm, qpu_sampler, embedding, conditioning_sets, left_chains, right_chains,
-                binary_patterns_batch=batch_pattern,
-                num_reads=128,
-                num_epochs=10,
-                adaptive=False,
-                use_fast_sampling=False,
-                tolerance=0.5
+    cond_sets = cond_sets[:num_clamped_bits]
+    n_needed = num_clamped_bits - len(cond_sets)
+    if n_needed > 0:
+        n_vis_rbm = ae_engine._config.rbm.latent_nodes_per_p * 3
+        cond_sets, left_chains, right_chains, _ = augment_cond_sets_from_visible_chains(
+            cond_sets, left_chains, right_chains,
+            selected_side=selected_side,
+            n_extra=n_needed,
+            n_visible=n_vis_rbm,
+        )
+
+    print(f"Embedding ready: {len(left_chains)} left, {len(right_chains)} right, "
+          f"{len(cond_sets)} cond sets, hidden_side={selected_side}")
+    return sampler, left_chains, right_chains, cond_sets, selected_side
+
+
+def estimate_beta(rbm, sampler, left_chains, right_chains, cond_sets, hidden_side,
+                  cond_vec, cfg, single_batch=False):
+    optimal_beta, beta_hist, rbm_e_hist, qpu_e_hist = find_beta_single(
+        rbm=rbm,
+        raw_sampler=sampler,
+        conditioning_sets=cond_sets,
+        left_chains=left_chains,
+        right_chains=right_chains,
+        binary_patterns_batch=cond_vec,
+        hidden_side=hidden_side,
+        logical_srt=cfg.sampling.logical_srt,
+        orbit_seed=cfg.sampling.orbit_seed,
+        num_reads=cfg.beta.num_reads,
+        rbm_gibbs_steps=cfg.beta.rbm_gibbs_steps,
+        rbm_factor=cfg.beta.rbm_factor,
+        beta_init=cfg.beta.init,
+        lr=cfg.beta.lr,
+        num_epochs=cfg.beta.num_epochs,
+        tolerance=cfg.beta.tolerance,
+        single_batch=single_batch,
+        use_identity_orbit=cfg.sampling.get("use_identity_orbit", False),
+        flux_drift_compensation=True,
+    )
+    return optimal_beta, beta_hist, rbm_e_hist, qpu_e_hist
+
+
+def save_beta_info(save_dir, beta, beta_hist, rbm_e_hist, qpu_e_hist):
+    info = {
+        "beta_final": beta,
+        "beta_hist": beta_hist,
+        "rbm_e_hist": rbm_e_hist,
+        "qpu_e_hist": qpu_e_hist,
+    }
+    path = os.path.join(save_dir, "beta_info.json")
+    with open(path, "w") as f:
+        json.dump(info, f)
+    print(f"Saved beta info to {path}")
+
+
+def run_uniform_range(cfg, ae_engine, tf_engine, rbm, sampler,
+                      left_chains, right_chains, cond_sets, selected_side):
+    ur = cfg.uniform_range
+    print(f"\n{'='*20} Uniform Range Run ({ur.min_energy}-{ur.max_energy} MeV) {'='*20}")
+
+    energy_tensor = torch.zeros(ur.num_samples, 1).uniform_(ur.min_energy, ur.max_energy)
+    cond_vec, incidence_energy, u_samples, E_samples = get_cond_vec(
+        energy_tensor, ae_engine, tf_engine
+    )
+
+    print("Estimating beta...")
+    optimal_beta, beta_hist, rbm_e_hist, qpu_e_hist = estimate_beta(
+        rbm, sampler, left_chains, right_chains, cond_sets, selected_side,
+        cond_vec[:cfg.beta.num_reads], cfg, single_batch=True,
+    )
+    print(f"Optimal beta: {optimal_beta:.4f}")
+
+    save_dir = os.path.join(cfg.sampling.output_dir, "uniform_range")
+    os.makedirs(save_dir, exist_ok=True)
+    torch.save(incidence_energy, os.path.join(save_dir, "incidence_energy.pt"))
+    torch.save(u_samples, os.path.join(save_dir, "u_samples.pt"))
+    torch.save(E_samples, os.path.join(save_dir, "E_samples.pt"))
+    save_beta_info(save_dir, optimal_beta, beta_hist, rbm_e_hist, qpu_e_hist)
+
+    print(f"Collecting {ur.num_samples} samples (one QPU call per pattern)...")
+    mass_sample_dwave_single(
+        cond_vec=cond_vec,
+        save_dir=save_dir,
+        rbm=rbm,
+        raw_sampler=sampler,
+        conditioning_sets=cond_sets,
+        left_chains=left_chains,
+        right_chains=right_chains,
+        beta=optimal_beta,
+        hidden_side=selected_side,
+        orbit_seed=cfg.sampling.orbit_seed,
+        logical_srt=cfg.sampling.logical_srt,
+        print_interval=50,
+        use_identity_orbit=cfg.sampling.get("use_identity_orbit", False),
+        flux_drift_compensation=True,
+    )
+
+
+def run_dedicated_energy(energy_mev, cfg, ae_engine, tf_engine, rbm, sampler,
+                         left_chains, right_chains, cond_sets, selected_side):
+    print(f"\n{'='*20} Dedicated Energy {energy_mev} MeV {'='*20}")
+
+    n = cfg.dedicated.num_samples
+    energy_tensor = torch.full((n, 1), float(energy_mev))
+    cond_vec, incidence_energy, u_samples, E_samples = get_cond_vec(
+        energy_tensor, ae_engine, tf_engine
+    )
+
+    print(f"Estimating beta for {energy_mev} MeV...")
+    optimal_beta, beta_hist, rbm_e_hist, qpu_e_hist = estimate_beta(
+        rbm, sampler, left_chains, right_chains, cond_sets, selected_side,
+        cond_vec[:cfg.beta.num_reads], cfg, single_batch=True,
+    )
+    print(f"Optimal beta: {optimal_beta:.4f}")
+
+    save_dir = os.path.join(cfg.sampling.output_dir, f"energy_{energy_mev}")
+    os.makedirs(save_dir, exist_ok=True)
+    torch.save(incidence_energy, os.path.join(save_dir, "incidence_energy.pt"))
+    torch.save(u_samples, os.path.join(save_dir, "u_samples.pt"))
+    torch.save(E_samples, os.path.join(save_dir, "E_samples.pt"))
+    save_beta_info(save_dir, optimal_beta, beta_hist, rbm_e_hist, qpu_e_hist)
+
+    print(f"Collecting {n} samples for {energy_mev} MeV...")
+    mass_sample_dwave_single(
+        cond_vec=cond_vec,
+        save_dir=save_dir,
+        rbm=rbm,
+        raw_sampler=sampler,
+        conditioning_sets=cond_sets,
+        left_chains=left_chains,
+        right_chains=right_chains,
+        beta=optimal_beta,
+        hidden_side=selected_side,
+        orbit_seed=cfg.sampling.orbit_seed,
+        logical_srt=cfg.sampling.logical_srt,
+        print_interval=50,
+        use_identity_orbit=cfg.sampling.get("use_identity_orbit", False),
+        flux_drift_compensation=True,
+    )
+
+
+def main(cfg, ae_engine, tf_engine, ae_config):
+    rbm = setup_rbm(ae_config, cfg.rbm_checkpoint)
+
+    sampler, left_chains, right_chains, cond_sets, selected_side = setup_embedding(
+        ae_engine, cfg
+    )
+
+    os.makedirs(cfg.sampling.output_dir, exist_ok=True)
+
+    if cfg.uniform_range.enabled:
+        run_uniform_range(
+            cfg, ae_engine, tf_engine, rbm, sampler,
+            left_chains, right_chains, cond_sets, selected_side,
+        )
+
+    if cfg.dedicated.get("enabled", True):
+        for energy in cfg.dedicated.energies:
+            run_dedicated_energy(
+                energy, cfg, ae_engine, tf_engine, rbm, sampler,
+                left_chains, right_chains, cond_sets, selected_side,
             )
-            print(f"Initial Beta for E={energy}: {current_beta:.4f}")
 
-# 3. The "Careful" Loop (Check Drift)
-            collected_careful = 0
-            drift_history = []
-            
-            print(f"--- Starting Careful Sampling Loop (Target: {CAREFUL_TARGET_TOTAL}) ---")
-            while collected_careful < CAREFUL_TARGET_TOTAL:
-                if not is_time_remaining(): break
+    print("\nScript finished.")
 
-                # Sample 256 using Fast Mode
-                try:
-                    v_s, h_s = sample_expanded_flux_conditioned(
-                        rbm, raw_sampler, conditioning_sets, left_chains, right_chains,
-                        binary_patterns_batch=batch_pattern,
-                        beta=current_beta,
-                        clamp_strength_h=50.0,
-                        fast_sampling=False 
-                    )
-                except Exception as e:
-                    print(f"D-Wave API Error: {e}. Waiting 10s...")
-                    time.sleep(10)
-                    continue
-
-                # Check Drift
-                diff, q_e, r_e = check_drift(rbm, v_s, h_s, batch_pattern)
-                print(f"Batch Check: Beta={current_beta:.3f} | Diff={diff:.3f} (QPU:{q_e:.2f}, RBM:{r_e:.2f})")
-                
-                drift_history.append({"beta": current_beta, "diff": diff, "timestamp": str(datetime.now())})
-
-                # --- DRIFT HANDLING ---
-                if abs(diff) > DRIFT_THRESHOLD:
-                    print(f"!!! DRIFT DETECTED (Diff {diff:.3f} > {DRIFT_THRESHOLD}) !!!")
-                    
-                    # 1. SAVE the drifted batch (marked as 'drifted')
-                    # We pass the diff so we know how bad it was later
-                    save_data(energy, "drifted", collected_careful, v_s, h_s, current_beta, beta_hist, drift_val=diff)
-                    
-                    print("Batch saved as 'drifted'. Correcting Beta and retrying...")
-
-                    # 2. Correct Beta
-                    # If Diff is positive (QPU > RBM), QPU is too hot/disordered -> Increase Beta (cool it)
-                    # If Diff is negative (QPU < RBM), QPU is frozen -> Decrease Beta
-                    current_beta = max(0.01, current_beta - DRIFT_LR * diff)
-                    
-                    print(f"Nudged Beta to {current_beta:.4f}. Running Re-estimation...")
-                    
-                    # 3. Re-estimate 
-                    current_beta, new_hist, _, _ = find_beta_flux_bias_expanded(
-                        rbm, qpu_sampler, embedding, conditioning_sets, left_chains, right_chains,
-                        binary_patterns_batch=batch_pattern,
-                        beta_init=current_beta, # Start from nudged value
-                        num_epochs=5, # Short re-estimation
-                        adaptive=False,
-                        use_fast_sampling=False # Use slow mode for accurate re-estimation
-                    )
-                    beta_hist.extend(new_hist)
-                    
-                    # 4. Loop back (Do NOT increment collected_careful)
-                    continue 
-                
-                # --- SUCCESS HANDLING ---
-                # If diff is acceptable, save as 'careful' and count it
-                save_data(energy, "careful", collected_careful, v_s, h_s, current_beta, beta_hist, drift_val=diff)
-                collected_careful += CAREFUL_BATCH_SIZE
-
-            # 4. The "Fast" Loop (Bulk Sampling)
-            # Once we trust beta from the careful loop, we grab the rest
-            print(f"--- Careful Loop Done. Starting Fast Batch ({FAST_BATCH_TOTAL} samples) ---")
-            
-            # Construct large batch
-            large_batch_pattern = get_conditioning_batch(runner, energy, FAST_BATCH_TOTAL, rbm.device)
-            
-            try:
-                v_fast, h_fast = sample_expanded_flux_conditioned(
-                    rbm, raw_sampler, conditioning_sets, left_chains, right_chains,
-                    binary_patterns_batch=large_batch_pattern,
-                    beta=current_beta,
-                    clamp_strength_h=50.0,
-                    fast_sampling=True
-                )
-                save_data(energy, "fast_bulk", 0, v_fast, h_fast, current_beta, beta_hist)
-            except Exception as e:
-                print(f"Error during fast bulk sampling: {e}")
-                # If fast batch fails, we just loop back.
-                pass
-                
-            # Loop continues to next energy...
-
-    print("Script finished successfully.")
 
 if __name__ == "__main__":
-    # 1. Dynamically go up one directory from this script's location
-    # This finds '.../CaloQuVAE/scripts', then goes up to '.../CaloQuVAE'
     script_dir = os.path.dirname(os.path.abspath(__file__))
-    project_root = os.path.dirname(script_dir) 
-    
+    project_root = os.path.dirname(script_dir)
     os.chdir(project_root)
-    print(f"Working directory set to: {os.getcwd()}")
+    print(f"Working directory: {os.getcwd()}")
 
-    # 2. Initialize Hydra
-    # We use config_path="../config" because Hydra looks relative to the 
-    # script file location (scripts/), so we point it to the sibling folder (config/).
+    dwave_cfg = OmegaConf.load(os.path.join(project_root, "config/dwave/dwave.yaml"))
+
     GlobalHydra.instance().clear()
     with initialize(version_base=None, config_path="../config"):
-        cfg = compose(config_name="config.yaml")
-        
-        # 3. Run Main
-        print(f"Hydra Config loaded. Dataset: {cfg.data.dataset_name}")
-        main(cfg)
+        ae_engine, tf_engine, ae_config = setup_engines()
+
+    main(dwave_cfg, ae_engine, tf_engine, ae_config)
