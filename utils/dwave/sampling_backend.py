@@ -491,7 +491,7 @@ def sample_physical_with_analysis_logical_srt(
         break_matrix[:, col_idx] = (np.min(chain_vals, axis=1) != np.max(chain_vals, axis=1))
 
     # --- 9. Pack & Save ---
-    log_tensor = torch.tensor(log_samples, dtype=torch.float32, device=device)
+    log_tensor = torch.tensor(log_samples, dtype=torch.float32).to(device)
 
     result = ChainAnalysisResult(
         logical_samples=log_tensor,
@@ -531,10 +531,17 @@ def sample_physical_arbitrary(
     vis_mapping: List[int] = None,
     hid_mapping: List[int] = None,
     susceptibility_applied: bool = False,
-    flux_drift_compensation: bool = True
+    flux_drift_compensation: bool = True,
+    annealing_time: Optional[int] = None,
+    anneal_schedule: Optional[list] = None,
+    anneal_offsets: Optional[list] = None,
 ):
     """
     Executes physical sampling with SRT and wraps results in ChainAnalysisResult.
+
+    anneal_schedule: optional list of (time_µs, s) tuples. When provided, it
+    overrides annealing_time (the two parameters are mutually exclusive on the
+    D-Wave solver).
 
     use_srt: Whether to apply spin reversal transforms at all.
     logical_srt: When use_srt=True, selects the SRT mode:
@@ -588,6 +595,12 @@ def sample_physical_arbitrary(
             'flux_biases': active_flux_biases,
             'flux_drift_compensation': flux_drift_compensation,
         }
+        if anneal_schedule is not None:
+            sample_kwargs['anneal_schedule'] = anneal_schedule
+        elif annealing_time is not None:
+            sample_kwargs['annealing_time'] = annealing_time
+        if anneal_offsets is not None:
+            sample_kwargs['anneal_offsets'] = list(anneal_offsets)
         physical_response = raw_sampler.sample(bqm_phys, **sample_kwargs)
         physical_response = physical_response.change_vartype(dimod.SPIN, inplace=False)
 
@@ -643,6 +656,12 @@ def sample_physical_arbitrary(
                 'flux_drift_compensation': flux_drift_compensation,
                 'srts': final_srt_mask
             }
+            if anneal_schedule is not None:
+                sample_kwargs['anneal_schedule'] = anneal_schedule
+            elif annealing_time is not None:
+                sample_kwargs['annealing_time'] = annealing_time
+            if anneal_offsets is not None:
+                sample_kwargs['anneal_offsets'] = list(anneal_offsets)
         else:
             active_sampler = raw_sampler
             sample_kwargs = {
@@ -652,6 +671,12 @@ def sample_physical_arbitrary(
                 'flux_biases': flux_biases,
                 'flux_drift_compensation': flux_drift_compensation
             }
+            if anneal_schedule is not None:
+                sample_kwargs['anneal_schedule'] = anneal_schedule
+            elif annealing_time is not None:
+                sample_kwargs['annealing_time'] = annealing_time
+            if anneal_offsets is not None:
+                sample_kwargs['anneal_offsets'] = list(anneal_offsets)
 
         # 4. Sample
         physical_response = active_sampler.sample(bqm_phys, **sample_kwargs)
@@ -686,7 +711,7 @@ def sample_physical_arbitrary(
         break_matrix[:, col_idx] = (np.min(chain_vals, axis=1) != np.max(chain_vals, axis=1))
 
     # --- Pack & Save ---
-    log_tensor = torch.tensor(log_samples, dtype=torch.float32, device=device)
+    log_tensor = torch.tensor(log_samples, dtype=torch.float32).to(device)
 
     result = ChainAnalysisResult(
         logical_samples=log_tensor,

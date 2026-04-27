@@ -25,7 +25,8 @@ from .graphs import (
     get_physical_flux_biases_manual,
     build_expanded_embedding,
     build_expanded_embedding_arbitrary,
-    get_expanded_flux_biases
+    get_expanded_flux_biases,
+    get_orbit_mappings,
 )
 from .sampling_backend import (
     sample_logical_ising,
@@ -46,7 +47,8 @@ from .postprocessing import (
 from .workflows import (
     sample_expanded_flux_conditioned_rigorous,
     sample_expanded_flux_conditioned_rigorous_srt,
-    sample_expanded_flux_arbitrary
+    sample_expanded_flux_arbitrary,
+    find_beta_arbitrary
 )
 
 from .plots import plot_energy_comparison
@@ -1225,7 +1227,9 @@ def run_monte_carlo_permutation_sweep(
     num_reads_per_perm: int = 512,
     srt_batches: int = 8,
     device: str = 'cpu',
-    base_shims = None
+    base_shims = None,
+    anneal_time: int = None,
+    default_start: bool = True,
 ):
     """
     Given a fixed conditioning vector (energy) of shape (1, n_cond),
@@ -1252,9 +1256,10 @@ def run_monte_carlo_permutation_sweep(
     sweep_results = {
         "classical_matrix": mat_classical,
         "perm_metrics": [],
-        "default_orbit": None, 
+        "default_orbit": None,
         "best_orbit": None,
-        "worst_orbit": None
+        "worst_orbit": None,
+        "anneal_time": anneal_time,
     }
     
     n_avail_vis = len(left_chains) 
@@ -1263,9 +1268,9 @@ def run_monte_carlo_permutation_sweep(
 
     # 3. Execution Loop
     for i in range(num_permutations):
-        
+
         # --- A. Determine Mapping ---
-        if i == 0:
+        if i == 0 and default_start:
             run_type = "IDENTITY"
             seed = "DEFAULT"
             p_vis = list(range(n_avail_vis))
@@ -1302,7 +1307,8 @@ def run_monte_carlo_permutation_sweep(
                 additive_flux_offsets=base_shims,
                 vis_mapping=p_vis,
                 hid_mapping=p_hid,
-                perm_seed=seed
+                perm_seed=seed,
+                annealing_time=anneal_time,
             )
             
             # 2. Extract RELEVANT Samples immediately
@@ -1334,11 +1340,11 @@ def run_monte_carlo_permutation_sweep(
 
         # --- D. Analysis ---
         mat_perm = get_corr(full_samples)
-        
+
         # Error Norm (Now shapes match: 75x75 - 75x75)
         error_norm = np.linalg.norm(mat_perm - mat_classical)
         print(f"  -> Error: {error_norm:.4f} | Break Frac: {chain_break_frac:.2%}")
-        
+
         record = {
             "seed": seed,
             "type": run_type,
@@ -1346,6 +1352,8 @@ def run_monte_carlo_permutation_sweep(
             "chain_break_frac": chain_break_frac,
             "matrix": mat_perm,
             "samples": full_samples,
+            "vis_mapping": p_vis,
+            "hid_mapping": p_hid,
         }
         sweep_results["perm_metrics"].append(record)
 
@@ -1369,10 +1377,73 @@ def run_monte_carlo_permutation_sweep(
         "break_frac": avg_break_frac_agg,
     }
 
+    # 6. Single-orbit SRT aggregation (orthogonal aggregation axis)
+    # Run num_permutations * srt_batches total SRT batches on one fixed mapping so
+    # the total read count matches the orbit-aggregation case.
+    # default_start=True  → identity mapping (current behaviour)
+    # default_start=False → best orbit's mapping (the fairer comparison)
+    total_srt_batches = num_permutations * srt_batches
+    best_orbit = sweep_results["best_orbit"]
+    if default_start:
+        srt_ref_vis = list(range(n_avail_vis))
+        srt_ref_hid = list(range(n_avail_hid))
+        srt_ref_seed = "DEFAULT"
+        srt_ref_label = "Default"
+        print(f"\nRunning Default orbit with {total_srt_batches} SRT batches (orthogonal aggregation)...")
+    else:
+        srt_ref_vis = best_orbit["vis_mapping"]
+        srt_ref_hid = best_orbit["hid_mapping"]
+        srt_ref_seed = best_orbit["seed"]
+        srt_ref_label = "Best"
+        print(f"\nRunning Best orbit (seed={srt_ref_seed}) with {total_srt_batches} SRT batches (orthogonal aggregation)...")
+
+    srt_batch_samples = []
+    srt_batch_breaks = []
+    for b in range(total_srt_batches):
+        res = sample_expanded_flux_arbitrary(
+            rbm=rbm,
+            raw_sampler=raw_sampler,
+            conditioning_sets=conditioning_sets,
+            left_chains=left_chains,
+            right_chains=right_chains,
+            binary_patterns_batch=cond_vec.repeat(reads_per_batch, 1),
+            hidden_side=hidden_side,
+            beta=beta,
+            source=f"MC_{srt_ref_label.upper()}_SRTAGG_b{b}",
+            use_srt=True,
+            logical_srt=True,
+            chain_strength=2.0,
+            flux_drift_compensation=True,
+            additive_flux_offsets=base_shims,
+            vis_mapping=srt_ref_vis,
+            hid_mapping=srt_ref_hid,
+            perm_seed=srt_ref_seed,
+            annealing_time=anneal_time,
+        )
+        v_sample_batch, _ = process_analysis_result(res, rbm, conditioning_sets)
+        srt_batch_samples.append(v_sample_batch.cpu())
+        if res.break_matrix is not None:
+            srt_batch_breaks.append(res.break_matrix)
+
+    srt_agg_samples = torch.cat(srt_batch_samples, dim=0)
+    mat_srt_agg = get_corr(srt_agg_samples)
+    error_srt_agg = float(np.linalg.norm(mat_srt_agg - mat_classical))
+    break_frac_srt_agg = (
+        float(np.mean(np.vstack(srt_batch_breaks))) if srt_batch_breaks else 0.0
+    )
+    sweep_results["default_srt_aggregated"] = {
+        "matrix": mat_srt_agg,
+        "error_norm": error_srt_agg,
+        "break_frac": break_frac_srt_agg,
+        "num_srt_batches": total_srt_batches,
+        "label": srt_ref_label,
+    }
+
     print(f"\n--- MC Sweep Complete ---")
-    print(f"Default Error:    {sweep_results['default_orbit']['error_norm']:.4f}")
-    print(f"Best Error:       {sweep_results['best_orbit']['error_norm']:.4f}")
-    print(f"Aggregated Error: {error_agg:.4f}")
+    print(f"First Orbit Error:                      {sweep_results['default_orbit']['error_norm']:.4f}")
+    print(f"{srt_ref_label} Orbit (SRT-Aggregated):  {error_srt_agg:.4f}")
+    print(f"Best Error:                             {best_orbit['error_norm']:.4f}")
+    print(f"Aggregated (Orbits) Error:              {error_agg:.4f}")
 
     return sweep_results
 
@@ -2288,4 +2359,1248 @@ def run_srt_aggregation_comparison(
         "num_reads": num_reads,
     }
 
-    return sweep_results
+
+def run_annealing_time_sweep(
+    cond_vec,
+    rbm,
+    raw_sampler,
+    conditioning_sets,
+    left_chains,
+    right_chains,
+    hidden_side: str,
+    n_cond: int,
+    annealing_times: list,
+    beta_init: float = 3.0,
+    lr: float = 0.01,
+    num_epochs: int = 15,
+    tolerance: float = 0.1,
+    num_reads: int = 1024,
+    rbm_gibbs_steps: int = 5000,
+    vis_mapping: list = None,
+    hid_mapping: list = None,
+    base_shims=None,
+    orbit_seed: int = None,
+    flux_drift_compensation: bool = True,
+    num_srt_batches: int = 4,
+):
+    """
+    Sweeps over QPU annealing times. For each time:
+      1. Calls find_beta_arbitrary until beta converges.
+      2. Draws num_srt_batches quality samples at the converged beta, each with a
+         freshly shuffled orbit (vis_mapping / hid_mapping), then pools them.
+      3. Computes a latent correlation matrix and error norm vs a classical baseline.
+
+    Returns a dict suitable for plot_annealing_time_sweep.
+    """
+    primary_batch = cond_vec[0:1].expand(num_reads, -1)
+
+    # --- 0. Classical Baseline (computed once) ---
+    print("Generating Classical Baseline...")
+    v_cl = rbm.sample_v_given_v_clamped(
+        clamped_v=primary_batch, n_clamped=n_cond,
+        gibbs_steps=rbm_gibbs_steps, beta=1.0,
+    )
+
+    def get_corr(samples):
+        if isinstance(samples, torch.Tensor):
+            samples = samples.float().cpu()
+        corr = torch.corrcoef(samples.T).numpy()
+        latent = corr[n_cond:, n_cond:]
+        np.fill_diagonal(latent, 0)
+        return np.nan_to_num(latent, nan=0.0)
+
+    mat_classical = get_corr(v_cl)
+    mag_classical = v_cl.float().cpu().mean(dim=0)[n_cond:].numpy()
+
+    # --- 1. Per-time sweep ---
+    per_time_results = {}
+
+    for at in annealing_times:
+        print(f"\n=== Annealing Time: {at} µs ===")
+
+        beta, beta_hist, rbm_e_hist, qpu_e_hist = find_beta_arbitrary(
+            rbm=rbm,
+            raw_sampler=raw_sampler,
+            conditioning_sets=conditioning_sets,
+            left_chains=left_chains,
+            right_chains=right_chains,
+            binary_patterns_batch=primary_batch,
+            vis_mapping=vis_mapping,
+            hid_mapping=hid_mapping,
+            hidden_side=hidden_side,
+            orbit_seed=orbit_seed,
+            num_reads=num_reads,
+            rbm_gibbs_steps=rbm_gibbs_steps,
+            beta_init=beta_init,
+            lr=lr,
+            num_epochs=num_epochs,
+            tolerance=tolerance,
+            use_srt=True,
+            logical_srt=True,
+            flux_drift_compensation=flux_drift_compensation,
+            annealing_time=at,
+            rbm_factor=10,
+        )
+
+        # Final quality sample: num_srt_batches batches, vis/hid_mapping=None lets
+        # the sampler apply its default shuffling each call
+        print(f"  Final quality sample: {num_srt_batches} batches at beta={beta:.4f}...")
+        all_samples = []
+        all_breaks = []
+
+        for b in range(num_srt_batches):
+            res = sample_expanded_flux_arbitrary(
+                rbm=rbm,
+                raw_sampler=raw_sampler,
+                conditioning_sets=conditioning_sets,
+                left_chains=left_chains,
+                right_chains=right_chains,
+                binary_patterns_batch=primary_batch,
+                hidden_side=hidden_side,
+                beta=beta,
+                vis_mapping=None,
+                hid_mapping=None,
+                additive_flux_offsets=base_shims,
+                use_srt=True,
+                logical_srt=True,
+                flux_drift_compensation=flux_drift_compensation,
+                annealing_time=at,
+                source=f"at_sweep_final_t{at}_b{b}",
+                chain_strength=2.0,
+            )
+            v_qpu, _ = process_analysis_result(res, rbm, conditioning_sets)
+            all_samples.append(v_qpu.cpu())
+            if res.break_matrix is not None:
+                all_breaks.append(float(np.mean(res.break_matrix)))
+            print(f"    Batch {b+1}/{num_srt_batches} done.")
+
+        pooled = torch.cat(all_samples, dim=0)
+        mat = get_corr(pooled)
+        error_norm = float(np.linalg.norm(mat - mat_classical))
+        break_frac = float(np.mean(all_breaks)) if all_breaks else 0.0
+        magnetization = pooled.float().mean(dim=0)[n_cond:].numpy()
+        print(f"  Error norm vs classical: {error_norm:.4f}  Break frac: {break_frac:.2%}")
+
+        per_time_results[at] = {
+            "effective_beta": beta,
+            "beta_hist": beta_hist,
+            "rbm_energy_hist": rbm_e_hist,
+            "qpu_energy_hist": qpu_e_hist,
+            "matrix": mat,
+            "error_norm": error_norm,
+            "break_frac": break_frac,
+            "magnetization": magnetization,
+        }
+
+    print("\n--- Annealing Time Sweep Complete ---")
+    for at, r in per_time_results.items():
+        print(f"  t={at} µs: beta_eff={r['effective_beta']:.4f}  error={r['error_norm']:.4f}  breaks={r['break_frac']:.2%}")
+
+    return {
+        "annealing_times": annealing_times,
+        "per_time_results": per_time_results,
+        "classical_matrix": mat_classical,
+        "classical_magnetization": mag_classical,
+        "beta_init": beta_init,
+        "num_reads": num_reads,
+        "num_srt_batches": num_srt_batches,
+    }
+
+
+def run_chain_break_histogram(
+    cond_vec,
+    rbm,
+    raw_sampler,
+    conditioning_sets,
+    left_chains,
+    right_chains,
+    hidden_side: str,
+    beta: float = 3.0,
+    num_reads: int = 1024,
+    srt_batches: int = 8,
+    base_shims=None,
+    cutoffs: list = None,
+    rbm_gibbs_steps: int = 2000,
+    rbm_factor: int = 10,
+):
+    """
+    Collects per-read chain break fractions across srt_batches QPU calls,
+    each using a freshly shuffled orbit (random vis/hid mapping).
+
+    Also computes a classical Gibbs baseline and, for each value in cutoffs,
+    evaluates the latent correlation matrix keeping only the cutoff fraction of
+    reads with the lowest chain break rates.
+
+    Returns a dict suitable for plot_chain_break_histogram.
+    """
+    if cutoffs is None:
+        cutoffs = [0.25, 0.5, 0.75, 1.0]
+
+    n_cond = len(conditioning_sets)
+    reads_per_batch = num_reads // srt_batches
+    remainder = num_reads % srt_batches
+
+    if hidden_side == 'right':
+        n_vis_orbit, n_hid_orbit = len(left_chains), len(right_chains)
+    else:
+        n_vis_orbit, n_hid_orbit = len(right_chains), len(left_chains)
+
+    print(f"--- Chain Break Histogram ({num_reads} reads, {srt_batches} batches) ---")
+
+    all_per_read_fracs = []
+    all_samples = []
+    batch_mean_fracs = []
+    batch_seeds = []
+
+    for b in range(srt_batches):
+        batch_reads = reads_per_batch + (1 if b < remainder else 0)
+        seed = int(np.random.randint(0, 1_000_000))
+        batch_seeds.append(seed)
+        vis_mapping, hid_mapping = get_orbit_mappings(seed, n_vis_orbit, n_hid_orbit)
+
+        binary_patterns_batch = cond_vec[0:1].expand(batch_reads, -1)
+
+        res = sample_expanded_flux_arbitrary(
+            rbm=rbm,
+            raw_sampler=raw_sampler,
+            conditioning_sets=conditioning_sets,
+            left_chains=left_chains,
+            right_chains=right_chains,
+            binary_patterns_batch=binary_patterns_batch,
+            hidden_side=hidden_side,
+            beta=beta,
+            chain_strength=2.0,
+            use_srt=True,
+            logical_srt=True,
+            flux_drift_compensation=True,
+            additive_flux_offsets=base_shims,
+            vis_mapping=vis_mapping,
+            hid_mapping=hid_mapping,
+            perm_seed=seed,
+            source=f"break_hist_b{b}",
+        )
+
+        if res.break_matrix is not None:
+            per_read = np.mean(res.break_matrix, axis=1)
+        else:
+            per_read = np.zeros(batch_reads)
+
+        v_sample, _ = process_analysis_result(res, rbm, conditioning_sets)
+        all_samples.append(v_sample.cpu())
+        all_per_read_fracs.append(per_read)
+        batch_mean = float(np.mean(per_read))
+        batch_mean_fracs.append(batch_mean)
+        print(f"  Batch {b+1}/{srt_batches} | seed={seed} | mean break frac: {batch_mean:.2%}")
+
+    all_fracs = np.concatenate(all_per_read_fracs)
+    all_v = torch.cat(all_samples, dim=0)
+
+    # --- Classical Baseline ---
+    print("Generating Classical Baseline...")
+    n_rbm_reads = num_reads * rbm_factor
+    v_cl = rbm.sample_v_given_v_clamped(
+        clamped_v=cond_vec[0:1].expand(n_rbm_reads, -1),
+        n_clamped=n_cond,
+        gibbs_steps=rbm_gibbs_steps,
+        beta=1.0,
+    )
+
+    def get_corr(samples):
+        if isinstance(samples, torch.Tensor):
+            samples = samples.float().cpu()
+        corr = torch.corrcoef(samples.T).numpy()
+        latent = corr[n_cond:, n_cond:]
+        np.fill_diagonal(latent, 0)
+        return np.nan_to_num(latent, nan=0.0)
+
+    mat_classical = get_corr(v_cl)
+
+    # --- Cutoff Analysis ---
+    # Sort indices ascending by break fraction (lowest breaks first)
+    sorted_idx = np.argsort(all_fracs)
+    cutoff_results = {}
+    print("\nCutoff Analysis:")
+    for c in sorted(cutoffs):
+        k = max(1, int(np.ceil(c * len(all_fracs))))
+        idx = sorted_idx[:k]
+        mat_cut = get_corr(all_v[idx])
+        err = float(np.linalg.norm(mat_cut - mat_classical))
+        max_break = float(all_fracs[sorted_idx[k - 1]])
+        cutoff_results[c] = {
+            "matrix": mat_cut,
+            "diff_matrix": mat_cut - mat_classical,
+            "error_norm": err,
+            "n_samples": k,
+            "max_break_frac": max_break,
+        }
+        print(f"  {c:.0%}: {k} samples | max break kept: {max_break:.2%} | error: {err:.4f}")
+
+    overall_mean = float(np.mean(all_fracs))
+    pct_clean = float(np.mean(all_fracs == 0.0)) * 100
+    print(f"\nOverall mean break frac: {overall_mean:.2%} | Clean reads: {pct_clean:.1f}%")
+
+    return {
+        "per_read_break_fracs": all_fracs,
+        "batch_mean_fracs": batch_mean_fracs,
+        "batch_seeds": batch_seeds,
+        "srt_batches": srt_batches,
+        "num_reads": len(all_fracs),
+        "reads_per_batch": reads_per_batch,
+        "overall_mean": overall_mean,
+        "pct_clean": pct_clean,
+        "classical_matrix": mat_classical,
+        "cutoffs": sorted(cutoffs),
+        "cutoff_results": cutoff_results,
+        "n_cond": n_cond,
+    }
+
+
+def run_energy_histogram(
+    cond_vec,
+    rbm,
+    raw_sampler,
+    conditioning_sets,
+    left_chains,
+    right_chains,
+    hidden_side: str,
+    beta: float = 3.0,
+    num_reads: int = 1024,
+    srt_batches: int = 8,
+    base_shims=None,
+    cutoffs: list = None,
+    rbm_gibbs_steps: int = 2000,
+    rbm_factor: int = 10,
+):
+    """
+    Collects per-sample joint energies across srt_batches QPU calls,
+    each using a freshly shuffled orbit (random vis/hid mapping).
+
+    Also computes a classical Gibbs baseline. For each value in cutoffs,
+    evaluates the latent correlation matrix keeping only the lowest-energy
+    (most probable) cutoff fraction of QPU samples.
+
+    Returns a dict suitable for plot_energy_histogram.
+    """
+    if cutoffs is None:
+        cutoffs = [0.25, 0.5, 0.75, 1.0]
+
+    n_cond = len(conditioning_sets)
+    reads_per_batch = num_reads // srt_batches
+    remainder = num_reads % srt_batches
+
+    if hidden_side == 'right':
+        n_vis_orbit, n_hid_orbit = len(left_chains), len(right_chains)
+    else:
+        n_vis_orbit, n_hid_orbit = len(right_chains), len(left_chains)
+
+    print(f"--- Energy Histogram ({num_reads} reads, {srt_batches} batches) ---")
+
+    all_energies = []
+    all_samples = []
+    batch_seeds = []
+
+    for b in range(srt_batches):
+        batch_reads = reads_per_batch + (1 if b < remainder else 0)
+        seed = int(np.random.randint(0, 1_000_000))
+        batch_seeds.append(seed)
+        vis_mapping, hid_mapping = get_orbit_mappings(seed, n_vis_orbit, n_hid_orbit)
+
+        binary_patterns_batch = cond_vec[0:1].expand(batch_reads, -1)
+
+        res = sample_expanded_flux_arbitrary(
+            rbm=rbm,
+            raw_sampler=raw_sampler,
+            conditioning_sets=conditioning_sets,
+            left_chains=left_chains,
+            right_chains=right_chains,
+            binary_patterns_batch=binary_patterns_batch,
+            hidden_side=hidden_side,
+            beta=beta,
+            chain_strength=2.0,
+            use_srt=True,
+            logical_srt=True,
+            flux_drift_compensation=True,
+            additive_flux_offsets=base_shims,
+            vis_mapping=vis_mapping,
+            hid_mapping=hid_mapping,
+            perm_seed=seed,
+            source=f"energy_hist_b{b}",
+        )
+
+        v_sample, h_sample = process_analysis_result(res, rbm, conditioning_sets)
+        with torch.no_grad():
+            e_batch = joint_energy(rbm, v_sample, h_sample).cpu().numpy()
+
+        all_samples.append(v_sample.cpu())
+        all_energies.append(e_batch)
+        print(f"  Batch {b+1}/{srt_batches} | seed={seed} | mean energy: {e_batch.mean():.4f}")
+
+    qpu_energies = np.concatenate(all_energies)
+    all_v = torch.cat(all_samples, dim=0)
+
+    # --- Classical Baseline ---
+    print("Generating Classical Baseline...")
+    n_rbm_reads = num_reads * rbm_factor
+    v_cl = rbm.sample_v_given_v_clamped(
+        clamped_v=cond_vec[0:1].expand(n_rbm_reads, -1),
+        n_clamped=n_cond,
+        gibbs_steps=rbm_gibbs_steps,
+        beta=1.0,
+    )
+    h_cl, _ = rbm._sample_h_given_v(v_cl, beta=1.0)
+    with torch.no_grad():
+        classical_energies = joint_energy(rbm, v_cl, h_cl).cpu().numpy()
+
+    def get_corr(samples):
+        if isinstance(samples, torch.Tensor):
+            samples = samples.float().cpu()
+        corr = torch.corrcoef(samples.T).numpy()
+        latent = corr[n_cond:, n_cond:]
+        np.fill_diagonal(latent, 0)
+        return np.nan_to_num(latent, nan=0.0)
+
+    mat_classical = get_corr(v_cl)
+
+    # --- Cutoff Analysis ---
+    # Sort ascending by energy (lowest = most probable first)
+    sorted_idx = np.argsort(qpu_energies)
+    cutoff_results = {}
+    print("\nCutoff Analysis:")
+    for c in sorted(cutoffs):
+        k = max(1, int(np.ceil(c * len(qpu_energies))))
+        idx = sorted_idx[:k]
+        mat_cut = get_corr(all_v[idx])
+        err = float(np.linalg.norm(mat_cut - mat_classical))
+        max_energy = float(qpu_energies[sorted_idx[k - 1]])
+        cutoff_results[c] = {
+            "matrix": mat_cut,
+            "diff_matrix": mat_cut - mat_classical,
+            "error_norm": err,
+            "n_samples": k,
+            "max_energy": max_energy,
+        }
+        print(f"  {c:.0%}: {k} samples | max energy kept: {max_energy:.4f} | error: {err:.4f}")
+
+    print(f"\nQPU mean energy: {qpu_energies.mean():.4f} ± {qpu_energies.std():.4f}")
+    print(f"Classical mean energy: {classical_energies.mean():.4f} ± {classical_energies.std():.4f}")
+
+    return {
+        "qpu_energies": qpu_energies,
+        "classical_energies": classical_energies,
+        "batch_seeds": batch_seeds,
+        "srt_batches": srt_batches,
+        "num_reads": len(qpu_energies),
+        "reads_per_batch": reads_per_batch,
+        "classical_matrix": mat_classical,
+        "cutoffs": sorted(cutoffs),
+        "cutoff_results": cutoff_results,
+        "n_cond": n_cond,
+    }
+
+
+def run_chain_break_structure_analysis(
+    cond_vec,
+    rbm,
+    raw_sampler,
+    conditioning_sets,
+    left_chains,
+    right_chains,
+    hidden_side: str,
+    beta: float = 3.0,
+    num_reads: int = 1024,
+    srt_batches: int = 8,
+    base_shims=None,
+    rbm_gibbs_steps: int = 2000,
+    rbm_factor: int = 10,
+):
+    """
+    Tracks which specific chains break across SRT batches with shuffled orbits,
+    distinguishing between physical structure (same hardware qubits break) and
+    logical structure (same logical variables break regardless of physical placement).
+
+    Each batch uses a different random orbit (vis/hid mapping), so a logical variable
+    lands on a different physical chain each time.  Comparing the coefficient of
+    variation (CV = std/mean) of break rates in the logical domain vs the physical
+    domain reveals the source of structure:
+
+    - Physical CV >> Logical CV  → breaks cluster on specific hardware qubits
+    - Logical  CV >> Physical CV → breaks cluster on specific model variables
+    - Both low                   → no consistent structure (random hardware noise)
+
+    Returns a dict suitable for plot_chain_break_structure.
+    """
+    n_cond = len(conditioning_sets)
+    n_vis = rbm.params["vbias"].shape[0]   # total visible = n_cond + n_standard_vis
+    n_hid = rbm.params["hbias"].shape[0]
+    n_standard_vis = n_vis - n_cond
+
+    reads_per_batch = num_reads // srt_batches
+    remainder = num_reads % srt_batches
+
+    if hidden_side == 'right':
+        n_vis_orbit, n_hid_orbit = len(left_chains), len(right_chains)
+    else:
+        n_vis_orbit, n_hid_orbit = len(right_chains), len(left_chains)
+
+    print(f"--- Chain Break Structure Analysis ({num_reads} reads, {srt_batches} batches) ---")
+    print(f"    Logical vis: {n_standard_vis}, Logical hid: {n_hid}")
+    print(f"    Physical slots: {n_vis_orbit} vis, {n_hid_orbit} hid")
+
+    # Per-batch accumulators shape (srt_batches, n_vars)
+    batch_vis_logical  = np.zeros((srt_batches, n_standard_vis))
+    batch_hid_logical  = np.zeros((srt_batches, n_hid))
+    batch_vis_physical = np.zeros((srt_batches, n_vis_orbit))
+    batch_hid_physical = np.zeros((srt_batches, n_hid_orbit))
+
+    batch_seeds       = []
+    batch_vis_mappings = []
+    batch_hid_mappings = []
+    all_per_read_fracs = []
+
+    for b in range(srt_batches):
+        batch_reads = reads_per_batch + (1 if b < remainder else 0)
+        seed = int(np.random.randint(0, 1_000_000))
+        batch_seeds.append(seed)
+        vis_mapping, hid_mapping = get_orbit_mappings(seed, n_vis_orbit, n_hid_orbit)
+        batch_vis_mappings.append(vis_mapping)
+        batch_hid_mappings.append(hid_mapping)
+
+        binary_patterns_batch = cond_vec[0:1].expand(batch_reads, -1)
+
+        res = sample_expanded_flux_arbitrary(
+            rbm=rbm,
+            raw_sampler=raw_sampler,
+            conditioning_sets=conditioning_sets,
+            left_chains=left_chains,
+            right_chains=right_chains,
+            binary_patterns_batch=binary_patterns_batch,
+            hidden_side=hidden_side,
+            beta=beta,
+            chain_strength=2.0,
+            use_srt=True,
+            logical_srt=True,
+            flux_drift_compensation=True,
+            additive_flux_offsets=base_shims,
+            vis_mapping=vis_mapping,
+            hid_mapping=hid_mapping,
+            perm_seed=seed,
+            source=f"break_struct_b{b}",
+        )
+
+        if res.break_matrix is None:
+            print(f"  Batch {b+1}/{srt_batches}: no break data")
+            continue
+
+        label_to_col = {lbl: i for i, lbl in enumerate(res.variable_labels)}
+
+        vis_logical_rates  = np.zeros(n_standard_vis)
+        hid_logical_rates  = np.zeros(n_hid)
+        vis_physical_rates = np.zeros(n_vis_orbit)
+        hid_physical_rates = np.zeros(n_hid_orbit)
+
+        # Visible logical vars: integer IDs n_cond .. n_vis-1
+        for v_idx in range(n_standard_vis):
+            logical_id = n_cond + v_idx
+            col = label_to_col.get(logical_id)
+            if col is None:
+                continue
+            rate = float(np.mean(res.break_matrix[:, col]))
+            vis_logical_rates[v_idx] = rate
+            phys_slot = vis_mapping[v_idx]
+            vis_physical_rates[phys_slot] = rate
+
+        # Hidden logical vars: integer IDs n_vis .. n_vis+n_hid-1
+        for h_idx in range(n_hid):
+            logical_id = n_vis + h_idx
+            col = label_to_col.get(logical_id)
+            if col is None:
+                continue
+            rate = float(np.mean(res.break_matrix[:, col]))
+            hid_logical_rates[h_idx] = rate
+            phys_slot = hid_mapping[h_idx]
+            hid_physical_rates[phys_slot] = rate
+
+        batch_vis_logical[b]  = vis_logical_rates
+        batch_hid_logical[b]  = hid_logical_rates
+        batch_vis_physical[b] = vis_physical_rates
+        batch_hid_physical[b] = hid_physical_rates
+
+        per_read = np.mean(res.break_matrix, axis=1)
+        all_per_read_fracs.append(per_read)
+
+        print(f"  Batch {b+1}/{srt_batches} | seed={seed} | mean break: {float(np.mean(per_read)):.2%}")
+
+    # Aggregate mean and std across batches
+    vis_logical_mean  = batch_vis_logical.mean(axis=0)
+    hid_logical_mean  = batch_hid_logical.mean(axis=0)
+    vis_logical_std   = batch_vis_logical.std(axis=0)
+    hid_logical_std   = batch_hid_logical.std(axis=0)
+
+    # Physical: only average over batches where the slot was used (non-zero)
+    # Since each slot appears in exactly n_standard_vis/n_vis_orbit * srt_batches batches on average,
+    # a simple mean is appropriate; unused-slot zeros pull it down uniformly.
+    vis_physical_mean = batch_vis_physical.mean(axis=0)
+    hid_physical_mean = batch_hid_physical.mean(axis=0)
+    vis_physical_std  = batch_vis_physical.std(axis=0)
+    hid_physical_std  = batch_hid_physical.std(axis=0)
+
+    # Coefficient of variation: how heterogeneous are the break rates?
+    eps = 1e-8
+    vis_log_cv  = float(vis_logical_mean.std()  / (vis_logical_mean.mean()  + eps))
+    hid_log_cv  = float(hid_logical_mean.std()  / (hid_logical_mean.mean()  + eps))
+    vis_phys_cv = float(vis_physical_mean.std() / (vis_physical_mean.mean() + eps))
+    hid_phys_cv = float(hid_physical_mean.std() / (hid_physical_mean.mean() + eps))
+
+    logical_cv  = (vis_log_cv  + hid_log_cv)  / 2
+    physical_cv = (vis_phys_cv + hid_phys_cv) / 2
+
+    ratio = physical_cv / (logical_cv + eps)
+    if ratio > 1.5:
+        interpretation = "physical"
+    elif ratio < 0.67:
+        interpretation = "logical"
+    else:
+        interpretation = "mixed/random"
+
+    print(f"\nStructure Analysis:")
+    print(f"  Logical  CV: {logical_cv:.3f}")
+    print(f"  Physical CV: {physical_cv:.3f}")
+    print(f"  Interpretation: {interpretation}")
+
+    # Classical baseline for context
+    print("Generating Classical Baseline...")
+    v_cl = rbm.sample_v_given_v_clamped(
+        clamped_v=cond_vec[0:1].expand(num_reads * rbm_factor, -1),
+        n_clamped=n_cond,
+        gibbs_steps=rbm_gibbs_steps,
+        beta=1.0,
+    )
+
+    def get_corr(samples):
+        if isinstance(samples, torch.Tensor):
+            samples = samples.float().cpu()
+        corr = torch.corrcoef(samples.T).numpy()
+        latent = corr[n_cond:, n_cond:]
+        np.fill_diagonal(latent, 0)
+        return np.nan_to_num(latent, nan=0.0)
+
+    mat_classical = get_corr(v_cl)
+
+    all_fracs = np.concatenate(all_per_read_fracs) if all_per_read_fracs else np.array([])
+
+    return {
+        "n_cond": n_cond,
+        "n_vis": n_vis,
+        "n_hid": n_hid,
+        "n_standard_vis": n_standard_vis,
+        "n_vis_orbit": n_vis_orbit,
+        "n_hid_orbit": n_hid_orbit,
+        "num_reads": num_reads,
+        "srt_batches": srt_batches,
+
+        # Per-batch break rate matrices (srt_batches × n_vars)
+        "batch_vis_logical":  batch_vis_logical,
+        "batch_hid_logical":  batch_hid_logical,
+        "batch_vis_physical": batch_vis_physical,
+        "batch_hid_physical": batch_hid_physical,
+
+        # Aggregated means and stds
+        "vis_logical_mean":  vis_logical_mean,
+        "hid_logical_mean":  hid_logical_mean,
+        "vis_logical_std":   vis_logical_std,
+        "hid_logical_std":   hid_logical_std,
+        "vis_physical_mean": vis_physical_mean,
+        "hid_physical_mean": hid_physical_mean,
+        "vis_physical_std":  vis_physical_std,
+        "hid_physical_std":  hid_physical_std,
+
+        # Structure metrics
+        "logical_cv":    logical_cv,
+        "physical_cv":   physical_cv,
+        "vis_log_cv":    vis_log_cv,
+        "hid_log_cv":    hid_log_cv,
+        "vis_phys_cv":   vis_phys_cv,
+        "hid_phys_cv":   hid_phys_cv,
+        "interpretation": interpretation,
+
+        # Overall break stats
+        "per_read_break_fracs": all_fracs,
+        "overall_mean": float(np.mean(all_fracs)) if len(all_fracs) else 0.0,
+
+        "classical_matrix": mat_classical,
+        "batch_seeds": batch_seeds,
+        "batch_vis_mappings": batch_vis_mappings,
+        "batch_hid_mappings": batch_hid_mappings,
+    }
+
+
+def _build_pause_schedule(pause_point: float, pause_length: float, anneal_time: float):
+    """
+    Builds a piecewise-linear anneal schedule with a pause at s = pause_point.
+    anneal_time is the forward anneal time (µs) excluding the pause; max slope
+    1/µs is preserved. Returns None when the pause point is at an endpoint.
+    """
+    sp = float(pause_point)
+    tp = float(pause_length)
+    ta = float(anneal_time)
+    if sp <= 0.0 or sp >= 1.0 or tp <= 0.0:
+        return None
+    t1 = ta * sp
+    return [(0.0, 0.0), (t1, sp), (t1 + tp, sp), (ta + tp, 1.0)]
+
+
+def run_pause_sweep(
+    cond_vec,
+    rbm,
+    raw_sampler,
+    conditioning_sets,
+    left_chains,
+    right_chains,
+    hidden_side: str,
+    n_cond: int,
+    pause_points: list,
+    pause_length: float = 100.0,
+    anneal_time: float = 20.0,
+    rbm_scale: float = 2.0,
+    num_reads: int = 1024,
+    sweep_batches: int = 2,
+    base_shims=None,
+    flux_drift_compensation: bool = True,
+    beta_init: float = 2.0,
+    lr: float = 0.01,
+    num_epochs: int = 15,
+    tolerance: float = 0.5,
+    rbm_gibbs_steps: int = 5000,
+    rbm_factor: int = 10,
+    num_srt_batches: int = 8,
+    include_baseline: bool = True,
+):
+    """
+    Pause-anneal sweep (Marshall et al., 2018). Scales the RBM by rbm_scale
+    (passed as the Ising beta so h and J are kept in the well-embedded range),
+    sweeps QPU anneals with a pause at each s_p in pause_points, and picks the
+    pause point that yields the lowest mean joint energy. Then runs
+    find_beta_arbitrary at that optimal pause to get a new effective beta, and
+    collects a final batched sample for latent correlation.
+    """
+    primary_batch = cond_vec[0:1].expand(num_reads, -1)
+
+    if hidden_side == 'right':
+        n_vis_orbit, n_hid_orbit = len(left_chains), len(right_chains)
+    else:
+        n_vis_orbit, n_hid_orbit = len(right_chains), len(left_chains)
+
+    # --- 0. Classical Baseline ---
+    print("Generating Classical Baseline...")
+    n_rbm_reads = num_reads * rbm_factor
+    v_cl = rbm.sample_v_given_v_clamped(
+        clamped_v=cond_vec[0:1].expand(n_rbm_reads, -1),
+        n_clamped=n_cond,
+        gibbs_steps=rbm_gibbs_steps,
+        beta=1.0,
+    )
+    h_cl, _ = rbm._sample_h_given_v(v_cl, beta=1.0)
+    with torch.no_grad():
+        classical_energies = joint_energy(rbm, v_cl, h_cl).cpu().numpy()
+
+    def get_corr(samples):
+        if isinstance(samples, torch.Tensor):
+            samples = samples.float().cpu()
+        corr = torch.corrcoef(samples.T).numpy()
+        latent = corr[n_cond:, n_cond:]
+        np.fill_diagonal(latent, 0)
+        return np.nan_to_num(latent, nan=0.0)
+
+    mat_classical = get_corr(v_cl)
+
+    # --- 1. Sweep pause points at fixed scaled beta ---
+    per_pause_results = {}
+    sweep_points = list(pause_points)
+    if include_baseline:
+        sweep_points = [None] + sweep_points
+
+    for sp in sweep_points:
+        schedule = _build_pause_schedule(sp, pause_length, anneal_time) if sp is not None else None
+        label = "no_pause" if sp is None else f"sp={sp:.3f}"
+        print(f"\n=== Pause {label} | beta_scale={rbm_scale} | t_a={anneal_time}µs t_p={pause_length}µs ===")
+
+        batch_energies = []
+        batch_samples = []
+        batch_break_fracs = []
+        for b in range(sweep_batches):
+            seed = int(np.random.randint(0, 1_000_000))
+            vis_mapping, hid_mapping = get_orbit_mappings(seed, n_vis_orbit, n_hid_orbit)
+            res = sample_expanded_flux_arbitrary(
+                rbm=rbm,
+                raw_sampler=raw_sampler,
+                conditioning_sets=conditioning_sets,
+                left_chains=left_chains,
+                right_chains=right_chains,
+                binary_patterns_batch=primary_batch,
+                hidden_side=hidden_side,
+                beta=rbm_scale,
+                chain_strength=2.0,
+                use_srt=True,
+                logical_srt=True,
+                flux_drift_compensation=flux_drift_compensation,
+                additive_flux_offsets=base_shims,
+                vis_mapping=vis_mapping,
+                hid_mapping=hid_mapping,
+                perm_seed=seed,
+                anneal_schedule=schedule,
+                annealing_time=None if schedule is not None else int(max(1, round(anneal_time))),
+                source=f"pause_sweep_{label}_b{b}",
+            )
+            v_s, h_s = process_analysis_result(res, rbm, conditioning_sets)
+            with torch.no_grad():
+                e_b = joint_energy(rbm, v_s, h_s).cpu().numpy()
+            batch_energies.append(e_b)
+            batch_samples.append(v_s.cpu())
+            batch_break_fracs.append(float(np.mean(res.break_matrix)) if res.break_matrix is not None else 0.0)
+            print(f"  Batch {b+1}/{sweep_batches} | mean E={e_b.mean():.4f} | breaks={batch_break_fracs[-1]:.2%}")
+
+        energies = np.concatenate(batch_energies)
+        v_pool = torch.cat(batch_samples, dim=0)
+        mat = get_corr(v_pool)
+        error_norm = float(np.linalg.norm(mat - mat_classical))
+
+        per_pause_results[sp] = {
+            "pause_point": sp,
+            "anneal_schedule": schedule,
+            "energies": energies,
+            "mean_energy": float(energies.mean()),
+            "std_energy": float(energies.std()),
+            "matrix": mat,
+            "error_norm": error_norm,
+            "mean_break_frac": float(np.mean(batch_break_fracs)),
+        }
+        print(f"  Pooled mean E={energies.mean():.4f} ± {energies.std():.4f} | corr err={error_norm:.4f}")
+
+    # --- 2. Choose optimal pause point (lowest mean energy among real pauses) ---
+    pause_only = {sp: r for sp, r in per_pause_results.items() if sp is not None}
+    if not pause_only:
+        raise ValueError("pause_points is empty; nothing to optimize.")
+    optimal_sp = min(pause_only, key=lambda s: pause_only[s]["mean_energy"])
+    optimal_schedule = per_pause_results[optimal_sp]["anneal_schedule"]
+    print(f"\n*** Optimal pause point: s_p = {optimal_sp:.3f} "
+          f"(mean E = {per_pause_results[optimal_sp]['mean_energy']:.4f}) ***")
+
+    mag_classical = v_cl.float().cpu().mean(dim=0)[n_cond:].numpy()
+
+    def find_beta_and_sample(schedule, annealing_time_val, tag):
+        # B. β-finding at this (schedule or anneal time)
+        seed = int(np.random.randint(0, 1_000_000))
+        vis, hid = get_orbit_mappings(seed, n_vis_orbit, n_hid_orbit)
+        print(f"\n[{tag}] Finding beta (orbit seed={seed})...")
+        beta, bh, reh, qeh = find_beta_arbitrary(
+            rbm=rbm,
+            raw_sampler=raw_sampler,
+            conditioning_sets=conditioning_sets,
+            left_chains=left_chains,
+            right_chains=right_chains,
+            binary_patterns_batch=primary_batch,
+            vis_mapping=vis,
+            hid_mapping=hid,
+            hidden_side=hidden_side,
+            orbit_seed=seed,
+            num_reads=num_reads,
+            rbm_gibbs_steps=rbm_gibbs_steps,
+            beta_init=beta_init,
+            lr=lr,
+            num_epochs=num_epochs,
+            tolerance=tolerance,
+            use_srt=True,
+            logical_srt=True,
+            flux_drift_compensation=flux_drift_compensation,
+            anneal_schedule=schedule,
+            annealing_time=annealing_time_val,
+            rbm_factor=rbm_factor,
+        )
+
+        # C. num_srt_batches quality sample, each with a fresh orbit
+        print(f"[{tag}] Final quality sample: {num_srt_batches} batches at beta={beta:.4f}...")
+        f_samples, f_energies, f_breaks = [], [], []
+        for b in range(num_srt_batches):
+            res = sample_expanded_flux_arbitrary(
+                rbm=rbm,
+                raw_sampler=raw_sampler,
+                conditioning_sets=conditioning_sets,
+                left_chains=left_chains,
+                right_chains=right_chains,
+                binary_patterns_batch=primary_batch,
+                hidden_side=hidden_side,
+                beta=beta,
+                chain_strength=2.0,
+                use_srt=True,
+                logical_srt=True,
+                flux_drift_compensation=flux_drift_compensation,
+                additive_flux_offsets=base_shims,
+                vis_mapping=None,
+                hid_mapping=None,
+                anneal_schedule=schedule,
+                annealing_time=annealing_time_val,
+                source=f"pause_sweep_final_{tag}_b{b}",
+            )
+            v_f, h_f = process_analysis_result(res, rbm, conditioning_sets)
+            with torch.no_grad():
+                f_energies.append(joint_energy(rbm, v_f, h_f).cpu().numpy())
+            f_samples.append(v_f.cpu())
+            f_breaks.append(float(np.mean(res.break_matrix)) if res.break_matrix is not None else 0.0)
+            print(f"  [{tag}] batch {b+1}/{num_srt_batches} done.")
+
+        v_pool = torch.cat(f_samples, dim=0)
+        energies = np.concatenate(f_energies)
+        mat = get_corr(v_pool)
+        err = float(np.linalg.norm(mat - mat_classical))
+        mag = v_pool.float().mean(dim=0)[n_cond:].numpy()
+        return {
+            "beta": beta,
+            "beta_hist": bh,
+            "rbm_energy_hist": reh,
+            "qpu_energy_hist": qeh,
+            "matrix": mat,
+            "magnetization": mag,
+            "energies": energies,
+            "error_norm": err,
+            "break_frac": float(np.mean(f_breaks)),
+            "anneal_schedule": schedule,
+            "annealing_time": annealing_time_val,
+        }
+
+    # --- 3. Paused vs unpaused comparison at same anneal time ---
+    # num_epochs caps convergence so find_beta_arbitrary doesn't run forever.
+    # The unpaused run is additionally wrapped in try/except because a diverging
+    # beta can plummet to values that make the QPU reject the problem outright.
+    at_int = int(max(1, round(anneal_time)))
+    paused = find_beta_and_sample(optimal_schedule, None,
+                                  f"paused_sp{optimal_sp:.3f}")
+    try:
+        unpaused = find_beta_and_sample(None, at_int,
+                                        f"unpaused_t{at_int}us")
+    except Exception as e:
+        print(f"\n[WARNING] Unpaused beta-finding failed: {e}")
+        print("  Unpaused result will be marked failed in the output.")
+        unpaused = {
+            "failed": True,
+            "reason": str(e),
+            "beta": float('nan'),
+            "beta_hist": [],
+            "rbm_energy_hist": [],
+            "qpu_energy_hist": [],
+            "matrix": None,
+            "magnetization": None,
+            "energies": np.array([]),
+            "error_norm": float('nan'),
+            "break_frac": float('nan'),
+            "anneal_schedule": None,
+            "annealing_time": at_int,
+        }
+
+    print(f"\n--- Pause Sweep Complete ---")
+    for sp in sweep_points:
+        r = per_pause_results[sp]
+        tag = "baseline" if sp is None else f"s_p={sp:.3f}"
+        print(f"  {tag:>14s}  meanE={r['mean_energy']:.4f}  err={r['error_norm']:.4f}")
+    print(f"  Paused   (s_p={optimal_sp:.3f}, β={paused['beta']:.3f}): "
+          f"meanE={paused['energies'].mean():.4f}  err={paused['error_norm']:.4f}")
+    if unpaused.get("failed"):
+        print(f"  Unpaused (t_a={at_int}µs): FAILED — {unpaused['reason']}")
+    else:
+        print(f"  Unpaused (t_a={at_int}µs,    β={unpaused['beta']:.3f}): "
+              f"meanE={unpaused['energies'].mean():.4f}  err={unpaused['error_norm']:.4f}")
+        print(f"  Δerr = unpaused − paused = {unpaused['error_norm'] - paused['error_norm']:+.4f}")
+
+    return {
+        "pause_points": list(pause_points),
+        "includes_baseline": include_baseline,
+        "pause_length": pause_length,
+        "anneal_time": anneal_time,
+        "rbm_scale": rbm_scale,
+        "per_pause_results": per_pause_results,
+        "optimal_pause_point": optimal_sp,
+        "optimal_schedule": optimal_schedule,
+        "paused": paused,
+        "unpaused": unpaused,
+        "classical_matrix": mat_classical,
+        "classical_magnetization": mag_classical,
+        "classical_energies": classical_energies,
+        "num_reads": num_reads,
+        "sweep_batches": sweep_batches,
+        "num_srt_batches": num_srt_batches,
+        "n_cond": n_cond,
+    }
+
+
+def run_anneal_offset_experiment(
+    cond_vec,
+    rbm,
+    raw_sampler,
+    conditioning_sets,
+    left_chains,
+    right_chains,
+    hidden_side: str,
+    n_cond: int,
+    beta: float = 3.0,
+    profile_batches: int = 8,
+    sample_batches: int = 8,
+    num_reads: int = 512,
+    offset_fraction: float = 0.25,
+    anneal_offset_value: float = -0.3,
+    rbm_gibbs_steps: int = 2000,
+    rbm_factor: int = 10,
+    base_shims=None,
+    rng_seed: int = None,
+):
+    """
+    Identifies persistently breaking logical chains via profiling runs, then applies
+    per-qubit anneal offsets (negative = delayed freeze = longer tunnelling) to those
+    chains' physical qubits and compares the resulting correlation matrices.
+
+    Both the profile/control phase and the offset phase use shuffled orbits (a fresh
+    random orbit per batch).  After profiling identifies which *logical* variables
+    break frequently, each offset batch:
+      1. Draws a new random orbit.
+      2. Builds the embedding for that orbit to map high-break logical vars → physical qubits.
+      3. Constructs a per-qubit anneal_offsets array for *this orbit's* physical assignment.
+      4. Submits to the QPU with those offsets.
+
+    This tests whether the improvement generalises across different physical placements,
+    not just on the fixed-orbit qubit set used during profiling.
+
+    Returns a dict suitable for plot_anneal_offset_experiment.
+    """
+    n_vis = rbm.params["vbias"].shape[0]
+    n_hid = rbm.params["hbias"].shape[0]
+    n_standard_vis = n_vis - n_cond
+    total_qubits = raw_sampler.properties['num_qubits']
+
+    if hidden_side == 'right':
+        n_vis_orbit, n_hid_orbit = len(left_chains), len(right_chains)
+    else:
+        n_vis_orbit, n_hid_orbit = len(right_chains), len(left_chains)
+
+    rng = np.random.default_rng(rng_seed)
+    print(f"--- Anneal Offset Experiment (shuffled orbits) | offset={anneal_offset_value} ---")
+
+    binary_patterns_batch = cond_vec[0:1].expand(num_reads, -1)
+
+    # ── Phase 1: Profile with shuffled orbits (= control samples) ──
+    # Using different orbits per batch means the logical-domain break signal
+    # is robust: a variable that consistently breaks regardless of physical placement
+    # is a genuine model-level problem, not a hardware-qubit artifact.
+    print(f"Phase 1 – Profiling break rates ({profile_batches} batches, shuffled orbits)...")
+    profile_samples = []
+    vis_break_acc = np.zeros(n_standard_vis)
+    hid_break_acc = np.zeros(n_hid)
+    profile_break_fracs = []
+    profile_seeds = []
+
+    for b in range(profile_batches):
+        seed = int(rng.integers(0, 1_000_000))
+        profile_seeds.append(seed)
+        vis_mapping, hid_mapping = get_orbit_mappings(seed, n_vis_orbit, n_hid_orbit)
+
+        res = sample_expanded_flux_arbitrary(
+            rbm=rbm,
+            raw_sampler=raw_sampler,
+            conditioning_sets=conditioning_sets,
+            left_chains=left_chains,
+            right_chains=right_chains,
+            binary_patterns_batch=binary_patterns_batch,
+            hidden_side=hidden_side,
+            beta=beta,
+            chain_strength=2.0,
+            use_srt=True,
+            logical_srt=True,
+            flux_drift_compensation=True,
+            additive_flux_offsets=base_shims,
+            vis_mapping=vis_mapping,
+            hid_mapping=hid_mapping,
+            perm_seed=seed,
+            source=f"anneal_offset_profile_b{b}",
+        )
+
+        v_sample, _ = process_analysis_result(res, rbm, conditioning_sets)
+        profile_samples.append(v_sample.cpu())
+
+        if res.break_matrix is not None:
+            label_to_col = {lbl: i for i, lbl in enumerate(res.variable_labels)}
+            for v_idx in range(n_standard_vis):
+                col = label_to_col.get(n_cond + v_idx)
+                if col is not None:
+                    vis_break_acc[v_idx] += float(np.mean(res.break_matrix[:, col]))
+            for h_idx in range(n_hid):
+                col = label_to_col.get(n_vis + h_idx)
+                if col is not None:
+                    hid_break_acc[h_idx] += float(np.mean(res.break_matrix[:, col]))
+            batch_frac = float(np.mean(res.break_matrix))
+            profile_break_fracs.append(batch_frac)
+            print(f"  Batch {b+1}/{profile_batches} | seed={seed} | break frac: {batch_frac:.2%}")
+
+    vis_break_mean = vis_break_acc / profile_batches
+    hid_break_mean = hid_break_acc / profile_batches
+    all_break_means = np.concatenate([vis_break_mean, hid_break_mean])
+
+    control_samples = torch.cat(profile_samples, dim=0)
+    control_break_frac = float(np.mean(profile_break_fracs)) if profile_break_fracs else 0.0
+
+    # ── Identify high-break logical variables ──
+    n_total_vars = n_standard_vis + n_hid
+    n_to_offset = max(1, int(np.ceil(offset_fraction * n_total_vars)))
+    threshold_val = float(np.sort(all_break_means)[::-1][n_to_offset - 1])
+
+    vis_offset_mask = vis_break_mean >= threshold_val
+    hid_offset_mask = hid_break_mean >= threshold_val
+    n_offset_vis = int(vis_offset_mask.sum())
+    n_offset_hid = int(hid_offset_mask.sum())
+
+    print(f"\nBreak threshold: {threshold_val:.3f}")
+    print(f"Logical chains to offset: {n_offset_vis} vis + {n_offset_hid} hid = {n_offset_vis + n_offset_hid} total")
+
+    # ── Phase 2: Offset sampling with shuffled orbits ──
+    # For each batch we pick a fresh orbit, build the embedding for that orbit to
+    # find which physical qubits host the high-break logical variables, build the
+    # anneal_offsets array for those qubits, then submit.
+    print(f"\nPhase 2 – Sampling with anneal offsets ({sample_batches} batches, shuffled orbits)...")
+    offset_samples = []
+    offset_break_fracs = []
+    offset_vis_break_acc = np.zeros(n_standard_vis)
+    offset_hid_break_acc = np.zeros(n_hid)
+    offset_seeds = []
+    n_offset_qubits_per_batch = []
+
+    for b in range(sample_batches):
+        seed = int(rng.integers(0, 1_000_000))
+        offset_seeds.append(seed)
+        vis_mapping, hid_mapping = get_orbit_mappings(seed, n_vis_orbit, n_hid_orbit)
+
+        # Build embedding for this orbit to resolve logical → physical qubits
+        exp_embedding, _ = build_expanded_embedding_arbitrary(
+            conditioning_sets, left_chains, right_chains,
+            num_visible=n_vis, hidden_side=hidden_side,
+            vis_mapping=vis_mapping, hid_mapping=hid_mapping,
+        )
+
+        # Compute anneal_offsets for the physical qubits hosting high-break logical vars
+        anneal_offsets_arr = np.zeros(total_qubits)
+        for v_idx in range(n_standard_vis):
+            if vis_offset_mask[v_idx]:
+                for qubit in exp_embedding.get(n_cond + v_idx, []):
+                    if qubit < total_qubits:
+                        anneal_offsets_arr[qubit] = anneal_offset_value
+        for h_idx in range(n_hid):
+            if hid_offset_mask[h_idx]:
+                for qubit in exp_embedding.get(n_vis + h_idx, []):
+                    if qubit < total_qubits:
+                        anneal_offsets_arr[qubit] = anneal_offset_value
+        n_offset_qubits_per_batch.append(int((anneal_offsets_arr != 0).sum()))
+
+        res = sample_expanded_flux_arbitrary(
+            rbm=rbm,
+            raw_sampler=raw_sampler,
+            conditioning_sets=conditioning_sets,
+            left_chains=left_chains,
+            right_chains=right_chains,
+            binary_patterns_batch=binary_patterns_batch,
+            hidden_side=hidden_side,
+            beta=beta,
+            chain_strength=2.0,
+            use_srt=True,
+            logical_srt=True,
+            flux_drift_compensation=True,
+            additive_flux_offsets=base_shims,
+            vis_mapping=vis_mapping,
+            hid_mapping=hid_mapping,
+            perm_seed=seed,
+            source=f"anneal_offset_run_b{b}",
+            anneal_offsets=anneal_offsets_arr,
+        )
+
+        v_sample, _ = process_analysis_result(res, rbm, conditioning_sets)
+        offset_samples.append(v_sample.cpu())
+
+        if res.break_matrix is not None:
+            label_to_col = {lbl: i for i, lbl in enumerate(res.variable_labels)}
+            for v_idx in range(n_standard_vis):
+                col = label_to_col.get(n_cond + v_idx)
+                if col is not None:
+                    offset_vis_break_acc[v_idx] += float(np.mean(res.break_matrix[:, col]))
+            for h_idx in range(n_hid):
+                col = label_to_col.get(n_vis + h_idx)
+                if col is not None:
+                    offset_hid_break_acc[h_idx] += float(np.mean(res.break_matrix[:, col]))
+            batch_frac = float(np.mean(res.break_matrix))
+            offset_break_fracs.append(batch_frac)
+            print(f"  Batch {b+1}/{sample_batches} | seed={seed} | {n_offset_qubits_per_batch[-1]} qubits offset | break frac: {batch_frac:.2%}")
+
+    offset_v = torch.cat(offset_samples, dim=0)
+    offset_break_frac = float(np.mean(offset_break_fracs)) if offset_break_fracs else 0.0
+    offset_vis_break_mean = offset_vis_break_acc / sample_batches
+    offset_hid_break_mean = offset_hid_break_acc / sample_batches
+
+    # ── Classical Baseline ──
+    print("Generating Classical Baseline...")
+    v_cl = rbm.sample_v_given_v_clamped(
+        clamped_v=cond_vec[0:1].expand(num_reads * rbm_factor, -1),
+        n_clamped=n_cond, gibbs_steps=rbm_gibbs_steps, beta=1.0,
+    )
+
+    def get_corr(samples):
+        if isinstance(samples, torch.Tensor):
+            samples = samples.float().cpu()
+        corr = torch.corrcoef(samples.T).numpy()
+        latent = corr[n_cond:, n_cond:]
+        np.fill_diagonal(latent, 0)
+        return np.nan_to_num(latent, nan=0.0)
+
+    mat_classical = get_corr(v_cl)
+    mag_classical = v_cl.float().cpu().mean(dim=0)[n_cond:].numpy()
+
+    mat_control = get_corr(control_samples)
+    mag_control = control_samples.float().cpu().mean(dim=0)[n_cond:].numpy()
+
+    mat_offset = get_corr(offset_v)
+    mag_offset = offset_v.float().cpu().mean(dim=0)[n_cond:].numpy()
+
+    error_control = float(np.linalg.norm(mat_control - mat_classical))
+    error_offset = float(np.linalg.norm(mat_offset - mat_classical))
+
+    print(f"\n--- Anneal Offset Experiment Complete ---")
+    print(f"No Offset:   Error={error_control:.4f}  Breaks={control_break_frac:.2%}")
+    print(f"With Offset: Error={error_offset:.4f}  Breaks={offset_break_frac:.2%}")
+
+    return {
+        "classical_matrix": mat_classical,
+        "classical_magnetization": mag_classical,
+        "no_offset": {
+            "matrix": mat_control,
+            "error_norm": error_control,
+            "break_frac": control_break_frac,
+            "magnetization": mag_control,
+            "break_rates_vis": vis_break_mean,
+            "break_rates_hid": hid_break_mean,
+        },
+        "with_offset": {
+            "matrix": mat_offset,
+            "error_norm": error_offset,
+            "break_frac": offset_break_frac,
+            "magnetization": mag_offset,
+            "break_rates_vis": offset_vis_break_mean,
+            "break_rates_hid": offset_hid_break_mean,
+        },
+        "offset_mask_vis": vis_offset_mask,
+        "offset_mask_hid": hid_offset_mask,
+        "offset_value": anneal_offset_value,
+        "offset_fraction": offset_fraction,
+        "threshold_val": threshold_val,
+        "n_offset_vis": n_offset_vis,
+        "n_offset_hid": n_offset_hid,
+        "n_offset_qubits_per_batch": n_offset_qubits_per_batch,
+        "profile_seeds": profile_seeds,
+        "offset_seeds": offset_seeds,
+        "rng_seed": rng_seed,
+        "profile_batches": profile_batches,
+        "sample_batches": sample_batches,
+        "num_reads": num_reads,
+        "n_cond": n_cond,
+    }
