@@ -379,6 +379,39 @@ class DecoderLayersNoHits(DecoderLayers):
                 return output_hits, output_activations
 
 
+class DecoderLayersSparsity(DecoderLayersNoHits):
+    """
+    DecoderLayersNoHits + a per-layer sparsity head.
+
+    The sparsity head is a small MLP conditioned on (latent code, multibasis x0, u)
+    that outputs one logit per layer. sigmoid(logit) is interpreted as the predicted
+    fraction of active voxels in that layer. Used by AutoencoderLayersSparsity to
+    decide the top-k cutoff at inference time.
+    """
+    def __init__(self, cfg):
+        super().__init__(cfg)
+        cond_dim = 8  # x0 multibasis (3) + u (5)
+        n_layers = self._config.data.z
+        hidden_dim = getattr(self._config.model, "sparsity_hidden_dim", 128)
+        in_dim = self.n_latent_nodes + cond_dim
+        self.sparsity_head = nn.Sequential(
+            nn.Linear(in_dim, hidden_dim),
+            nn.SiLU(),
+            nn.Linear(hidden_dim, hidden_dim),
+            nn.SiLU(),
+            nn.Linear(hidden_dim, n_layers),
+        )
+
+    def forward(self, x, x0, u):
+        x_lat = x
+        x0_mb = self.trans_energy_multibasis(x0)
+        cond_vec = torch.cat([x0_mb, u], dim=1)
+        sparsity_logits = self.sparsity_head(torch.cat([x_lat, cond_vec], dim=1))
+
+        output_hits, output_activations = super().forward(x, x0, u)
+        return output_hits, output_activations, sparsity_logits
+
+
 class FirstSubdecoderLayersGated(FirstSubdecoderLayers):
     """
     Inherits from FirstSubdecoderLayers but fixes the unconstrained 
