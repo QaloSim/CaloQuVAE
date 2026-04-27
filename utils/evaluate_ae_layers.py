@@ -82,7 +82,7 @@ def evaluate_sparsity(cfg, gt, recon, incident_energies):
     return fig_layer, fig_cond, metrics
 
 
-def evaluate_high_level_features(feature_extractor, geo_handler, gt, recon, incident_energies, device='cuda', batch_size=1024):
+def evaluate_high_level_features(feature_extractor, geo_handler, gt, recon, incident_energies, device='cuda', batch_size=1024, narrow_ranges=None):
     """Extracts HLFs in chunks to prevent VRAM OOM, calculates WD, and plots grid figures."""
     feature_extractor.to(device)
     feature_extractor.eval()
@@ -154,6 +154,85 @@ def evaluate_high_level_features(feature_extractor, geo_handler, gt, recon, inci
         "HLF/Grid_Mean_Phi": create_grid_figure(grids["mean_phi"], 'Mean Phi', ["Recon"], yscale='log'),
         "HLF/Grid_Width_Phi": create_grid_figure(grids["width_phi"], 'Width Phi', ["Recon"], yscale='log')
     }
+
+    # Narrow-range per-layer plots and additional WD metrics
+    if narrow_ranges:
+        narrow_figs, narrow_metrics = _evaluate_hlf_narrow(feats_gt, feats_recon, geo_handler, narrow_ranges)
+        figs.update(narrow_figs)
+        metrics.update(narrow_metrics)
+
+    return figs, metrics
+
+
+def _evaluate_hlf_narrow(feats_gt, feats_recon, geo_handler, narrow_ranges):
+    """
+    For each (feature, layer) pair in narrow_ranges, filters data to the specified x range,
+    computes WD on the filtered distributions, and produces individual per-layer histogram plots.
+
+    Metric names follow the format ws_HLF_layer_{layer_id}_{hlf_key}_narrow so they are
+    automatically picked up by the layer-weighted score aggregation in the engine.
+
+    Args:
+        feats_gt: dict of CPU tensors from DifferentiableFeatureExtractor, shape (N, L) per key.
+        feats_recon: same structure for reconstructed showers.
+        geo_handler: AtlasGeometry instance (used to map layer_id -> column index).
+        narrow_ranges: dict mapping feature key -> {layer_id: (xmin, xmax)}.
+                       Supported feature keys: "width_eta", "width_phi", "mean_eta", "mean_phi".
+    Returns:
+        figs: dict mapping wandb key -> matplotlib Figure
+        metrics: dict mapping metric name -> WD score
+    """
+    feat_key_to_hlf = {
+        "width_eta": "Eta_width",
+        "width_phi": "Phi_width",
+        "mean_eta":  "Eta_center",
+        "mean_phi":  "Phi_center",
+    }
+    layer_id_to_idx = {l: i for i, l in enumerate(geo_handler.relevant_layers)}
+
+    figs = {}
+    metrics = {}
+
+    for feat_key, layer_ranges in narrow_ranges.items():
+        hlf_key = feat_key_to_hlf.get(feat_key)
+        if hlf_key is None or hlf_key not in feats_gt:
+            continue
+
+        layers = sorted(layer_ranges.keys())
+        n_layers = len(layers)
+        if n_layers == 0:
+            continue
+
+        fig, axes = plt.subplots(1, n_layers, figsize=(5 * n_layers, 5), constrained_layout=True)
+        if n_layers == 1:
+            axes = [axes]
+
+        for ax, layer_id in zip(axes, layers):
+            if layer_id not in layer_id_to_idx:
+                ax.set_visible(False)
+                continue
+
+            l_idx = layer_id_to_idx[layer_id]
+            xmin, xmax = layer_ranges[layer_id]
+
+            data_gt = feats_gt[hlf_key][:, l_idx].numpy()
+            data_recon = feats_recon[hlf_key][:, l_idx].numpy()
+
+            # Keep only samples within the narrow range
+            data_gt_narrow = data_gt[(data_gt >= xmin) & (data_gt <= xmax)]
+            data_recon_narrow = data_recon[(data_recon >= xmin) & (data_recon <= xmax)]
+
+            metric_name = f"ws_HLF_layer_{layer_id}_{hlf_key}_narrow"
+            metric = calculate_wasserstein(data_gt_narrow, data_recon_narrow, name=metric_name, max_range=True)
+            metrics[metric_name] = metric.score
+
+            plot_hist_wrapper(ax, data_gt_narrow, data_recon_narrow,
+                              feat_key.replace("_", " ").title(), 'Density',
+                              f'Layer {layer_id} (narrow [{xmin:.3f}, {xmax:.3f}])',
+                              metric)
+
+        fig.suptitle(f"{feat_key.replace('_', ' ').title()} – Narrow Range", fontsize=13, fontweight='bold')
+        figs[f"HLF/{feat_key}_narrow"] = fig
 
     return figs, metrics
 
@@ -244,7 +323,7 @@ def plot_latent_node_activations(post_logits):
     fig.tight_layout()
     return fig
 
-def evaluate_layer_ae_distributions(cfg, gt, recon, incident_energies, post_logits, post_samples, feature_extractor, geo_handler, close_plots=True, device="cpu"):
+def evaluate_layer_ae_distributions(cfg, gt, recon, incident_energies, post_logits, post_samples, feature_extractor, geo_handler, close_plots=True, device="cpu", narrow_ranges=None):
     """Master orchestrator for Layer AE evaluation."""
     statistics = {}
     plots = {}
@@ -254,9 +333,9 @@ def evaluate_layer_ae_distributions(cfg, gt, recon, incident_energies, post_logi
     statistics.update(ws_sparsity)
     plots["sparsity_distributions"] = wandb.Image(fig_sparsity_layer)
     plots["sparsity_conditioned"] = wandb.Image(fig_sparsity_cond)
-    
+
     # High Level Features (WD + Grids)
-    fig_hlf_grids, ws_hlf = evaluate_high_level_features(feature_extractor, geo_handler, gt, recon, incident_energies, device=device)
+    fig_hlf_grids, ws_hlf = evaluate_high_level_features(feature_extractor, geo_handler, gt, recon, incident_energies, device=device, narrow_ranges=narrow_ranges)
     statistics.update(ws_hlf)
     for name, fig in fig_hlf_grids.items():
         if fig is not None:
