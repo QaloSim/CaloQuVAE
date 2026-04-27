@@ -1,0 +1,48 @@
+# D-Wave sampling configuration
+
+# RBM checkpoint to load
+rbm_checkpoint: "/home/leozhu/CaloQuVAE/wandb-outputs/run_2026-04-22_21-23-45_RBM_MPF/training_checkpoint_epoch_500.h5"
+
+# D-Wave solver
+solver_name: "Advantage_system4.1"
+
+# RBM graph dimensions for embedding
+n_vis: 161
+n_hid: 161
+
+# Beta estimation hyperparameters
+beta:
+  init: 1.215
+  lr: 0.01
+  num_epochs: 50
+  tolerance: 0.5
+  num_reads: 256
+  rbm_gibbs_steps: 5000
+  rbm_factor: 100
+
+# Sampling settings
+sampling:
+  orbit_seed: null           # null = auto-generate random seed each run
+  use_identity_orbit: false  # set true to force identity (default) permutation
+  logical_srt: true
+  hidden_side: "right"   # overridden at runtime by select_optimal_side_exact
+  output_dir: "/fast_scratch_1/caloqvae/dwave_samples_apr_24"
+
+# Uniform range run: draw energies uniformly in [min_energy, max_energy] MeV
+uniform_range:
+  enabled: False
+  min_energy: 1000    # MeV
+  max_energy: 300000  # MeV
+  num_samples: 50000   # number of conditioning vectors drawn
+
+# Dedicated single-energy runs
+dedicated:
+  enabled: True
+  num_samples: 25000    # QPU calls per dedicated energy run
+  energies:
+    # - 10000
+    # - 50000
+    - 100000
+    - 250000
+    - 2000
+    - 5000
