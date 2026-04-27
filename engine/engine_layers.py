@@ -6,6 +6,7 @@ import numpy as np
 import wandb
 import math
 import os
+import contextlib
 
 from engine.engine import Engine
 from CaloQuVAE import logging
@@ -24,6 +25,66 @@ class EngineLayers(Engine):
     def __init__(self, cfg, **kwargs):
         super().__init__(cfg, **kwargs)
         self.lr_scheduler = None
+        self._ema_state = None
+        self._ema_decay = float(getattr(cfg.engine, 'ema_decay', 0.0))
+
+    def _update_ema(self):
+        """Update (or lazily initialize) EMA shadow weights from the current model.
+
+        The config value `ema_decay` is interpreted as a *per-step* decay (e.g. 0.999).
+        Because _update_ema() is called once per epoch rather than once per step we
+        correct for the frequency mismatch:
+
+            d_epoch = d_step ^ steps_per_epoch
+
+        so that the effective per-step behaviour is preserved.  The approximation
+        treats end-of-epoch weights as representative of the intra-epoch trajectory,
+        which is standard practice.
+        """
+        if self._ema_decay <= 0.0:
+            return
+        actual_model = self.model.module if hasattr(self.model, 'module') else self.model
+        current_state = actual_model.state_dict()
+        if self._ema_state is None:
+            # First call: clone current weights as starting point
+            self._ema_state = {k: v.detach().clone().cpu() for k, v in current_state.items()}
+            steps_per_epoch = len(self.data_mgr.train_loader)
+            epoch_decay = self._ema_decay ** steps_per_epoch
+            logger.info(
+                f"EMA shadow weights initialized "
+                f"(per-step decay={self._ema_decay}, steps/epoch={steps_per_epoch}, "
+                f"effective per-epoch decay={epoch_decay:.6f})"
+            )
+            return
+        steps_per_epoch = len(self.data_mgr.train_loader)
+        epoch_decay = self._ema_decay ** steps_per_epoch
+        with torch.no_grad():
+            for k, shadow in self._ema_state.items():
+                current = current_state[k].detach().cpu()
+                if shadow.is_floating_point():
+                    shadow.mul_(epoch_decay).add_(current, alpha=1.0 - epoch_decay)
+                else:
+                    shadow.copy_(current)
+
+    @contextlib.contextmanager
+    def _ema_context(self):
+        """Context manager: temporarily replace model weights with EMA shadow weights."""
+        if self._ema_state is None or self._ema_decay <= 0.0:
+            yield
+            return
+        actual_model = self.model.module if hasattr(self.model, 'module') else self.model
+        backup = {k: v.clone() for k, v in actual_model.state_dict().items()}
+        ema_on_device = {k: v.to(self.device) for k, v in self._ema_state.items()}
+        actual_model.load_state_dict(ema_on_device)
+        try:
+            yield
+        finally:
+            actual_model.load_state_dict(backup)
+
+    def _save_model(self, name="blank", override_path=None):
+        """Save model, using EMA weights if available."""
+        with self._ema_context():
+            return super()._save_model(name=name, override_path=override_path)
 
     def fit_ae(self, epoch):
         log_batch_idx = max(len(self.data_mgr.train_loader)//self._config.engine.n_batches_log_train, 1)
@@ -45,7 +106,7 @@ class EngineLayers(Engine):
                 loss_dict = self.model.module.loss(x, output[2], output[3], post_logits=torch.cat(output[0], dim=1))
             else:
                 loss_dict = self.model.loss(x, output[2], output[3], post_logits=torch.cat(output[0], dim=1))
-            total_loss = torch.stack([loss_dict[key] * self._config.model.loss_coeff[key]  for key in loss_dict.keys() if "loss" != key]).sum()
+            total_loss = torch.stack([loss_dict[key] * self._config.model.loss_coeff[key]  for key in loss_dict.keys() if "loss" != key and key in self._config.model.loss_coeff]).sum()
             loss_dict["loss"] = total_loss
             # Check for NaNs locally
             is_nan = torch.tensor(1 if torch.isnan(total_loss) else 0, device=self.device)
@@ -81,10 +142,11 @@ class EngineLayers(Engine):
             self.lr_scheduler.step()
 
     def evaluate_ae(self, data_loader, epoch):
+        self._update_ema()
         log_batch_idx = max(len(data_loader)//self._config.engine.n_batches_log_val, 1)
         self.model.eval()
         self.total_loss_dict = {}
-        with torch.no_grad():
+        with self._ema_context(), torch.no_grad():
             bs = [data_loader.batch_size for _ in range(len(data_loader))]
             ar_size = len(data_loader.dataset)
             ar_input_size = self._config.data.z * self._config.data.r * self._config.data.phi
@@ -135,6 +197,12 @@ class EngineLayers(Engine):
         if self._config.wandb.mode == "disabled":
             return 0.0
 
+        # Narrow x-axis ranges for zoomed-in width plots on layers 1 and 2
+        narrow_ranges = {
+            "width_eta": {1: (0.0, 40.0), 2: (0.0, 40.0)},
+            "width_phi": {1: (0.0, 40.0), 2: (0.0, 40.0)},
+        }
+
         # Generate core analytical plots and WS metrics
         metrics, plots = evaluate_layer_ae_distributions(
             cfg=self._config,
@@ -146,7 +214,8 @@ class EngineLayers(Engine):
             feature_extractor=self.feature_extractor,
             geo_handler=self.geo_handler,
             close_plots=close_plots,
-            device=self.device
+            device=self.device,
+            narrow_ranges=narrow_ranges,
         )
 
         # Generate Calo visualisations
@@ -176,7 +245,7 @@ class EngineLayers(Engine):
             safe_wandb_log = {k: (v.item() if isinstance(v, torch.Tensor) else v) for k, v in wandb_log.items()}
             wandb.log(safe_wandb_log)
 
-        raw_weights = getattr(self._config.model, "layer_weights", None)
+        raw_weights = getattr(self._config.model, "feature_layer_weights", None) or getattr(self._config.model, "layer_weights", None)
         num_layers = self._config.data.z
         if raw_weights:
             w = np.array(raw_weights, dtype=np.float64)
@@ -211,10 +280,10 @@ class EngineLayers(Engine):
             self.best_config_path = self._save_model(name="best" + (f"_epoch{epoch}" if epoch is not None else ""))
             logger.info("New Best Val loss plus normalized WD: {:.4f}".format(self.best_val_loss))
             
-        # Check if within 1% of the best score (but not better)
-        elif current_score <= self.best_val_loss * 1.01:
+        # Check if within 10% of the best score (but not better)
+        elif current_score <= self.best_val_loss * 1.1:
             self._save_model(name="best" + (f"_epoch{epoch}" if epoch is not None else ""))
-            logger.info("Near-best model saved (within 1%): {:.4f}".format(current_score))
+            logger.info("Near-best model saved (within 10%): {:.4f}".format(current_score))
 
 
     def _reduceBCE(self, x):
@@ -313,7 +382,7 @@ class EngineLayers(Engine):
         rbm_samples = [rbm_samples[:, :cond_size], rbm_samples[:, cond_size:cond_size+p_size], rbm_samples[:, cond_size+p_size:cond_size+2*p_size], rbm_samples[:, cond_size+2*p_size:cond_size+3*p_size]]
 
         ar_input_size = self._config.data.z * self._config.data.r * self._config.data.phi
-        decoded_showers = torch.zeros((n_samples, ar_input_size), dtype=torch.float32, device="cpu")
+        decoded_showers = torch.zeros((n_samples, ar_input_size), dtype=torch.float32, device=self.device)
 
         with torch.no_grad():
             for i in range(0, n_samples, batch_size):
@@ -324,8 +393,8 @@ class EngineLayers(Engine):
 
                 outputs = self.model.decode(rbm_batch, torch.zeros(x0_batch.shape[0], 1).to(self.device), x0_batch, u_batch)
                 decoded_shower_batch = self._reduceBCEinv(outputs[1], E_batch)
-                decoded_showers[i : i + batch_size] = decoded_shower_batch.cpu()
-        return decoded_showers
+                decoded_showers[i : i + batch_size] = decoded_shower_batch
+        return decoded_showers.cpu()
 
             
             
