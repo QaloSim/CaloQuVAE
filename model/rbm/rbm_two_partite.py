@@ -21,6 +21,11 @@ class RBM_TwoPartite:
         self.init_mask()
         self.init_parameters(data, self.num_visible, self.num_hidden, self.device)
         self.init_chains(self.config.rbm.num_chains, self.num_visible, self.num_hidden, self.device)
+
+        self.use_fpmpf = bool(getattr(self.config.rbm, "use_fpmpf", False))
+        self.params_prev = None
+        if self.use_fpmpf:
+            logger.info("FPMPF gradient enabled: per-sample exp(½ΔF) reweighting with J_D·J_S scaling.")
     
     def init_mask(self):
         mask_path = getattr(self.config.rbm, "mask_path", None)
@@ -125,6 +130,36 @@ class RBM_TwoPartite:
         self.dataset_chains_h = torch.bernoulli(mh)
 
     
+    def _free_energy_with_params(
+        self, v: torch.Tensor, params: Dict[str, torch.Tensor]
+    ) -> torch.Tensor:
+        """Free energy F(v; params) under the supplied parameter dict."""
+        field = v @ params["vbias"]
+        exponent = params["hbias"] + v @ params["weight_matrix"]
+        log_term = torch.where(
+            exponent < 10,
+            torch.log1p(torch.exp(torch.clamp(exponent, max=10))),
+            exponent,
+        )
+        return -field - log_term.sum(1)
+
+    def _fpmpf_reweight(
+        self, v_data: torch.Tensor, v_gen: torch.Tensor
+    ):
+        """Compute FPMPF per-sample weights w_D, w_S and scalars J_D, J_S."""
+        if self.params_prev is None:
+            self.params_prev = {k: p.clone() for k, p in self.params.items()}
+        with torch.no_grad():
+            F_new_d = self._free_energy_with_params(v_data, self.params)
+            F_old_d = self._free_energy_with_params(v_data, self.params_prev)
+            F_new_g = self._free_energy_with_params(v_gen, self.params)
+            F_old_g = self._free_energy_with_params(v_gen, self.params_prev)
+            w_D = torch.exp(torch.clamp(0.5 * (F_new_d - F_old_d), min=-20.0, max=20.0))
+            w_S = torch.exp(torch.clamp(0.5 * (F_old_g - F_new_g), min=-20.0, max=20.0))
+            J_D = w_D.mean()
+            J_S = w_S.mean()
+        return w_D, w_S, J_D, J_S
+
     def compute_gradient(
         self,
         data: Dict[str, torch.Tensor],
@@ -135,20 +170,38 @@ class RBM_TwoPartite:
         num_chains = len(v)
 
         data_new = data["v"].clone()
-        
+
+        weights = data["weights"]
+
+        fpmpf_scale = None
+        gen_weights = None
+        if self.use_fpmpf:
+            w_D, w_S, J_D, J_S = self._fpmpf_reweight(data["v"], v)
+            weights = weights * w_D
+            gen_weights = w_S
+            fpmpf_scale = J_S * J_D
+
         # Reshape weights for broadcasting: (B,) -> (B, 1)
-        weights = data["weights"].view(-1, 1)
-        
+        weights_col = weights.view(-1, 1)
+        weight_sum = weights.sum()
+
         # Averages over data and generated samples
-        v_data_mean = (data_new * weights).sum(0) / data["weights"].sum()
+        v_data_mean = (data_new * weights_col).sum(0) / weight_sum
         torch.clamp_(v_data_mean, min=1e-4, max=(1. - 1e-4))
-        h_data_mean = (data["mh"] * weights).sum(0) / data["weights"].sum()
-        v_gen_mean = v.mean(0)
+        h_data_mean = (data["mh"] * weights_col).sum(0) / weight_sum
+
+        if gen_weights is not None:
+            gw_col = gen_weights.view(-1, 1)
+            gw_sum = gen_weights.sum()
+            v_gen_mean = (v * gw_col).sum(0) / gw_sum
+            h_gen_mean = (h * gw_col).sum(0) / gw_sum
+        else:
+            v_gen_mean = v.mean(0)
+            h_gen_mean = h.mean(0)
         torch.clamp_(v_gen_mean, min=1e-4, max=(1. - 1e-4))
-        h_gen_mean = h.mean(0)
-        
+
         grad = {}
-        
+
         if centered:
             # Centered variables
             v_data_centered = data_new - v_data_mean
@@ -156,32 +209,43 @@ class RBM_TwoPartite:
             v_gen_centered = v - v_data_mean
             h_gen_centered = h - h_data_mean
 
-            # Gradient
+            if gen_weights is not None:
+                neg_W = (v_gen_centered * gw_col).T @ h_gen_centered / gw_sum
+            else:
+                neg_W = v_gen_centered.T @ h_gen_centered / num_chains
+
             grad["weight_matrix"] = (
-                (v_data_centered * weights).T @ h_data_centered
-            ) / data["weights"].sum() - (
-                v_gen_centered.T @ h_gen_centered
-            ) / num_chains
-            
+                (v_data_centered * weights_col).T @ h_data_centered
+            ) / weight_sum - neg_W
+
             grad["vbias"] = (
                 v_data_mean - v_gen_mean - (grad["weight_matrix"] @ h_data_mean)
             )
             grad["hbias"] = (
                 h_data_mean - h_gen_mean - (v_data_mean @ grad["weight_matrix"])
             )
-            
+
         else:
-            # Gradient
+            if gen_weights is not None:
+                neg_W = (v * gw_col).T @ h / gw_sum
+            else:
+                neg_W = (v.T @ h) / num_chains
+
             grad["weight_matrix"] = (
-                (data["v"] * weights).T @ data["mh"]
-            ) / data["weights"].sum() - (v.T @ h) / num_chains
-            
+                (data["v"] * weights_col).T @ data["mh"]
+            ) / weight_sum - neg_W
+
             grad["vbias"] = v_data_mean - v_gen_mean
             grad["hbias"] = h_data_mean - h_gen_mean
-        
+
+        if fpmpf_scale is not None:
+            grad["weight_matrix"] = grad["weight_matrix"] * fpmpf_scale
+            grad["vbias"] = grad["vbias"] * fpmpf_scale
+            grad["hbias"] = grad["hbias"] * fpmpf_scale
+
         if self.weight_mask is not None:
             grad["weight_matrix"] *= self.weight_mask
-        
+
         return grad
     def sample_hidden(self,beta:float = 1.0) -> None:
         """Samples the hidden units given the visible units.
@@ -281,6 +345,12 @@ class RBM_TwoPartite:
 
         lr = self.config.rbm.lr
         gamma = self.config.rbm.gamma
+
+        if self.use_fpmpf:
+            # Snapshot θ_n as params_prev so that the next batch's FPMPF weights
+            # use exp(½(F_{θ_{n+1}} − F_{θ_n})). Must happen before the update.
+            self.params_prev = {k: p.clone() for k, p in self.params.items()}
+
         # Update the parameters
         self.params["vbias"] += lr * grad["vbias"]
         self.params["hbias"] += lr * grad["hbias"]
