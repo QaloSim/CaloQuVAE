@@ -23,7 +23,7 @@ from model.dummymodel import MLP
 from model.autoencoder.autoencoderbase import AutoEncoderBase, AutoEncoderHidden
 from model.autoencoder.ae_separate import AutoEncoderSeparate, AutoEncoderSeparateHidden
 from model.transfusion.transfusion_model import TransfusionModel
-from model.autoencoder.ae_layers import AutoencoderLayers, AutoencoderLayersBCE, AutoencoderLayersNoHits
+from model.autoencoder.ae_layers import AutoencoderLayers, AutoencoderLayersBCE, AutoencoderLayersNoHits, AutoencoderLayersSparsity
 
 _MODEL_DICT={
     "mlp": MLP,
@@ -34,7 +34,8 @@ _MODEL_DICT={
     "transfusion": TransfusionModel,
     "ae_layers": AutoencoderLayers,
     "ae_layers_bce": AutoencoderLayersBCE,
-    "ae_layers_no_hits": AutoencoderLayersNoHits
+    "ae_layers_no_hits": AutoencoderLayersNoHits,
+    "ae_layers_sparsity": AutoencoderLayersSparsity,
 }
 
 class ModelCreator():

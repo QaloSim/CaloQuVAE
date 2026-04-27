@@ -7,8 +7,9 @@ import torch.nn as nn
 import torch.nn.functional as F
 from model.autoencoder.ae_separate import AutoEncoderSeparate
 from model.encoder.encoderhierarchybase import HierarchicalEncoderLayers
-from model.decoder.decoder_layers import DecoderLayers, DecoderLayersNoHits, DecoderLayersGated
+from model.decoder.decoder_layers import DecoderLayers, DecoderLayersNoHits, DecoderLayersGated, DecoderLayersSparsity
 
+from model.gumbel import GumbelMod, GumbelNoNoise
 from CaloQuVAE import logging
 logger = logging.getLogger(__name__)
 
@@ -35,6 +36,8 @@ class AutoencoderLayers(AutoEncoderSeparate):
             return DecoderLayersNoHits(self._config)
         elif self._config.model.decoder == "decoderlayersgated":
             return DecoderLayersGated(self._config)
+        elif self._config.model.decoder == "decoderlayerssparsity":
+            return DecoderLayersSparsity(self._config)
         else:
             raise ValueError(f"Unknown decoder type: {self._config.model.decoder}")
 
@@ -116,57 +119,72 @@ def deterministic_sigmoid_ste(logits, beta=1.0, training=True):
     return hard_mask.detach() - soft_mask.detach() + soft_mask
 
 
+def _add_feature_loss_breakdown(loss_dict, breakdown):
+    """
+    Adds per-(feature, layer) percentage contributions to loss_dict as plain floats.
+    Keys follow the pattern  fl/<feat_key>/l<idx>  (e.g. fl/Eta_center/l0).
+    The denominator is the sum of all unweighted per-layer losses, so the
+    percentages reflect natural magnitudes rather than the weighted aggregation.
+    """
+    all_vals = torch.stack(list(breakdown.values()))  # (n_features, n_layers)
+    total = all_vals.sum().item() + 1e-8
+    for feat_key, per_layer in breakdown.items():
+        for l_idx, val in enumerate(per_layer):
+            loss_dict[f"fl/{feat_key}/l{l_idx}"] = val.item() / total * 100.0
+
+
 class AutoencoderLayersBCE(AutoencoderLayers):
     """
-    Two-head AE: hits head trained with focal BCE, activation head trained with
-    teacher-forced BCE-with-logits. Physics feature loss uses an STE hit mask
-    multiplied by the activation fracs.
+    Two-head AE: hits head trained with focal BCE, activation head and physics loss
+    trained on the combined hits * activation-fracs shower.  The hit mask uses the
+    Gumbel trick annealed with the same beta as the encoder latent space — smooth
+    sigmoid during training, hard Heaviside at inference.  No teacher forcing.
     """
-    def _hit_smoothing(self, output_hits, beta=1.0):
-        return deterministic_sigmoid_ste(output_hits, beta=beta, training=self.training)
+    def __init__(self, cfg):
+        super().__init__(cfg)
+        self.hit_gumbel = GumbelNoNoise()
 
-    def decode(self, post_samples, x, x0, u, act_fct_slope=0.02, beta_hits=3.0):
+    def decode(self, post_samples, x, x0, u, act_fct_slope=0.02, beta=3.0):
         """
-        Decodes through self.decoder. Activation fracs are computed via sigmoid normalization per layer, masked by teacher-forced hits during training or
-        STE hit predictions during inference.
+        Decodes through self.decoder.  The hit mask is produced by GumbelMod so it
+        is a smooth sigmoid during training and a hard binary sample at inference —
+        no teacher forcing, no separate training/inference branch.
 
-        Stashes beta_hits for use in loss() feature_loss path.
+        Returns output_hits (raw logits) and output_shower (Gumbel_mask × fracs).
         """
-        self._beta_hits = beta_hits
+        self._beta = beta
         output_hits, output_logits = self.decoder(torch.cat(post_samples, dim=1), x0, u)
 
         B = x.shape[0]
         z = self._config.data.z
         logits_3d = output_logits.view(B, z, -1)
 
-        if self.training:
-            # Teacher forcing: mask using true hit positions
-            mask_3d = (x > 0).view(B, z, -1).float()
-        else:
-            # Inference: hard STE mask from hits head predictions
-            mask_3d = self._hit_smoothing(output_hits, beta=beta_hits).view(B, z, -1)
+        # Gumbel hit mask: smooth (sigmoid) during training, hard (Heaviside) at inference
+        gumbel_mask = self.hit_gumbel(output_hits, beta=beta)   # (B, n_voxels)
+        gumbel_mask_3d = gumbel_mask.view(B, z, -1)
 
-        # Sigmoid-normalize per layer, zeroing non-hit positions
-        sigs_3d = torch.sigmoid(logits_3d) * mask_3d
+        # Per-layer sigmoid normalization gated by the Gumbel hit mask
+        sigs_3d = torch.sigmoid(logits_3d) * gumbel_mask_3d
         fracs_3d = sigs_3d / (sigs_3d.sum(dim=-1, keepdim=True) + 1e-8)
-        output_activations_frac = fracs_3d.view(B, -1)
+        output_shower = fracs_3d.view(B, -1)   # hits × activation fracs
 
-        return output_hits, output_activations_frac
+        return output_hits, output_shower
 
     def forward(self, inputs, beta_latent=1.0, beta_hits=1.0, act_fct_slope=0.02):
         """
-        Forward pass through the model
+        Forward pass through the model.
+        beta_latent is shared by the encoder latent space and the hits Gumbel mask.
+        beta_hits is kept for API compatibility but unused.
         Args:
             inputs: tuple of (x, x0, u)
                 x: shower voxels, shape (b, n_voxels)
                 x0: incident energy, shape (b, 1)
                 u: Layer energies, shape (b, n_l)
-            beta_latent: beta for gumbel mod in encoder
-            beta_hits: beta for STE hit mask (inverse temperature)
+            beta_latent: annealing beta for encoder Gumbel and hits Gumbel mask
         """
         x, x0, u = inputs
         post_logits, post_samples = self.encoder(x, x0, u, beta_smoothing_fct=beta_latent)
-        output_hits, output_activations = self.decode(post_samples, x, x0, u, act_fct_slope, beta_hits)
+        output_hits, output_activations = self.decode(post_samples, x, x0, u, act_fct_slope, beta_latent)
         return post_logits, post_samples, output_hits, output_activations
 
     def mutual_information_penalty(self, post_logits, eps=1e-8):
@@ -219,73 +237,89 @@ class AutoencoderLayersBCE(AutoencoderLayers):
             geom_loss_total += loss_components.mean()    
         return geom_loss_total
 
-    def _get_normalized_layer_weights(self, device: torch.device) -> torch.Tensor:
+    def _get_normalized_layer_weights(self, device: torch.device, attr: str = "layer_weights") -> torch.Tensor:
         """
         Fetches layer weights from the config and normalizes them to sum to 1.
         """
-        weights = getattr(self._config.model, "layer_weights", None)
+        weights = getattr(self._config.model, attr, None)
         if not weights:
             return torch.ones(self._config.data.z, device=device) / self._config.data.z  # Default to equal weights if not specified
-        
+
         w = torch.tensor(weights, dtype=torch.float32, device=device)
         return w / torch.sum(w)
     
-    def compute_physics_loss(self, x, physics_recon, layer_weights=None, delta=1.0):
+    def compute_physics_loss(self, x, physics_recon, layer_weights=None):
         """
         layer_weights: Tensor of shape (Layers,) normalized to sum to 1.
-        delta: Huber loss threshold. Errors < delta are squared (MSE), > delta are linear (L1).
+
+        Returns (physics_loss, breakdown) where breakdown is a dict mapping
+        feature key -> per-layer mean loss tensor of shape (n_layers,), computed
+        *before* layer weighting so the proportions reflect natural magnitudes.
         """
+        delta = getattr(self._config.model.loss_coeff, "feature_huber_delta", 1.0)
         alpha = getattr(self._config.model, "asym_alpha", 2.0)
         asym_centre_only = getattr(self._config.model, "asym_centre_only", 0)
         feat_gt = self.feature_extractor(x)
         feat_recon = self.feature_extractor(physics_recon)
 
-        
         physics_loss = torch.tensor(0.0, device=x.device)
-        
+        breakdown = {}  # feat_key -> (n_layers,) unweighted per-layer mean loss
+
+        # Pre-define quantiles for IQR (25th and 75th percentiles)
+        q = torch.tensor([0.25, 0.75], dtype=torch.float32, device=x.device)
+
         for key in feat_gt.keys():
             if "E_" in key:
                 continue
-                
-            # Shape: (Batch, Layers)
+
             val_gt = feat_gt[key].view(x.size(0), -1)
             val_recon = feat_recon[key].view(x.size(0), -1)
-            
-            # Calculate base error in linear space
-            # Huber loss protects against high-variance outliers (e.g. low E_inc noise)
-            base_loss = F.huber_loss(val_recon, val_gt, reduction='none', delta=delta)
-            
-            # Apply Asymmetry Penalty in linear space
+
+            # Calculate Q1 and Q3 across the batch (dim=0)
+            quantiles = torch.quantile(val_gt, q, dim=0)
+            iqr = quantiles[1] - quantiles[0]
+
+            # Detach and clamp to prevent zero-division if a feature is completely static in a batch
+            layer_spread = torch.clamp(iqr.detach(), min=1e-5)
+
+            # Scale features by the IQR before calculating loss
+            val_gt_scaled = val_gt / layer_spread
+            val_recon_scaled = val_recon / layer_spread
+
+            # Calculate base error on the scaled (relative) features
+            base_loss = F.huber_loss(val_recon_scaled, val_gt_scaled, reduction='none', delta=delta)
+
+            # Apply per-feature scalar weight (e.g. upweight widths/centres)
+            feature_weights = getattr(self._config.model, "feature_weights", {})
+            feat_scalar = next((w for pat, w in feature_weights.items() if pat in key), 1.0)
+            base_loss = base_loss * feat_scalar
+
+            # Apply Asymmetry Penalty
             apply_asym = alpha != 1.0 and (not asym_centre_only or "center" in key)
             if apply_asym:
-                underpredict_mask = (torch.abs(val_recon) < torch.abs(val_gt)).float()
+                underpredict_mask = (torch.abs(val_recon_scaled) < torch.abs(val_gt_scaled)).float()
                 weights = 1.0 + (alpha - 1.0) * underpredict_mask
                 base_loss = base_loss * weights
-            
-            # Shape: (1, Layers) - Detached so it doesn't affect gradients
-            # We scale by the mean absolute value of the layer to normalize gradient magnitudes
-            layer_scale = torch.clamp(torch.mean(torch.abs(val_gt), dim=0, keepdim=True).detach(), min=1e-5)
-            
-            # Normalize the loss per layer
-            scaled_loss = base_loss / layer_scale
-            
-            # 4. Aggregate
+
+            # Aggregate and track weighted per-layer mean for breakdown
             if layer_weights is not None:
                 lw = layer_weights.view(1, -1)
-                layer_weighted_loss = torch.sum(scaled_loss * lw, dim=1)
+                weighted_loss = base_loss * lw  # (batch, n_layers)
+                layer_weighted_loss = torch.sum(weighted_loss, dim=1)
                 physics_loss += layer_weighted_loss.mean()
+                breakdown[key] = weighted_loss.mean(dim=0).detach()
             else:
-                physics_loss += scaled_loss.mean()
-            
-        return physics_loss
+                physics_loss += base_loss.mean()
+                breakdown[key] = base_loss.mean(dim=0).detach()
 
+        return physics_loss, breakdown
 
 
     def loss(self, x, output_hits, output_activations, post_logits=None):
         """
-        Computes focal BCE for the hits head and teacher-forced BCE-with-logits for
-        the activation head. Physics feature loss uses an STE hit mask applied to
-        output_activations.
+        Computes focal BCE for the hits head and CE on the combined hits × activation
+        fracs shower (output_activations) for the activation head.  Physics feature
+        loss is applied directly to output_activations (already hits × fracs).
 
         x is expected to be layer fractions (output of engine._reduceBCE).
         """
@@ -305,8 +339,7 @@ class AutoencoderLayersBCE(AutoencoderLayers):
         focal_loss = focal_loss.view(x.size(0), num_layers, -1) * layer_weights
         hit_loss = torch.mean(torch.sum(focal_loss, dim=(1, 2)), dim=0)
 
-        # Activation Head Loss (BCE on fracs)
-        # decode() already zeroes non-hit fracs via teacher-forcing, so no mask needed here.
+        # Activation Head Loss: CE on the combined hits × fracs shower
         p = output_activations.clamp(1e-7, 1 - 1e-7)
         bce_act = -x * torch.log(p) - (1 - x) * torch.log(1 - p)
         bce_act = bce_act.view(x.size(0), num_layers, -1) * layer_weights
@@ -328,12 +361,13 @@ class AutoencoderLayersBCE(AutoencoderLayers):
 
         feature_loss_weight = getattr(self._config.model.loss_coeff, "feature_loss", 0.0)
         if feature_loss_weight > 0.0:
-            # STE mask provides differentiable binary gating: hard forward, soft backward
-            beta = getattr(self, '_beta_hits', 1.0)
-            ste_mask = self._hit_smoothing(output_hits, beta=beta)
-            physics_recon = ste_mask * output_activations
-            feature_loss_val = self.compute_physics_loss(x, physics_recon, layer_weights=raw_layer_weights)
+            # output_activations is already hits × fracs from decode()
+            feature_layer_weights = self._get_normalized_layer_weights(
+                x.device, attr="feature_layer_weights"
+            )
+            feature_loss_val, feat_breakdown = self.compute_physics_loss(x, output_activations, layer_weights=feature_layer_weights)
             loss_dict["feature_loss"] = feature_loss_val
+            _add_feature_loss_breakdown(loss_dict, feat_breakdown)
 
         return loss_dict
 
@@ -393,12 +427,134 @@ class AutoencoderLayersNoHits(AutoencoderLayersBCE):
         feature_loss_weight = getattr(self._config.model.loss_coeff, "feature_loss", 0.0)
         if feature_loss_weight > 0.0:
             physics_recon = torch.sigmoid(output_logits)
-            
-            # Pass the 1D raw weights to the physics loss
-            feature_loss_val = self.compute_physics_loss(
-                x, 
-                physics_recon, 
-                layer_weights=raw_layer_weights
+
+            feature_layer_weights = self._get_normalized_layer_weights(
+                x.device, attr="feature_layer_weights"
+            )
+            feature_loss_val, feat_breakdown = self.compute_physics_loss(
+                x,
+                physics_recon,
+                layer_weights=feature_layer_weights
             )
             loss_dict["feature_loss"] = feature_loss_val
+            _add_feature_loss_breakdown(loss_dict, feat_breakdown)
+        return loss_dict
+
+
+class AutoencoderLayersSparsity(AutoencoderLayersNoHits):
+    """
+    No hits head; sparsity is enforced by a per-layer top-k mask whose cutoff
+    comes from a small sparsity head on the decoder.
+
+    Training: mask uses the *true* per-layer active count from x (teacher forced).
+    Inference: mask uses the predicted sparsity from the sparsity head.
+
+    Activation head is supervised by CE on the post-mask normalized fractions;
+    sparsity head is supervised independently by BCE against the true per-layer
+    active fraction. Feature loss is computed on the post-mask shower so it sees
+    the realistic sparsity pattern at training time.
+
+    Decoder forward returns (hits_placeholder, output_logits, sparsity_logits);
+    we stash sparsity_logits on self so the engine's existing 4-tuple unpacking
+    and (x, output[2], output[3], post_logits=...) loss signature still apply.
+    """
+    def __init__(self, cfg):
+        super().__init__(cfg)
+        self._last_sparsity_logits = None
+
+    def _topk_mask(self, logits_3d, k_per_layer):
+        """
+        Per-(batch, layer) top-k mask. Forward is hard binary; backward uses a
+        sigmoid relaxation so masked-out voxels still receive gradient.
+
+        logits_3d: (B, z, V)
+        k_per_layer: (B, z) integer counts in [0, V]
+        """
+        B, z, V = logits_3d.shape
+        sorted_logits, _ = logits_3d.sort(dim=-1, descending=True)
+        # k=0 is handled by the zero_layer multiplier below; clamp here just to
+        # keep the gather index valid.
+        k_safe = k_per_layer.clamp(min=1, max=V).long()
+        idx = (k_safe - 1).unsqueeze(-1)
+        threshold = sorted_logits.gather(-1, idx).detach()  # sort is non-diff
+
+        hard_mask = (logits_3d >= threshold).float()
+        zero_layer = (k_per_layer == 0).unsqueeze(-1).float()
+        hard_mask = hard_mask * (1.0 - zero_layer)
+
+        if not getattr(self._config.model, "topk_use_ste", True):
+            return hard_mask
+
+        beta = float(getattr(self._config.model, "topk_ste_beta", 1.0))
+        soft_mask = torch.sigmoid((logits_3d - threshold) * beta) * (1.0 - zero_layer)
+        return hard_mask.detach() - soft_mask.detach() + soft_mask
+
+    def decode(self, post_samples, x, x0, u, act_fct_slope=0.02, beta_hits=3.0):
+        _, output_logits, sparsity_logits = self.decoder(torch.cat(post_samples, dim=1), x0, u)
+        self._last_sparsity_logits = sparsity_logits
+
+        B = output_logits.shape[0]
+        z = self._config.data.z
+        V = self._config.data.r * self._config.data.phi
+
+        logits_3d = output_logits.view(B, z, V)
+
+        if self.training:
+            # Teacher force the cutoff with the true per-layer active count.
+            target_active_3d = (x.view(B, z, V) > 0).float()
+            k_per_layer = target_active_3d.sum(dim=-1).round().long()
+        else:
+            sparsity_frac = torch.sigmoid(sparsity_logits)  # (B, z)
+            k_per_layer = (sparsity_frac * V).round().long()
+        k_per_layer = k_per_layer.clamp(min=0, max=V)
+
+        mask_3d = self._topk_mask(logits_3d, k_per_layer)
+
+        sigs_3d = torch.sigmoid(logits_3d) * mask_3d
+        fracs_3d = sigs_3d / (sigs_3d.sum(dim=-1, keepdim=True) + 1e-8)
+        output_activations = fracs_3d.view(B, -1)
+
+        return output_logits, output_activations
+
+    def loss(self, x, output_logits, output_activations, post_logits=None):
+        num_layers = self._config.data.z
+        B = x.shape[0]
+        
+        raw_layer_weights = self._get_normalized_layer_weights(x.device)
+        layer_weights = raw_layer_weights.view(1, num_layers, 1)
+
+        bce = F.binary_cross_entropy_with_logits(output_logits, x, reduction='none')
+        bce = bce.view(B, num_layers, -1)
+        bce = bce * layer_weights
+        ae_loss = torch.mean(torch.sum(bce, dim=(1, 2)), dim=0)
+
+        # BCE against true per-layer active fraction in [0, 1]
+        sparsity_logits = self._last_sparsity_logits
+        target_sparsity = (x.view(B, num_layers, -1) > 0).float().mean(dim=-1)
+        sparsity_loss = F.binary_cross_entropy_with_logits(
+            sparsity_logits, target_sparsity, reduction='mean'
+        )
+
+        loss_dict = {
+            "ae_loss": ae_loss,
+            "sparsity_loss": sparsity_loss,
+        }
+
+        latent_mi_coeff = getattr(self._config.model.loss_coeff, "latent_mi_loss", 0.0)
+        if post_logits is not None and latent_mi_coeff > 0:
+            loss_dict["latent_mi_loss"] = self.mutual_information_penalty(post_logits)
+
+        feature_loss_weight = getattr(self._config.model.loss_coeff, "feature_loss", 0.0)
+        if feature_loss_weight > 0.0:
+            # output_activations is the hard-masked, energy-conserving tensor from decode().
+            # Because ae_loss stabilizes the logit sorting, the hard mask selects the correct voxels here.
+            feature_layer_weights = self._get_normalized_layer_weights(
+                x.device, attr="feature_layer_weights"
+            )
+            feature_loss_val, feat_breakdown = self.compute_physics_loss(
+                x, output_activations, layer_weights=feature_layer_weights
+            )
+            loss_dict["feature_loss"] = feature_loss_val
+            _add_feature_loss_breakdown(loss_dict, feat_breakdown)
+
         return loss_dict
