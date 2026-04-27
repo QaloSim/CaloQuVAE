@@ -251,7 +251,8 @@ class Engine():
             for key in loss_dict.keys():
                 if key not in self.total_loss_dict:
                     self.total_loss_dict[key] = 0.0
-                self.total_loss_dict[key] += loss_dict[key].item()
+                v = loss_dict[key]
+                self.total_loss_dict[key] += v.item() if isinstance(v, torch.Tensor) else v
         else:
             for key in self.total_loss_dict.keys():
                 self.total_loss_dict[key] /= len(data_loader)
