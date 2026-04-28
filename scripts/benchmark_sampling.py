@@ -39,6 +39,7 @@ from utils.dwave.physics import get_cond_vec
 from utils.dwave.workflows import sample_expanded_flux_arbitrary
 from utils.dwave.graphs import get_orbit_mappings
 from data.layers import reduce as energy_reduce
+from model.rbm.rbm_two_partite import RBM_TwoPartite
 
 
 # ── ConvTranspose3d → Linear patch ─────────────────────────────────────────────
@@ -434,6 +435,53 @@ def _default_serial(obj):
     return str(obj)
 
 
+# ── Synthetic setup (no checkpoint files required for AE weights) ──────────────
+
+def _setup_synthetic(args):
+    """
+    Build AE engine + RBM with correct architecture but random (untrained) weights.
+
+    Requires:
+      --ae-config-path  the small YAML saved alongside the AE checkpoint
+                        (e.g. ae_layers_no_hits_best_ema_epoch33_config.yaml).
+                        Copy this file from your training cluster; it is plain text, ~10 KB.
+      --rbm-checkpoint  optional; if omitted, RBM also uses random weights.
+
+    AE weight .pt files are NOT needed — timing is determined by architecture, not values.
+    """
+    from scripts.run import setup_model as setup_model_ae
+
+    print(f"\nSynthetic mode: loading AE architecture from {args.ae_config_path}")
+    ae_config = OmegaConf.load(args.ae_config_path)
+    ae_config.gpu_list = [0]
+    ae_config.load_state = False
+    ae_engine = setup_model_ae(ae_config)
+    print("  AE model instantiated with random weights (no .pt loaded).")
+
+    dummy_data = torch.zeros(1, ae_config.rbm.latent_nodes_per_p)
+    rbm = RBM_TwoPartite(ae_config, data=dummy_data)
+    rbm_ckpt = args.rbm_checkpoint or getattr(
+        OmegaConf.load(os.path.join(project_root, "config/dwave/dwave.yaml")),
+        "rbm_checkpoint", None,
+    )
+    if rbm_ckpt and os.path.isfile(rbm_ckpt):
+        loaded = rbm.load_checkpoint(rbm_ckpt, epoch=None)
+        print(f"  RBM loaded from checkpoint (epoch {loaded}).")
+    else:
+        print("  RBM using random weights (no checkpoint found/given).")
+
+    n_clamped = ae_engine._config.model.cond_p_size
+    n_hlf = 5   # transform_dataset always returns 5 features (u0 + 4 fractions)
+    cond_vec_1    = torch.randint(0, 2, (1, n_clamped), dtype=torch.float32)
+    incidence_e_1 = torch.tensor([[50_000.0]])   # 50 GeV in MeV
+    u_samples_1   = torch.rand(1, n_hlf)
+    _, x0_1 = energy_reduce(torch.zeros(1, 5, dtype=torch.float32), incidence_e_1)
+    print(f"  Synthetic cond_vec: shape={list(cond_vec_1.shape)}, "
+          f"u_samples: shape={list(u_samples_1.shape)}")
+
+    return ae_engine, rbm, ae_config, cond_vec_1, incidence_e_1, u_samples_1, x0_1
+
+
 # ── Main ───────────────────────────────────────────────────────────────────────
 
 def main(args):
@@ -446,10 +494,28 @@ def main(args):
 
     GlobalHydra.instance().clear()
     with initialize(version_base=None, config_path="../config"):
-        ae_engine, tf_engine, ae_config = setup_engines()
+        if args.synthetic:
+            ae_engine, rbm, ae_config, cond_vec_1, incidence_e_1, u_samples_1, x0_1 = \
+                _setup_synthetic(args)
+            x0_1 = x0_1.cpu()
+        else:
+            ae_engine, tf_engine, ae_config = setup_engines()
+            dwave_cfg_tmp = OmegaConf.load(os.path.join(project_root, "config/dwave/dwave.yaml"))
+            rbm = setup_rbm(ae_config, dwave_cfg_tmp.rbm_checkpoint)
+
+            energy_mev = 50_000.0
+            print(f"\nGenerating 1 conditioning vector at {energy_mev:.0f} MeV "
+                  f"(Transfusion call excluded from bench)...")
+            energy_tensor = torch.tensor([[energy_mev]], dtype=torch.float32)
+            cond_vec_1, incidence_e_1, u_samples_1, _ = get_cond_vec(energy_tensor, ae_engine, tf_engine)
+            cond_vec_1    = cond_vec_1.cpu()
+            incidence_e_1 = incidence_e_1.cpu()
+            u_samples_1   = u_samples_1.cpu()
+            _, x0_1 = energy_reduce(torch.zeros(1, 5, dtype=torch.float32), incidence_e_1)
+            x0_1 = x0_1.cpu()
 
     dwave_cfg = OmegaConf.load(os.path.join(project_root, "config/dwave/dwave.yaml"))
-    rbm = setup_rbm(ae_config, dwave_cfg.rbm_checkpoint)
+    hidden_side = dwave_cfg.sampling.hidden_side
 
     if args.patch_decoder:
         print("Patching AE decoder first kernel...")
@@ -460,24 +526,8 @@ def main(args):
         ae_engine.model = torch.compile(ae_engine.model, mode=args.compile_mode)
     n_clamped = ae_engine._config.model.cond_p_size
 
-    # Single conditioning row from Transfusion (Transfusion time excluded)
-    energy_mev = 50_000.0
-    print(f"\nGenerating 1 conditioning vector at {energy_mev:.0f} MeV (Transfusion call excluded from bench)...")
-    energy_tensor = torch.tensor([[energy_mev]], dtype=torch.float32)
-    cond_vec_1, incidence_e_1, u_samples_1, _ = get_cond_vec(energy_tensor, ae_engine, tf_engine)
-    cond_vec_1    = cond_vec_1.cpu()      # [1, n_clamped]
-    incidence_e_1 = incidence_e_1.cpu()  # [1, 1]
-    u_samples_1   = u_samples_1.cpu()    # [1, n_hlf]
-    # x0 = log-normalised energy (second return of data.layers.reduce with zero shower)
-    _, x0_1 = energy_reduce(
-        torch.zeros(1, 5, dtype=torch.float32),
-        incidence_e_1,
-    )
-    x0_1 = x0_1.cpu()                    # [1, 1]
-
     # Embedding — only needed for QPU bench
     sampler = left_chains = right_chains = cond_sets = None
-    hidden_side = dwave_cfg.sampling.hidden_side
     if not args.skip_qpu:
         sampler, left_chains, right_chains, cond_sets, hidden_side = setup_embedding(ae_engine, dwave_cfg)
 
@@ -573,5 +623,20 @@ if __name__ == "__main__":
                         help="Run AE decode in BF16 autocast (~2x speedup, halves memory bandwidth)")
     parser.add_argument("--repeats", type=int, default=3,
                         help="Timed repetitions per measurement (default: 3)")
+    # ── Synthetic mode ──────────────────────────────────────────────────────────
+    parser.add_argument("--synthetic", action="store_true",
+                        help="Use random AE weights + synthetic cond vectors — "
+                             "no AE .pt checkpoint needed, only the architecture config YAML "
+                             "(see --ae-config-path). RBM checkpoint is loaded if accessible.")
+    parser.add_argument("--ae-config-path", default=None,
+                        help="Path to the AE architecture config YAML saved alongside the "
+                             "checkpoint (required with --synthetic). Copy this small file "
+                             "from your training cluster; the .pt weight files are not needed.")
+    parser.add_argument("--rbm-checkpoint", default=None,
+                        help="Override the RBM checkpoint path from dwave.yaml "
+                             "(useful in --synthetic mode if the path in dwave.yaml is wrong "
+                             "for this machine).")
     args = parser.parse_args()
+    if args.synthetic and not args.ae_config_path:
+        parser.error("--synthetic requires --ae-config-path")
     main(args)

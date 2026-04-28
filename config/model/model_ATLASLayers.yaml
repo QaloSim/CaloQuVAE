@@ -1,28 +1,45 @@
-model_name: ae_layers
+model_name: ae_layers_bce
 encoder: hierarchicalencoderlayers
-encoderblock: EncoderLayers
-decoder: decoderlayers
+encoderblock: EncoderLayersZRP
+decoder: decoderlayersgated
 
 output_smoothing_fct: 60
 smoothing_dist: gumbel
 # mse_weight: 0.5
 mse_weight: 0.5
-coefficient: 0.01
+coefficient: 1
+transpose: 1
 
 hidden_layer: 0
-cond_p_size: 62
-lin_bits: 13
-sqrt_bits: 8
+cond_p_size: 36
+lin_bits: 9
+sqrt_bits: 6
 log_bits: 6
-u_bits: 7
+u_bits: 3
+u_cdf: 0
 
 loss_coeff:
-  ae_loss: 1.0
+  ae_loss: 10.0
   hit_loss: 1.0
   mmd_loss: 0.0
-  feature_mae: 0.0
-  focal_alpha: 0.588425
+  feature_loss: 5.0
+  focal_alpha: 0.5
   focal_gamma: 0.0
   r_loss_coeff: 0.0
+  latent_mi_loss: 0.01
+  geom_loss: 0.0
 
-  
+layer_weights:
+  - 1.0
+  - 2.0
+  - 4.0
+  - 2.0
+  - 1.0
+
+asym_alpha: 1.0
+asym_centre_only: 1
+feature_huber_delta: 5.0
+
+feature_weights:
+  width: 5.0
+  center: 1.0

@@ -16,7 +16,7 @@ lin_bits: 9
 sqrt_bits: 6
 log_bits: 6
 u_bits: 3
-u_cdf: 1
+u_cdf: 0
 
 loss_coeff:
   ae_loss: 10.0
@@ -26,7 +26,7 @@ loss_coeff:
   focal_alpha: 0.5
   focal_gamma: 0.0
   r_loss_coeff: 0.0
-  latent_mi_loss: 0.0005
+  latent_mi_loss: 0.01
   geom_loss: 0.0
 
 layer_weights:
@@ -35,3 +35,18 @@ layer_weights:
   - 4.0
   - 2.0
   - 1.0
+
+feature_layer_weights:
+  - 1.0
+  - 2.0
+  - 2.0
+  - 1.0
+  - 1.0
+
+asym_alpha: 1.0
+asym_centre_only: 1
+feature_huber_delta: 5.0
+
+feature_weights:
+  width: 5.0
+  center: 1.0

@@ -1,16 +1,19 @@
 model_name: Zephyr
-model_type: "RBM"
+model_type: "RBM_MPF"
 fullyconnected: 1
 clamped: 0
 no_weights: 0
-latent_nodes_per_p: 25
-num_visible_nodes: 124
-num_hidden_nodes: 75
+latent_nodes_per_p: 47
+num_visible_nodes: 177
+num_hidden_nodes: 161
 partitions: 4
-method: "CD"
+method: "PBRB"
+k_neighbors_percent: 1.0
+adaptive_k: 0
 bgs_steps: 500
-lr: 0.01
-gamma: 0.000
+lr: 0.02
+adaptive_k_interval: 10
+gamma: 0.0
 w_std: 
   - 0.0001
   - 1.0
@@ -30,5 +33,29 @@ SGD: 1
 num_chains: 5000
 centered: 0
 use_latent_data: 1
-latent_data_path: "/home/leozhu/CaloQuVAE/wandb-outputs/latent_train_data_2026-02-08_22-28-34.pt"
+latent_data_path: "/home/leozhu/CaloQuVAE/wandb-outputs/latent_train_data_2026-04-21_17-45-22_compact.pt"
 checkpoint_interval: 100
+weight_max: 3.5
+use_mask: 0
+mask_path: "/home/leozhu/CaloQuVAE/utils/rbm/zephyr_embedding_mask.npy"
+# FPMPF: Factored Persistent Minimum Probability Flow. When enabled, gradient is
+# reweighted per-sample by exp(½ΔF) and scaled by J_D·J_S.
+use_fpmpf: 1
+# Importance weighting: set features_paths to enable; leave empty to use uniform weights.
+# Multiple paths are supported — per-feature weights are combined by element-wise max.
+features_paths:
+  - "/home/leozhu/CaloQuVAE/wandb-outputs/latent_train_eta_layer1_2026-04-21_17-45-22_data.pt"
+  - "/home/leozhu/CaloQuVAE/wandb-outputs/latent_train_eta_layer2_2026-04-21_17-45-22_data.pt" 
+weight_alpha: 2.0
+tail_threshold: 2.0e-3
+data_weight_max: 150.0
+# Fine-tuning: set load_checkpoint_path to resume from a checkpoint.
+# weight_max will be linearly annealed from the loaded checkpoint's current max
+# down to weight_max_target over weight_max_anneal_epochs epochs.
+load_checkpoint_path: ""
+# PGD RMS constraint: omit weight_rms_target (or set to inf) to disable.
+# During training: constant ceiling at weight_rms_target (no schedule).
+# During fine-tuning: anneals from auto-detected checkpoint RMS to weight_rms_target
+#   over weight_rms_anneal_epochs. Check logs for "detected loaded weight RMS" to calibrate.
+weight_rms_target: 0.425
+weight_rms_anneal_epochs: 500

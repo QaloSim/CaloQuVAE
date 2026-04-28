@@ -3,6 +3,7 @@ from typing import Dict, Tuple
 import numpy as np
 import math
 import networkx as nx
+from data.layers import reduce, transform_dataset
 
 
 def rbm_to_logical_ising(
@@ -185,6 +186,33 @@ def convert_energy_to_gray_compact(incidence_energy: float, engine, n_cond: int,
 
     target_batch_full = cond_pattern.repeat(num_reads, 1).to(device)
     return target_batch_full
+
+def get_cond_vec(incidence_energy: torch.Tensor, ae_engine, tf_engine):
+    """
+    Given an incidence_energy tensor of shape (num_reads, 1) in MeV, samples one u per energy
+    from the tfusion model, transforms and gray-codes the results.
+    Output: 
+        cond_vec: (num_reads, n_cond) tensor of binary condition vectors ready for RBM sampling
+        incidence_energy: (num_reads, 1) tensor of energies (same as input, but on correct device)
+        u_samples: (num_reads, n_features) tensor of sampled and transformed u values (before encoding)
+    """
+    incidence_energy = incidence_energy.to(ae_engine.device) # (num_reads, 1)
+    num_reads = incidence_energy.shape[0]
+    _, x0 = reduce(torch.zeros(num_reads, 5).to(ae_engine.device), incidence_energy) # dummy zeros passed in for E
+
+    E_samples = tf_engine.sample_tfusion_given_energy(x0) # (num_reads, n_features)
+
+    u_samples = transform_dataset(E_samples, incidence_energy)
+    u_samples = (u_samples - ae_engine.model.feature_min) / (ae_engine.model.feature_max - ae_engine.model.feature_min)
+
+    e_bits = ae_engine.model.encoder.energy_encoding_fct(incidence_energy)
+    u_bits = ae_engine.model.encoder.gray_encoding_fct(u_samples)
+
+    cond_vec = torch.cat([e_bits, u_bits], dim=1)
+    return cond_vec, incidence_energy, u_samples, E_samples
+
+
+
 
 
 

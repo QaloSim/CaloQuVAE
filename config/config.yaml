@@ -1,23 +1,20 @@
 save_state: 1
 load_state: 0
+seed: 42
 save_hists: 0
 save_partition: 1
 freeze_vae: 0
 
 run_path: ""
-# config_path: "/fast_scratch_1/caloqvae/jtoledo/wandb/run-20250821_230537-pp65hpwu/files/autoencoderhidden_9_config.yaml"
-# config_path: "/fast_scratch_1/caloqvae/jtoledo/wandb/run-20250825_185123-cysb33l7/files/autoencoderhidden_9_config.yaml"
-# config_path: "/fast_scratch_1/caloqvae/lzhu/wandb/run-20260128_024219-c4ncggak/files/ae_separate_best_epoch192_config.yaml"
 # config_path: "/home/leozhu/CaloQuVAE/wandb-outputs/run-20251114_012936-8e96xchx/files/ae_separate_best_epoch157_config.yaml"
-# config_path: "/fast_scratch_1/caloqvae/lzhu/wandb/run-20260204_012003-jsinqdc9/files/ae_separate_best_epoch27_config.yaml"
 # config_path: "/fast_scratch_1/caloqvae/lzhu/wandb/run-20260201_060614-qzote2wu/files/ae_separate_best_epoch145_config.yaml"
-config_path: "/fast_scratch_1/caloqvae/lzhu/wandb/run-20260205_232847-4dot02qg/files/ae_separate_best_epoch238_config.yaml"
-# config_path: "/fast_scratch_1/caloqvae/lzhu/wandb/run-20260113_235017-da0blfid/files/ae_separate_best_epoch224_config.yaml"
-# config_path: /fast_scratch_1/caloqvae/jtoledo/wandb/run-20250819_203111-u88m8d6w/files/autoencoderbase_249_config.yaml
+config_path: "/fast_scratch_1/caloqvae/lzhu/wandb/run-20260205_232410-uhiacqzz/files/ae_separate_best_epoch1009_config.yaml"
+# config_path: "/fast_scratch_1/caloqvae/lzhu/wandb/run-20260205_232847-4dot02qg/files/ae_separate_best_epoch238_config.yaml"
+# config_path: "/fast_scratch_1/caloqvae/lzhu/wandb/run-20260205_232847-4dot02qg/files/ae_separate_best_epoch450_config.yaml"
 
 device: gpu
 gpu_list:
-  - 4
+  - 2
   # - 0
   # - 1
   # - 2
@@ -37,6 +34,7 @@ epoch_freeze: 160
 epoch_start: 0
 
 refactor_binary_energy: 1
+use_u: 0
 use_gray_code: 1
 use_gray_code_compact: 1
 separate_hits: 0

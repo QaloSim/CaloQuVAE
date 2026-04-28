@@ -10,7 +10,7 @@ epoch_start: 0
 
 device: gpu
 gpu_list:
-  - 4
+  - 2
 
 run_path: ""
 config_path: "/fast_scratch_1/caloqvae/lzhu/wandb/run-20260225_231755-ubgp0yf2/files/transfusion_690_config.yaml"

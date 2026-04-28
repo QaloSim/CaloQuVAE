@@ -70,6 +70,8 @@ class HighLevelFeatures_ATLAS_regular:
         a0 = torch.rad2deg(self.binstart_alpha[layer]).round()
         a1 = a0 + torch.rad2deg(self.binsize_alpha[layer]).round()
         e  = self.single_event_energy
+        if isinstance(e, torch.Tensor):
+            e = e.detach().cpu().numpy()
 
         # Convert once
         return (

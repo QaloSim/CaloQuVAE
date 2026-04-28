@@ -3,7 +3,7 @@ import torch.nn as nn
 import h5py
 import numpy as np
 import math
-from utils.atlas_plots import to_np, make_validation_plots
+from utils.atlas_plots import to_np, make_validation_plots, make_validation_plots_fixed
 import copy
 
 class AtlasGeometry:
@@ -675,9 +675,10 @@ class NaiveResampler(nn.Module):
         return new_geo
 
 
-def evaluate_and_plot(data_dict, binning_path, output_dir="plots/", device="cpu"):
+def evaluate_and_plot(data_dict, binning_path, output_dir="plots/", device="cpu", fixed_bin_ranges=None, num_bins=100):
     """
     Orchestrates the flow: Raw Data -> Fast Extractor -> Adapter -> Existing Plotter
+    Supports both dynamic binning (default) and fixed binning (if fixed_bin_ranges is provided).
     """
     
     # 1. Setup Geometry & Extractor ONCE
@@ -717,6 +718,22 @@ def evaluate_and_plot(data_dict, binning_path, output_dir="plots/", device="cpu"
     list_adapter_models = populated_adapters[1:]
     model_labels = labels[1:]
 
-    # 4. Call existing plotting code
-    # It won't know the difference between 'adapter_ref' and the old 'hlf_ref'
-    make_validation_plots(adapter_ref, list_adapter_models, model_labels, output_dir=output_dir)
+    # 4. Call plotting code based on whether fixed ranges were provided
+    if fixed_bin_ranges is not None:
+        print("Using fixed bin ranges...")
+        make_validation_plots_fixed(
+            adapter_ref, 
+            list_adapter_models, 
+            model_labels, 
+            bin_ranges=fixed_bin_ranges,
+            num_bins=num_bins,
+            output_dir=output_dir
+        )
+    else:
+        print("Using dynamic binning...")
+        make_validation_plots(
+            adapter_ref, 
+            list_adapter_models, 
+            model_labels, 
+            output_dir=output_dir
+        )

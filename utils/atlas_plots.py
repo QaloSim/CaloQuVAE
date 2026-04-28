@@ -94,16 +94,16 @@ def plot_calorimeter_shower(cfg, showers, showers_recon, showers_sampled, epoch,
     image_recon_avg = HLF.DrawSingleShower(recon_avg, title=f"Val Recon (Epoch {epoch})", filename=recon_path, cmap='rainbow')
     image_sample_avg = HLF.DrawSingleShower(sampled_avg, title=f"Val Sampled (Epoch {epoch})", filename=sample_path, cmap='rainbow')
     
-    # Single-layer with highlighted patches (ATLAS only)
-    if "atlas" in dataset_name:
-        highlight_coords = [(0, 0)] + [(r_, phi_) for r_ in [4, 10, 15] for phi_ in [0, 3, 6, 9]]
-        HLF.plot_single_layer_with_highlights(
-            data=real,
-            layer=0,
-            r=cfg.data.r,
-            phi=cfg.data.phi,
-            highlight_coords=highlight_coords,
-            title=f"(Epoch {epoch}) Highlighted Voxels")
+    # # Single-layer with highlighted patches (ATLAS only)
+    # if "atlas" in dataset_name:
+    #     highlight_coords = [(0, 0)] + [(r_, phi_) for r_ in [4, 10, 15] for phi_ in [0, 3, 6, 9]]
+    #     HLF.plot_single_layer_with_highlights(
+    #         data=real,
+    #         layer=0,
+    #         r=cfg.data.r,
+    #         phi=cfg.data.phi,
+    #         highlight_coords=highlight_coords,
+    #         title=f"(Epoch {epoch}) Highlighted Voxels")
 
     return image_input, image_recon, image_sample, image_input_avg, image_recon_avg, image_sample_avg
 
@@ -268,7 +268,7 @@ def get_bins(all_data, xscale='linear'):
 # -----------------------------------------------------------------------------
 def plot_atlas_style_multi(data_ref, data_list, labels, xlabel, output_path, 
                            yscale='log', xscale='linear', 
-                           colors=None, linestyles=None, pdf=None):
+                           colors=None, linestyles=None, pdf=None, fixed_bins=None):
     
     if colors is None: colors = ['red', 'green', 'orange', 'purple', 'cyan']
     if linestyles is None: linestyles = ['-', '--', '-.', ':', '-']
@@ -277,7 +277,12 @@ def plot_atlas_style_multi(data_ref, data_list, labels, xlabel, output_path,
     clean_data_list = [d[np.isfinite(d)] for d in data_list]
     all_data = [data_ref] + clean_data_list
 
-    bins = get_bins(all_data, xscale)
+    # Override get_bins if fixed_bins are provided
+    if fixed_bins is not None:
+        bins = fixed_bins
+    else:
+        bins = get_bins(all_data, xscale)
+        
     if bins is None:
         print(f"Warning: No valid data for {output_path}")
         return
@@ -346,7 +351,6 @@ def plot_atlas_style_multi(data_ref, data_list, labels, xlabel, output_path,
     if pdf is not None:
         pdf.savefig(fig, dpi=300, bbox_inches='tight')
     plt.close(fig)
-
 # -----------------------------------------------------------------------------
 # 3. Combined Grid Plotter
 # -----------------------------------------------------------------------------
@@ -581,33 +585,33 @@ def create_grid_figure(layer_data_dict, property_name, labels, yscale='log', xsc
     if n_layers == 0: return None
 
     # Calculate grid dimensions
-    n_cols = (n_layers + 1) // 2 
+    n_cols = (n_layers + 1) // 2
     n_rows = 2
-    
-    fig = plt.figure(figsize=(5 * n_cols, 10)) 
+
+    fig = plt.figure(figsize=(5 * n_cols, 10))
     outer_grid = GridSpec(n_rows, n_cols, figure=fig, hspace=0.3, wspace=0.3)
-    
+
     for idx, layer in enumerate(layers):
         row = idx // n_cols
         col = idx % n_cols
-        
-        inner_grid = GridSpecFromSubplotSpec(2, 1, 
-                        subplot_spec=outer_grid[row, col], 
+
+        inner_grid = GridSpecFromSubplotSpec(2, 1,
+                        subplot_spec=outer_grid[row, col],
                         height_ratios=[3, 1], hspace=0.05)
-        
+
         ax_main = fig.add_subplot(inner_grid[0])
         ax_ratio = fig.add_subplot(inner_grid[1], sharex=ax_main)
-        
+
         data_ref = layer_data_dict[layer]['ref']
         data_models = layer_data_dict[layer]['models']
-        
+
         # Filter NaNs/Infs
         data_ref = data_ref[np.isfinite(data_ref)]
         clean_models = [d[np.isfinite(d)] for d in data_models]
         all_d = [data_ref] + clean_models
-        
+
         # Get bins (assumes get_bins is in scope)
-        bins = get_bins(all_d, xscale) 
+        bins = get_bins(all_d, xscale)
         if bins is None: continue
 
         # Reference Plotting
@@ -655,3 +659,129 @@ def create_grid_figure(layer_data_dict, property_name, labels, yscale='log', xsc
     plt.suptitle(f"Combined {property_name} across Layers", y=1.00, fontsize=16)
     
     return fig
+
+
+
+
+def make_validation_plots_fixed(hlf_ref, list_hlf_models, labels, bin_ranges, num_bins=100, output_dir="plots/"):
+    """
+    Creates validation plots using explicit fixed ranges. Grid plots are skipped.
+    
+    Args:
+        bin_ranges (dict): A dictionary mapping property names to (min, max) tuples. 
+                           Keys can be 'Etot_over_Einc', 'Etot', 'Energy', 'MeanEta', 'WidthEta', 'MeanPhi', 'WidthPhi'.
+        num_bins (int): The number of bins to divide the range into.
+    """
+    print(f"Generating fixed-bin plots in {output_dir}...")
+    pdf_path = os.path.join(output_dir, "all_plots_fixed.pdf")
+    os.makedirs(output_dir, exist_ok=True)
+    
+    ref_etot = to_np(hlf_ref.E_tot)
+    ref_einc = to_np(hlf_ref.Einc)
+
+    def create_bins(prop_name):
+        """Helper to safely generate the bin array if the range was provided."""
+        if prop_name not in bin_ranges:
+            return None
+        vmin, vmax = bin_ranges[prop_name]
+        return np.linspace(vmin, vmax, num_bins + 1)
+
+    with PdfPages(pdf_path) as pdf:
+        
+        # 1. Total Energy Ratio
+        if 'Etot_over_Einc' in bin_ranges:
+            try:
+                ratio = ref_etot / ref_einc.flatten()
+                ref_etot_einc = to_np(ratio)
+                models_etot_einc = [to_np(hlf.E_tot)/to_np(hlf.Einc).flatten() for hlf in list_hlf_models]
+                
+                plot_atlas_style_multi(
+                    ref_etot_einc, models_etot_einc, labels,
+                    xlabel=r'$E_{tot} / E_{inc}$', 
+                    output_path=f"{output_dir}/Etot_over_Einc.png",
+                    yscale='log', pdf=pdf,
+                    fixed_bins=create_bins('Etot_over_Einc')
+                )
+            except Exception as e: print(f"FAILED Etot/Einc: {e}")
+
+        # 2. Total Energy
+        if 'Etot' in bin_ranges:
+            try:
+                models_etot = [to_np(hlf.E_tot) for hlf in list_hlf_models]
+                plot_atlas_style_multi(
+                    ref_etot, models_etot, labels,
+                    xlabel=r'$E_{tot}$ [MeV]', 
+                    output_path=f"{output_dir}/Etot.png",
+                    yscale='log', pdf=pdf,
+                    fixed_bins=create_bins('Etot')
+                )
+            except Exception as e: print(f"FAILED Etot: {e}")
+
+        # 3. Layer Loop
+        for layer in hlf_ref.relevantLayers:
+            try:
+                # Energy
+                if 'Energy' in bin_ranges:
+                    ref_dat = to_np(hlf_ref.E_layers[layer])
+                    mod_dat = [to_np(hlf.E_layers[layer]) for hlf in list_hlf_models]
+                    plot_atlas_style_multi(
+                        ref_dat, mod_dat, labels,
+                        xlabel=f'$E_{{layer {layer}}}$ [MeV]',
+                        output_path=f"{output_dir}/Layer{layer}_Energy.png",
+                        yscale='log', pdf=pdf,
+                        fixed_bins=create_bins('Energy')
+                    )
+                
+                # Mean Eta 
+                if 'MeanEta' in bin_ranges:
+                    ref_dat = to_np(hlf_ref.EC_etas[layer])
+                    mod_dat = [to_np(hlf.EC_etas[layer]) for hlf in list_hlf_models]
+                    plot_atlas_style_multi(
+                        ref_dat, mod_dat, labels,
+                        xlabel=f'$\langle \eta \\rangle_{{layer {layer}}}$',
+                        output_path=f"{output_dir}/Layer{layer}_MeanEta.png",
+                        yscale='log', pdf=pdf,
+                        fixed_bins=create_bins('MeanEta')
+                    )
+                
+                # Width Eta
+                if 'WidthEta' in bin_ranges:
+                    ref_dat = to_np(hlf_ref.width_etas[layer])
+                    mod_dat = [to_np(hlf.width_etas[layer]) for hlf in list_hlf_models]
+                    plot_atlas_style_multi(
+                        ref_dat, mod_dat, labels,
+                        xlabel=f'$\sigma_{{\eta, layer {layer}}}$',
+                        output_path=f"{output_dir}/Layer{layer}_WidthEta.png",
+                        yscale='log', pdf=pdf,
+                        fixed_bins=create_bins('WidthEta')
+                    )
+                
+                # Mean Phi
+                if 'MeanPhi' in bin_ranges:
+                    ref_dat = to_np(hlf_ref.EC_phis[layer])
+                    mod_dat = [to_np(hlf.EC_phis[layer]) for hlf in list_hlf_models]
+                    plot_atlas_style_multi(
+                        ref_dat, mod_dat, labels,
+                        xlabel=f'$\langle \phi \\rangle_{{layer {layer}}}$',
+                        output_path=f"{output_dir}/Layer{layer}_MeanPhi.png",
+                        yscale='log', pdf=pdf,
+                        fixed_bins=create_bins('MeanPhi')
+                    )
+                
+                # Width Phi
+                if 'WidthPhi' in bin_ranges:
+                    ref_dat = to_np(hlf_ref.width_phis[layer])
+                    mod_dat = [to_np(hlf.width_phis[layer]) for hlf in list_hlf_models]
+                    plot_atlas_style_multi(
+                        ref_dat, mod_dat, labels,
+                        xlabel=f'$\sigma_{{\phi, layer {layer}}}$',
+                        output_path=f"{output_dir}/Layer{layer}_WidthPhi.png",
+                        yscale='log', pdf=pdf,
+                        fixed_bins=create_bins('WidthPhi')
+                    )
+
+            except Exception as e:
+                print(f"!! CRASH on Layer {layer}: {e}")
+                continue
+
+    print("Done! PDF saved to", pdf_path)

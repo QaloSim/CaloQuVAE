@@ -716,6 +716,165 @@ def visualize_tail_events_at_energy(data_dict, binning_path,
     plt.show()
 
 
+def _extract_and_filter(data_dict, extractor, target_key, sel_layer_idx, 
+                        e_min, e_max, bounds, num_events, tail_source, rng, device):
+    keys = list(data_dict.keys())
+    label_gt, label_model = keys[0], keys[1]
+    
+    showers_gt, e_inc_gt = data_dict[label_gt]
+    showers_model, _ = data_dict[label_model]
+
+    # Device and array prep
+    showers_t_gt = torch.tensor(showers_gt, dtype=torch.float32).to(device) if isinstance(showers_gt, np.ndarray) else showers_gt.to(device)
+    showers_t_model = torch.tensor(showers_model, dtype=torch.float32).to(device) if isinstance(showers_model, np.ndarray) else showers_model.to(device)
+    
+    showers_np_gt = showers_gt if isinstance(showers_gt, np.ndarray) else showers_gt.cpu().numpy()
+    showers_np_model = showers_model if isinstance(showers_model, np.ndarray) else showers_model.cpu().numpy()
+    e_inc_np = e_inc_gt if isinstance(e_inc_gt, np.ndarray) else e_inc_gt.cpu().numpy()
+    if e_inc_np.ndim > 1: e_inc_np = e_inc_np.flatten()
+
+    # Extract Features
+    with torch.no_grad():
+        feats_gt = extractor(showers_t_gt)
+        values_gt = feats_gt[target_key][:, sel_layer_idx].cpu().numpy()
+        
+        feats_model = extractor(showers_t_model)
+        values_model = feats_model[target_key][:, sel_layer_idx].cpu().numpy()
+
+    # Apply Flag Logic
+    filter_values = values_gt if tail_source == 'gt' else values_model
+
+    mask_energy = (e_inc_np >= e_min) & (e_inc_np <= e_max)
+    mask_feat = (filter_values >= bounds[0]) & (filter_values <= bounds[1])
+    final_mask = mask_feat & mask_energy
+    
+    total_in_window = np.sum(mask_energy)
+    total_selected = np.sum(final_mask)
+    candidate_indices = np.where(final_mask)[0]
+
+    if len(candidate_indices) > num_events:
+        selected_indices = rng.choice(candidate_indices, num_events, replace=False)
+    else:
+        selected_indices = candidate_indices
+
+    return (selected_indices, values_gt, values_model, showers_np_gt, 
+            showers_np_model, e_inc_np, total_selected, total_in_window)
+
+
+def _plot_shower_grid(selected_indices, display_layers, geo, mode, 
+                      showers_np_gt, showers_np_model, e_inc_np, 
+                      values_gt, values_model, HLF, target_energy, 
+                      selection_layer, bounds, feature_name, tail_source,
+                      label_gt, label_model):
+    
+    num_events = len(selected_indices)
+    if num_events == 0:
+        print("No events found to plot.")
+        return
+
+    vox_per_layer = 14 * 24 
+
+    # Pre-Calculate Means or Max Proportions
+    mean_full_shower = np.mean(showers_np_gt, axis=0) if mode == 'relative' else None
+    
+    # Plotting Configuration
+    if mode == 'relative':
+        cmap_main = plt.cm.magma_r.copy() 
+        cbar_label_main = r"Relative ($E / \langle E_{GT} \rangle$)"
+        norm_main = LogNorm(vmin=0.1, vmax=500.0)
+    elif mode == 'proportion':
+        cmap_main = plt.cm.viridis.copy()
+        cbar_label_main = "Layer Energy Proportion"
+        
+        # Dynamically find the maximum proportion across all plotted events/layers for a unified colorbar
+        vmax_prop = 1e-6 
+        for event_idx in selected_indices:
+            for layer_id in display_layers:
+                start_idx = geo.relevant_layers.index(layer_id) * vox_per_layer
+                end_idx = start_idx + vox_per_layer
+                d_gt = showers_np_gt[event_idx][start_idx:end_idx]
+                d_model = showers_np_model[event_idx][start_idx:end_idx]
+                
+                sum_gt, sum_model = np.sum(d_gt), np.sum(d_model)
+                if sum_gt > 0: vmax_prop = max(vmax_prop, np.max(d_gt / sum_gt))
+                if sum_model > 0: vmax_prop = max(vmax_prop, np.max(d_model / sum_model))
+                
+        norm_main = Normalize(vmin=0, vmax=vmax_prop)
+    else:
+        cmap_main = plt.cm.viridis.copy()
+        cbar_label_main = "Energy [MeV]"
+        norm_main = LogNorm(vmin=1e-1, vmax=1e4)
+
+    cmap_main.set_bad(color='white')   
+    cmap_main.set_under(color='white') 
+    cmap_diff = plt.cm.coolwarm.copy()
+    cmap_diff.set_bad(color='white')
+    cbar_label_diff = "Difference (Model - GT)"
+    
+    n_cols = len(display_layers) * 3 
+    fig, axes = plt.subplots(num_events, n_cols, figsize=(3.0 * n_cols, 3.4 * num_events), dpi=150, squeeze=False)
+
+    # Render Loop
+    for row_idx, event_idx in enumerate(selected_indices):
+        inc_e = e_inc_np[event_idx]
+        val_gt, val_model = values_gt[event_idx], values_model[event_idx]
+        full_gt, full_model = showers_np_gt[event_idx], showers_np_model[event_idx]
+        
+        axes[row_idx, 0].set_ylabel(f"Event {event_idx}", fontsize=11, fontweight='bold', labelpad=10)
+        
+        meta_str = (f"v_GT={val_gt:.2f} | v_M={val_model:.2f}\n"
+                    f"$\Sigma GT$={np.sum(full_gt):.0f} | $\Sigma M$={np.sum(full_model):.0f}\n"
+                    f"$E_{{inc}}$={inc_e:.0f}")
+
+        for l_idx, layer_id in enumerate(display_layers):
+            start_idx = geo.relevant_layers.index(layer_id) * vox_per_layer
+            end_idx = start_idx + vox_per_layer
+            
+            data_gt, data_model = full_gt[start_idx:end_idx], full_model[start_idx:end_idx]
+            
+            if mode == 'relative':
+                safe_mean = mean_full_shower[start_idx:end_idx].copy()
+                safe_mean[safe_mean == 0] = 1e-9 
+                pl_gt, pl_model = data_gt / safe_mean, data_model / safe_mean
+            elif mode == 'proportion':
+                sum_gt, sum_model = np.sum(data_gt), np.sum(data_model)
+                pl_gt = data_gt / sum_gt if sum_gt > 0 else np.zeros_like(data_gt)
+                pl_model = data_model / sum_model if sum_model > 0 else np.zeros_like(data_model)
+            else:
+                pl_gt, pl_model = data_gt, data_model
+            
+            pl_diff = pl_model - pl_gt
+            col_gt, col_model, col_diff = l_idx * 3, l_idx * 3 + 1, l_idx * 3 + 2
+            
+            title_gt = f"Layer {layer_id} (GT)\n{meta_str}" if row_idx == 0 else meta_str
+            title_model = f"Layer {layer_id} (Model)\n{meta_str}" if row_idx == 0 else meta_str
+            title_diff = f"Layer {layer_id} (Diff)\n(M - GT)" if row_idx == 0 else "(M - GT)"
+
+            pc_main = plot_layer_on_ax(axes[row_idx, col_gt], HLF, layer_id, pl_gt, title=title_gt, norm=norm_main, cmap=cmap_main, title_fontsize=7)
+            plot_layer_on_ax(axes[row_idx, col_model], HLF, layer_id, pl_model, title=title_model, norm=norm_main, cmap=cmap_main, title_fontsize=7)
+            
+            max_diff = max(np.max(np.abs(pl_diff)), 1.0) if mode != 'proportion' else max(np.max(np.abs(pl_diff)), 0.01)
+            pc_diff = plot_layer_on_ax(axes[row_idx, col_diff], HLF, layer_id, pl_diff, title=title_diff, norm=Normalize(vmin=-max_diff, vmax=max_diff), cmap=cmap_diff, title_fontsize=7)
+            
+            for col in [col_gt, col_model, col_diff]: axes[row_idx, col].title.set_fontsize(8)
+
+    # Global Elements
+    source_str = "Ground Truth" if tail_source == 'gt' else "Model"
+    title_str = (f"Tail Events Comparison ({mode}) @ {target_energy/1000:.0f} GeV | "
+                 f"Sel: L{selection_layer}, {bounds[0]}<{feature_name}<{bounds[1]} (Filtered by {source_str})\n"
+                 f"GT: {label_gt} | Model: {label_model}")
+    
+    fig.suptitle(title_str, y=0.99, fontsize=14, fontweight='bold')
+    fig.subplots_adjust(bottom=0.15, hspace=0.45, wspace=0.25, top=0.91)
+    
+    cbar_main = fig.colorbar(pc_main, cax=fig.add_axes([0.15, 0.05, 0.35, 0.025]), orientation='horizontal')
+    cbar_main.set_label(cbar_label_main, fontsize=11)
+    cbar_diff = fig.colorbar(pc_diff, cax=fig.add_axes([0.55, 0.05, 0.35, 0.025]), orientation='horizontal')
+    cbar_diff.set_label(cbar_label_diff, fontsize=11)
+
+    plt.show()
+
+
 def visualize_tail_events_comparison(data_dict, binning_path, 
                                      target_energy, 
                                      selection_layer=2, 
@@ -725,244 +884,250 @@ def visualize_tail_events_comparison(data_dict, binning_path,
                                      num_events=4, 
                                      energy_tol=0.05,
                                      mode='absolute', 
+                                     tail_source='gt', # NEW FLAG: 'gt' or 'model'
                                      seed=42,
                                      device="cpu"):
-    """
-    Visualizes specific layers of individual events: GT, Model, and Difference.
-    Calculates and displays feature values for BOTH GT and Model.
-    """
     
-    # --- 1. Setup ---
+    if tail_source not in ['gt', 'model']:
+        raise ValueError("tail_source must be 'gt' or 'model'")
+
     rng = np.random.default_rng(seed)
     geo = AtlasGeometry(filename=binning_path)
     
-    # Validate Layers
-    if selection_layer not in geo.relevant_layers:
-        print(f"Selection Layer {selection_layer} not found.")
+    if selection_layer not in geo.relevant_layers or any(l not in geo.relevant_layers for l in display_layers):
+        print("One or more specified layers not found in geometry.")
         return
-    for l in display_layers:
-        if l not in geo.relevant_layers:
-            print(f"Display Layer {l} not found.")
-            return
 
-    sel_layer_idx = geo.relevant_layers.index(selection_layer)
-    
-    HLF = HighLevelFeatures_ATLAS_regular(
-        particle='electron', filename=binning_path, relevantLayers=geo.relevant_layers
-    )
-    
+    HLF = HighLevelFeatures_ATLAS_regular(particle='electron', filename=binning_path, relevantLayers=geo.relevant_layers)
     extractor = DifferentiableFeatureExtractor(geo).to(device)
     extractor.eval()
     
-    e_min = target_energy * (1 - energy_tol)
-    e_max = target_energy * (1 + energy_tol)
+    e_min, e_max = target_energy * (1 - energy_tol), target_energy * (1 + energy_tol)
     
-    # Extract Datasets (Assume Index 0 is GT, Index 1 is Model)
+    key_map = {'mean_phi': 'Phi_center', 'Phi_center': 'Phi_center', 'mean_eta': 'Eta_center', 'Eta_center': 'Eta_center', 'energy': 'E_layer', 'E_layer': 'E_layer'}
+    target_key = key_map.get(feature_name, feature_name)
+    sel_layer_idx = geo.relevant_layers.index(selection_layer)
+
+    print(f"\n--- Visualizing Tails ({mode}) @ {target_energy}GeV ---")
+    print(f"Comparison: {list(data_dict.keys())[0]} (GT) vs {list(data_dict.keys())[1]} (Model) | Filtering by: {tail_source.upper()}")
+
+    # Call extraction module
+    (selected_indices, values_gt, values_model, showers_np_gt, showers_np_model, 
+     e_inc_np, total_selected, total_in_window) = _extract_and_filter(
+        data_dict, extractor, target_key, sel_layer_idx, e_min, e_max, 
+        bounds, num_events, tail_source, rng, device
+    )
+
+    pct = (total_selected / total_in_window * 100) if total_in_window > 0 else 0.0
+    print(f"Events Selected (based on {tail_source.upper()}): {total_selected}/{total_in_window} ({pct:.2f}%)")
+
+    # Call plotting module
+    _plot_shower_grid(
+        selected_indices, display_layers, geo, mode, showers_np_gt, showers_np_model, 
+        e_inc_np, values_gt, values_model, HLF, target_energy, selection_layer, 
+        bounds, feature_name, tail_source, list(data_dict.keys())[0], list(data_dict.keys())[1]
+    )
+
+
+def _extract_and_filter_hits(data_dict, extractor, target_key, sel_layer_idx, 
+                             e_min, e_max, bounds, num_events, tail_source, rng, device):
     keys = list(data_dict.keys())
-    label_gt = keys[0]
-    label_model = keys[1]
+    label_gt, label_model = keys[0], keys[1]
     
     showers_gt, e_inc_gt = data_dict[label_gt]
-    showers_model, _ = data_dict[label_model] 
+    showers_model, _ = data_dict[label_model]
+
+    # Device and array prep
+    showers_t_gt = torch.tensor(showers_gt, dtype=torch.float32).to(device) if isinstance(showers_gt, np.ndarray) else showers_gt.to(device)
+    showers_t_model = torch.tensor(showers_model, dtype=torch.float32).to(device) if isinstance(showers_model, np.ndarray) else showers_model.to(device)
     
-    print(f"\n--- Visualizing Tails ({mode}) @ {target_energy}GeV ---")
-    print(f"Comparison: {label_gt} (GT) vs {label_model} (Model)")
+    showers_np_gt = showers_gt if isinstance(showers_gt, np.ndarray) else showers_gt.cpu().numpy()
+    showers_np_model = showers_model if isinstance(showers_model, np.ndarray) else showers_model.cpu().numpy()
+    e_inc_np = e_inc_gt if isinstance(e_inc_gt, np.ndarray) else e_inc_gt.cpu().numpy()
+    if e_inc_np.ndim > 1: e_inc_np = e_inc_np.flatten()
 
-    # --- 2. Feature Extraction & Filtering ---
-    key_map = {'mean_phi': 'Phi_center', 'Phi_center': 'Phi_center',
-               'mean_eta': 'Eta_center', 'Eta_center': 'Eta_center',
-               'energy': 'E_layer', 'E_layer': 'E_layer'}
-    target_key = key_map.get(feature_name, feature_name)
-
+    # Extract Features
     with torch.no_grad():
-        # --- A. Prepare GT Data ---
-        if isinstance(showers_gt, np.ndarray):
-            showers_t_gt = torch.tensor(showers_gt, dtype=torch.float32).to(device)
-            showers_np_gt = showers_gt
-            e_inc_np = e_inc_gt if isinstance(e_inc_gt, np.ndarray) else e_inc_gt.cpu().numpy()
-        else:
-            showers_t_gt = showers_gt.to(device)
-            showers_np_gt = showers_gt.cpu().numpy()
-            e_inc_np = e_inc_gt.cpu().numpy()
-
-        if e_inc_np.ndim > 1: e_inc_np = e_inc_np.flatten()
-
-        # --- B. Prepare Model Data ---
-        if isinstance(showers_model, np.ndarray):
-            showers_t_model = torch.tensor(showers_model, dtype=torch.float32).to(device)
-            showers_np_model = showers_model
-        else:
-            showers_t_model = showers_model.to(device)
-            showers_np_model = showers_model.cpu().numpy()
-
-        # --- C. Extract Features for BOTH ---
-        # 1. Ground Truth Features
         feats_gt = extractor(showers_t_gt)
         values_gt = feats_gt[target_key][:, sel_layer_idx].cpu().numpy()
-
-        # 2. Model Features (New addition)
+        
         feats_model = extractor(showers_t_model)
         values_model = feats_model[target_key][:, sel_layer_idx].cpu().numpy()
 
-        # --- D. Filter (Based on GT) ---
-        mask_energy = (e_inc_np >= e_min) & (e_inc_np <= e_max)
-        mask_feat = (values_gt >= bounds[0]) & (values_gt <= bounds[1])
-        final_mask = mask_feat & mask_energy
-        
-        # Stats
-        total_in_window = np.sum(mask_energy)
-        total_selected = np.sum(final_mask)
-        pct = (total_selected / total_in_window * 100) if total_in_window > 0 else 0.0
-            
-        print(f"Events Selected (based on GT): {total_selected}/{total_in_window} ({pct:.2f}%)")
+    # Apply Flag Logic
+    filter_values = values_gt if tail_source == 'gt' else values_model
 
-        candidate_indices = np.where(final_mask)[0]
-        if len(candidate_indices) == 0:
-            print("No events found.")
-            return
+    mask_energy = (e_inc_np >= e_min) & (e_inc_np <= e_max)
+    mask_feat = (filter_values >= bounds[0]) & (filter_values <= bounds[1])
+    final_mask = mask_feat & mask_energy
+    
+    total_in_window = np.sum(mask_energy)
+    total_selected = np.sum(final_mask)
+    candidate_indices = np.where(final_mask)[0]
 
-        if len(candidate_indices) > num_events:
-            selected_indices = rng.choice(candidate_indices, num_events, replace=False)
-        else:
-            selected_indices = candidate_indices
-            num_events = len(selected_indices)
-
-    # --- 3. Pre-Calculate Means (Relative Mode) ---
-    mean_full_shower = None
-    if mode == 'relative':
-        mean_full_shower = np.mean(showers_np_gt, axis=0) 
-
-    # --- 4. Plotting Configuration ---
-    if mode == 'relative':
-        cmap_main = plt.cm.magma_r.copy() 
-        cbar_label_main = r"Relative ($E / \langle E_{GT} \rangle$)"
-        norm_main = LogNorm(vmin=0.1, vmax=500.0)
+    if len(candidate_indices) > num_events:
+        selected_indices = rng.choice(candidate_indices, num_events, replace=False)
     else:
-        cmap_main = plt.cm.viridis.copy()
-        cbar_label_main = "Energy [MeV]"
-        norm_main = LogNorm(vmin=1e-1, vmax=1e2)
+        selected_indices = candidate_indices
 
+    # NEW: Returning candidate_indices to compute averages across the whole filtered slice
+    return (selected_indices, candidate_indices, values_gt, values_model, showers_np_gt, 
+            showers_np_model, e_inc_np, total_selected, total_in_window)
+
+
+def _plot_hits_grid(selected_indices, candidate_indices, display_layers, geo, 
+                    showers_np_gt, showers_np_model, e_inc_np, 
+                    values_gt, values_model, HLF, target_energy, 
+                    selection_layer, bounds, feature_name, tail_source,
+                    label_gt, label_model):
+    
+    num_events = len(selected_indices)
+    if num_events == 0 or len(candidate_indices) == 0:
+        print("No events found to plot.")
+        return
+
+    # Convert to binary hit masks (1 if E > 0 else 0)
+    hits_gt = (showers_np_gt > 0).astype(np.float32)
+    hits_model = (showers_np_model > 0).astype(np.float32)
+
+    # Calculate average hits across all events passing the tail filter
+    avg_hits_gt = np.mean(hits_gt[candidate_indices], axis=0)
+    avg_hits_model = np.mean(hits_model[candidate_indices], axis=0)
+
+    # Plotting Configuration
+    cmap_main = plt.cm.viridis.copy()
     cmap_main.set_bad(color='white')   
-    cmap_main.set_under(color='white') 
+    cbar_label_main = "Hit Probability / Binary Hit"
+    norm_main = Normalize(vmin=0.0, vmax=1.0) 
 
     cmap_diff = plt.cm.coolwarm.copy()
     cmap_diff.set_bad(color='white')
     cbar_label_diff = "Difference (Model - GT)"
+    norm_diff = Normalize(vmin=-1.0, vmax=1.0)
     
-    n_layers = len(display_layers)
-    n_cols = n_layers * 3 
-    
-    fig, axes = plt.subplots(num_events, n_cols, 
-                             figsize=(3.0 * n_cols, 3.4 * num_events), 
-                             dpi=150, squeeze=False)
-
+    n_cols = len(display_layers) * 3 
+    # Add one extra row for the averages
+    fig, axes = plt.subplots(num_events + 1, n_cols, figsize=(3.0 * n_cols, 3.4 * (num_events + 1)), dpi=150, squeeze=False)
     vox_per_layer = 14 * 24 
-    pc_main = None
-    pc_diff = None
 
-    # --- 5. Render Loop ---
-    for row_idx, event_idx in enumerate(selected_indices):
+    # --- ROW 0: Average Hits ---
+    axes[0, 0].set_ylabel(f"Average Hits\n(N={len(candidate_indices)})", fontsize=11, fontweight='bold', labelpad=10)
+    
+    for l_idx, layer_id in enumerate(display_layers):
+        start_idx = geo.relevant_layers.index(layer_id) * vox_per_layer
+        end_idx = start_idx + vox_per_layer
         
-        # Metadata
+        data_gt_avg = avg_hits_gt[start_idx:end_idx]
+        data_model_avg = avg_hits_model[start_idx:end_idx]
+        data_diff_avg = data_model_avg - data_gt_avg
+        
+        col_gt, col_model, col_diff = l_idx * 3, l_idx * 3 + 1, l_idx * 3 + 2
+        
+        plot_layer_on_ax(axes[0, col_gt], HLF, layer_id, data_gt_avg, title=f"Layer {layer_id} (GT Avg)", norm=norm_main, cmap=cmap_main, title_fontsize=8)
+        plot_layer_on_ax(axes[0, col_model], HLF, layer_id, data_model_avg, title=f"Layer {layer_id} (Model Avg)", norm=norm_main, cmap=cmap_main, title_fontsize=8)
+        plot_layer_on_ax(axes[0, col_diff], HLF, layer_id, data_diff_avg, title=f"Layer {layer_id} (Diff Avg)", norm=norm_diff, cmap=cmap_diff, title_fontsize=8)
+
+    # --- ROWS 1 to N: Individual Events ---
+    for row_offset, event_idx in enumerate(selected_indices):
+        row_idx = row_offset + 1
         inc_e = e_inc_np[event_idx]
+        val_gt, val_model = values_gt[event_idx], values_model[event_idx]
+        full_gt, full_model = hits_gt[event_idx], hits_model[event_idx]
         
-        # Retrieve Pre-calculated Feature Values
-        val_gt = values_gt[event_idx]
-        val_model = values_model[event_idx]
-        
-        # Full Shower Data
-        full_gt = showers_np_gt[event_idx]
-        full_model = showers_np_model[event_idx]
-
-        total_dep_gt = np.sum(full_gt)
-        total_dep_model = np.sum(full_model)
-
-        # Row Label
         axes[row_idx, 0].set_ylabel(f"Event {event_idx}", fontsize=11, fontweight='bold', labelpad=10)
-
-        # --- UPDATED: Meta string with both GT and Model feature values ---
+        
         meta_str = (f"v_GT={val_gt:.2f} | v_M={val_model:.2f}\n"
-                    f"$\Sigma GT$={total_dep_gt:.0f} | $\Sigma M$={total_dep_model:.0f}\n"
-                    f"$E_{{inc}}$={inc_e:.0f}")
+                    f"Hits GT={np.sum(full_gt):.0f} | Hits M={np.sum(full_model):.0f}\n"
+                    f"E_inc={inc_e:.0f}")
 
-        # Loop through requested layers
         for l_idx, layer_id in enumerate(display_layers):
+            start_idx = geo.relevant_layers.index(layer_id) * vox_per_layer
+            end_idx = start_idx + vox_per_layer
             
-            l_idx_geo = geo.relevant_layers.index(layer_id)
-            start_idx = l_idx_geo * vox_per_layer
-            end_idx = (l_idx_geo + 1) * vox_per_layer
-            
-            data_gt = full_gt[start_idx:end_idx]
-            data_model = full_model[start_idx:end_idx]
-            
-            if mode == 'relative':
-                mean_layer = mean_full_shower[start_idx:end_idx]
-                safe_mean = mean_layer.copy()
-                safe_mean[safe_mean == 0] = 1e-9 
-                
-                pl_gt = data_gt / safe_mean
-                pl_model = data_model / safe_mean
-            else:
-                pl_gt = data_gt
-                pl_model = data_model
-            
+            pl_gt, pl_model = full_gt[start_idx:end_idx], full_model[start_idx:end_idx]
             pl_diff = pl_model - pl_gt
+            col_gt, col_model, col_diff = l_idx * 3, l_idx * 3 + 1, l_idx * 3 + 2
             
-            col_gt = l_idx * 3
-            col_model = l_idx * 3 + 1
-            col_diff = l_idx * 3 + 2
+            title_gt = f"Layer {layer_id} (GT)\n{meta_str}"
+            title_model = f"Layer {layer_id} (Model)\n{meta_str}"
+            title_diff = "(M - GT)"
+
+            pc_main = plot_layer_on_ax(axes[row_idx, col_gt], HLF, layer_id, pl_gt, title=title_gt, norm=norm_main, cmap=cmap_main, title_fontsize=7)
+            plot_layer_on_ax(axes[row_idx, col_model], HLF, layer_id, pl_model, title=title_model, norm=norm_main, cmap=cmap_main, title_fontsize=7)
+            pc_diff = plot_layer_on_ax(axes[row_idx, col_diff], HLF, layer_id, pl_diff, title=title_diff, norm=norm_diff, cmap=cmap_diff, title_fontsize=7)
             
-            if row_idx == 0:
-                title_gt = f"Layer {layer_id} (GT)\n{meta_str}"
-                title_model = f"Layer {layer_id} (Model)\n{meta_str}"
-                title_diff = f"Layer {layer_id} (Diff)\n(M - GT)"
-            else:
-                title_gt = meta_str
-                title_model = meta_str
-                title_diff = "(M - GT)"
+            for col in [col_gt, col_model, col_diff]: axes[row_idx, col].title.set_fontsize(8)
 
-            pc_main = plot_layer_on_ax(
-                axes[row_idx, col_gt], HLF, layer_id, pl_gt, 
-                title=title_gt, norm=norm_main, cmap=cmap_main, title_fontsize=7
-            )
-
-            plot_layer_on_ax(
-                axes[row_idx, col_model], HLF, layer_id, pl_model, 
-                title=title_model, norm=norm_main, cmap=cmap_main, title_fontsize=7
-            )
-
-            max_diff = np.max(np.abs(pl_diff))
-            if max_diff == 0: max_diff = 1.0 
-            norm_diff = Normalize(vmin=-max_diff, vmax=max_diff)
-            
-            pc_diff = plot_layer_on_ax(
-                axes[row_idx, col_diff], HLF, layer_id, pl_diff, 
-                title=title_diff, norm=norm_diff, cmap=cmap_diff, title_fontsize=7
-            )
-            
-            axes[row_idx, col_gt].title.set_fontsize(8)
-            axes[row_idx, col_model].title.set_fontsize(8)
-            axes[row_idx, col_diff].title.set_fontsize(8)
-
-    # --- 6. Global Elements ---
-    title_str = (f"Tail Events Comparison ({mode}) @ {target_energy/1000:.0f} GeV | "
-                 f"Sel: L{selection_layer}, {bounds[0]}<{feature_name}<{bounds[1]}\n"
+    # Global Elements
+    source_str = "Ground Truth" if tail_source == 'gt' else "Model"
+    title_str = (f"Tail Events Comparison (Hits) @ {target_energy/1000:.0f} GeV | "
+                 f"Sel: L{selection_layer}, {bounds[0]}<{feature_name}<{bounds[1]} (Filtered by {source_str})\n"
                  f"GT: {label_gt} | Model: {label_model}")
     
     fig.suptitle(title_str, y=0.99, fontsize=14, fontweight='bold')
-    
     fig.subplots_adjust(bottom=0.15, hspace=0.45, wspace=0.25, top=0.91)
     
-    cbar_ax_main = fig.add_axes([0.15, 0.05, 0.35, 0.025])
-    cbar_main = fig.colorbar(pc_main, cax=cbar_ax_main, orientation='horizontal')
+    cbar_main = fig.colorbar(pc_main, cax=fig.add_axes([0.15, 0.05, 0.35, 0.02]), orientation='horizontal')
     cbar_main.set_label(cbar_label_main, fontsize=11)
-    
-    cbar_ax_diff = fig.add_axes([0.55, 0.05, 0.35, 0.025])
-    cbar_diff = fig.colorbar(pc_diff, cax=cbar_ax_diff, orientation='horizontal')
+    cbar_diff = fig.colorbar(pc_diff, cax=fig.add_axes([0.55, 0.05, 0.35, 0.02]), orientation='horizontal')
     cbar_diff.set_label(cbar_label_diff, fontsize=11)
 
     plt.show()
 
+
+
+def visualize_tail_hits_comparison(data_dict, binning_path, 
+                                   target_energy, 
+                                   selection_layer=2, 
+                                   display_layers=[1, 2, 12], 
+                                   feature_name='Phi_center', 
+                                   bounds=(-float('inf'), float('inf')), 
+                                   num_events=4, 
+                                   energy_tol=0.05,
+                                   tail_source='gt', 
+                                   seed=42,
+                                   device="cpu"):
+    
+    if tail_source not in ['gt', 'model']:
+        raise ValueError("tail_source must be 'gt' or 'model'")
+
+    rng = np.random.default_rng(seed)
+    # Assuming AtlasGeometry and DifferentiableFeatureExtractor exist in your namespace
+    geo = AtlasGeometry(filename=binning_path)
+    
+    if selection_layer not in geo.relevant_layers or any(l not in geo.relevant_layers for l in display_layers):
+        print("One or more specified layers not found in geometry.")
+        return
+
+    HLF = HighLevelFeatures_ATLAS_regular(particle='electron', filename=binning_path, relevantLayers=geo.relevant_layers)
+    extractor = DifferentiableFeatureExtractor(geo).to(device)
+    extractor.eval()
+    
+    e_min, e_max = target_energy * (1 - energy_tol), target_energy * (1 + energy_tol)
+    
+    key_map = {'mean_phi': 'Phi_center', 'Phi_center': 'Phi_center', 'mean_eta': 'Eta_center', 'Eta_center': 'Eta_center', 'energy': 'E_layer', 'E_layer': 'E_layer'}
+    target_key = key_map.get(feature_name, feature_name)
+    sel_layer_idx = geo.relevant_layers.index(selection_layer)
+
+    print(f"\n--- Visualizing Hits @ {target_energy}GeV ---")
+    print(f"Comparison: {list(data_dict.keys())[0]} (GT) vs {list(data_dict.keys())[1]} (Model) | Filtering by: {tail_source.upper()}")
+
+    # Call modified extraction module
+    (selected_indices, candidate_indices, values_gt, values_model, showers_np_gt, showers_np_model, 
+     e_inc_np, total_selected, total_in_window) = _extract_and_filter_hits(
+        data_dict, extractor, target_key, sel_layer_idx, e_min, e_max, 
+        bounds, num_events, tail_source, rng, device
+    )
+
+    pct = (total_selected / total_in_window * 100) if total_in_window > 0 else 0.0
+    print(f"Events Selected (based on {tail_source.upper()}): {total_selected}/{total_in_window} ({pct:.2f}%)")
+
+    # Call modified plotting module
+    _plot_hits_grid(
+        selected_indices, candidate_indices, display_layers, geo, showers_np_gt, showers_np_model, 
+        e_inc_np, values_gt, values_model, HLF, target_energy, selection_layer, 
+        bounds, feature_name, tail_source, list(data_dict.keys())[0], list(data_dict.keys())[1]
+    )
 
 
 
