@@ -447,16 +447,17 @@ def _make_synthetic_binning(path, relevant_layers=(0, 1, 2, 3, 12), n_phi=14, n_
     the model constructor doesn't crash.
     """
     import h5py
+    # Key format must match _load_h5_data: layer = key.split("_")[-1]
+    # so the layer index must be the last token: "layer_binsize_alpha_0", etc.
     n_voxels = n_r * n_phi  # 336 for standard ATLAS config
     with h5py.File(path, 'w') as f:
         for layer in relevant_layers:
-            prefix = f"layer_{layer}"
-            f[f"{prefix}_binsize_alpha"]  = np.full(n_voxels, 2 * np.pi / n_phi)
-            f[f"{prefix}_binstart_alpha"] = np.tile(
+            f[f"layer_binsize_alpha_{layer}"]  = np.full(n_voxels, 2 * np.pi / n_phi)
+            f[f"layer_binstart_alpha_{layer}"] = np.tile(
                 np.linspace(0, 2 * np.pi, n_phi, endpoint=False), n_r
             )
-            f[f"{prefix}_binsize_radius"] = np.full(n_voxels, 0.1)
-            f[f"{prefix}_binstart_radius"] = np.repeat(
+            f[f"layer_binsize_radius_{layer}"] = np.full(n_voxels, 0.1)
+            f[f"layer_binstart_radius_{layer}"] = np.repeat(
                 np.linspace(0.1, 0.1 * (n_r + 1), n_r, endpoint=False), n_phi
             )
 
