@@ -142,7 +142,8 @@ def setup_model(config=None):
         base_model = model
 
     engine = instantiate(config.engine, config)
-    engine.data_mgr = dataMgr
+    if dataMgr is not None:
+        engine.data_mgr = dataMgr
     engine.device = dev    
 
     params = list(base_model.encoder.parameters()) + list(base_model.decoder.parameters())
