@@ -1,11 +1,264 @@
 import torch
 import os
 import re
-from typing import List
+import numpy as np
+from typing import List, Tuple
 from model.rbm.rbm_two_partite import RBM_TwoPartite
 from CaloQuVAE import logging
 logger = logging.getLogger(__name__)
 import math
+
+
+def run_pls_pipeline(
+    data_real: torch.Tensor,
+    data_gen: torch.Tensor,
+    classical_features: torch.Tensor,
+    n_components: int = 4,
+    max_iter: int = 500,
+    tol: float = 1e-10,
+) -> Tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
+    """
+    Partial Least Squares (PLS) via NIPALS.  Finds the latent directions in the
+    visible space that maximise covariance with the classical feature matrix.
+
+    Both X (data_real) and Y (classical_features) are centred and Y is
+    unit-variance scaled before decomposition.  Projections use the
+    PLS rotation matrix W* = W (P^T W)^{-1} so that successive LV scores
+    are as orthogonal as possible.
+
+    Parameters
+    ----------
+    data_real : torch.Tensor  (n_real, n_visible)
+        Real / reference samples — used to fit the PLS basis.
+    data_gen : torch.Tensor   (n_gen, n_visible)
+        Generated samples — projected onto the fitted basis.
+    classical_features : torch.Tensor  (n_real, n_features)
+        Feature matrix aligned row-wise with data_real.
+    n_components : int
+        Number of latent variables (LVs) to extract.
+
+    Returns
+    -------
+    proj_real : np.ndarray  (n_real, n_components)  — LV scores for real data
+    proj_gen  : np.ndarray  (n_gen,  n_components)  — LV scores for gen data
+    x_weights : np.ndarray  (n_visible,  n_components)  — X weight vectors W
+    y_weights : np.ndarray  (n_features, n_components)  — Y weight vectors C
+    """
+    device = data_real.device
+    dtype = torch.float32
+    n_visible = data_real.shape[1]
+
+    # --- Centre X, centre + scale Y ---
+    x_mean = data_real.mean(0)
+    X = (data_real - x_mean).to(dtype)
+
+    Y_raw = classical_features.to(device=device, dtype=dtype)
+    if Y_raw.dim() == 1:
+        Y_raw = Y_raw.unsqueeze(1)
+    y_mean = Y_raw.mean(0)
+    y_std = Y_raw.std(0)
+    y_std[y_std < 1e-8] = 1.0
+    Y = (Y_raw - y_mean) / y_std
+
+    n_features = Y.shape[1]
+
+    X_res = X.clone()
+    Y_res = Y.clone()
+
+    W = torch.zeros(n_visible,  n_components, device=device, dtype=dtype)  # X weights
+    C = torch.zeros(n_features, n_components, device=device, dtype=dtype)  # Y weights
+    P = torch.zeros(n_visible,  n_components, device=device, dtype=dtype)  # X loadings
+
+    print(f"Running NIPALS PLS ({n_components} components)...")
+    for k in range(n_components):
+        # Initialise with the Y column that has the largest variance
+        u = Y_res[:, int(Y_res.var(0).argmax())]
+
+        for _ in range(max_iter):
+            # X step
+            w = X_res.T @ u
+            w = w / w.norm()
+            t = X_res @ w
+
+            # Y step
+            c = Y_res.T @ t
+            c = c / c.norm()
+            u_new = Y_res @ c
+
+            if (u_new - u).norm() < tol:
+                u = u_new
+                break
+            u = u_new
+
+        # Store
+        W[:, k] = w
+        C[:, k] = c
+
+        # X loading and deflation
+        p = (X_res.T @ t) / (t @ t)
+        P[:, k] = p
+        X_res = X_res - t.unsqueeze(1) * p.unsqueeze(0)
+        Y_res = Y_res - t.unsqueeze(1) * c.unsqueeze(0)
+
+        print(f"  LV{k} done.")
+
+    # PLS rotation: W* = W (P^T W)^{-1} gives orthogonal scores
+    W_star = W @ torch.linalg.inv(P.T @ W)
+
+    scale = n_visible ** 0.5
+    proj_real = ((data_real - x_mean) @ W_star / scale).detach().cpu().numpy()
+    proj_gen  = ((data_gen  - x_mean) @ W_star / scale).detach().cpu().numpy()
+
+    return proj_real, proj_gen, W.detach().cpu().numpy(), C.detach().cpu().numpy()
+
+
+def calculate_pls_r2(
+    proj_real: np.ndarray,
+    classical_features,
+) -> np.ndarray:
+    """
+    Cumulative R² of predicting classical_features from the first k PLS
+    latent variables, for k = 1, ..., n_components.
+
+    Uses OLS with an intercept at each k so the result is comparable to
+    sklearn's PLSRegression score — it measures how much of the feature
+    variance the LV subspace actually captures.
+
+    Parameters
+    ----------
+    proj_real : np.ndarray  (n_real, n_components)
+        LV scores from run_pls_pipeline, aligned with classical_features.
+    classical_features : torch.Tensor or np.ndarray  (n_real,) or (n_real, n_features)
+
+    Returns
+    -------
+    r2 : np.ndarray  (n_components, n_features)
+        r2[k, f] is the R² for feature f using the first k+1 LVs.
+    """
+    if torch.is_tensor(classical_features):
+        Y = classical_features.detach().cpu().numpy().astype(np.float64)
+    else:
+        Y = np.array(classical_features, dtype=np.float64)
+    if Y.ndim == 1:
+        Y = Y[:, None]
+
+    n_samples, n_features = Y.shape
+    n_components = proj_real.shape[1]
+
+    ss_tot = ((Y - Y.mean(0)) ** 2).sum(0)
+    ss_tot = np.where(ss_tot > 0, ss_tot, 1.0)
+
+    r2 = np.zeros((n_components, n_features))
+    for k in range(1, n_components + 1):
+        T_aug = np.hstack([proj_real[:, :k], np.ones((n_samples, 1))])
+        B, _, _, _ = np.linalg.lstsq(T_aug, Y, rcond=None)
+        ss_res = ((Y - T_aug @ B) ** 2).sum(0)
+        r2[k - 1] = 1.0 - ss_res / ss_tot
+
+    return r2
+
+
+def run_sir_pipeline(
+    data_real: torch.Tensor,
+    data_gen: torch.Tensor,
+    classical_features,
+    n_components: int = 4,
+    n_slices: int = 10,
+    regularize: float = 1e-8,
+) -> Tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
+    """
+    Sliced Inverse Regression (SIR).
+
+    Finds the directions in visible space along which E[X | Y] varies most,
+    i.e. the directions most predictive of the classical feature.  Unlike PLS
+    (which maximises X-Y covariance), SIR directly targets the conditional
+    mean structure, which tends to give much higher R² for a single scalar Y.
+
+    Algorithm (Li 1991):
+      1. Whiten X: Z = (X - x̄) Σ_X^{-1/2}
+      2. Slice Y into H quantile bins; compute the slice mean z̄_h for each bin.
+      3. Form M = Σ_h (n_h/n) z̄_h z̄_hᵀ  (the between-slice variance matrix).
+      4. Eigendecompose M; top eigenvectors → SIR directions in whitened space.
+      5. Back-transform to original space: η_k = Σ_X^{-1/2} v_k.
+
+    Parameters
+    ----------
+    data_real : torch.Tensor  (n_real, n_visible)
+    data_gen  : torch.Tensor  (n_gen,  n_visible)
+    classical_features : Tensor or ndarray  (n_real,) or (n_real, 1)
+        Scalar response aligned with data_real.  If 2-D, the first column is used.
+    n_components : int
+        Number of SIR directions to return.
+    n_slices : int
+        Number of quantile slices of Y.  Rule of thumb: ~10-20.
+    regularize : float
+        Floor applied to eigenvalues of Σ_X before inversion (prevents blow-up
+        for near-collinear features).
+
+    Returns
+    -------
+    proj_real  : np.ndarray  (n_real, n_components)
+    proj_gen   : np.ndarray  (n_gen,  n_components)
+    eta        : np.ndarray  (n_visible, n_components)  — SIR direction matrix
+    eigenvalues: np.ndarray  (n_components,)            — eigenvalues of M
+    """
+    # --- Convert to numpy ---
+    X_np = data_real.detach().cpu().numpy().astype(np.float64)
+    G_np = data_gen.detach().cpu().numpy().astype(np.float64)
+
+    if torch.is_tensor(classical_features):
+        Y_np = classical_features.detach().cpu().numpy().astype(np.float64)
+    else:
+        Y_np = np.array(classical_features, dtype=np.float64)
+    if Y_np.ndim > 1:
+        Y_np = Y_np[:, 0]   # SIR is for scalar Y; use first column if multi-dim
+
+    n, p = X_np.shape
+    assert len(Y_np) == n, "classical_features must have same length as data_real"
+
+    print("1. Centering and whitening X...")
+    x_mean = X_np.mean(0)
+    X_c = X_np - x_mean
+
+    Sigma = (X_c.T @ X_c) / n
+    evals, evecs = np.linalg.eigh(Sigma)                    # ascending order
+    inv_sqrt = np.where(evals > regularize, evals ** -0.5, 0.0)
+    Sigma_inv_sqrt = evecs @ np.diag(inv_sqrt) @ evecs.T    # (p, p)
+    Z = X_c @ Sigma_inv_sqrt                                 # (n, p) whitened
+
+    print(f"2. Slicing Y into {n_slices} quantile bins...")
+    boundaries = np.percentile(Y_np, np.linspace(0, 100, n_slices + 1))
+    # Make boundaries unique to avoid empty slices from ties
+    boundaries = np.unique(boundaries)
+    actual_slices = len(boundaries) - 1
+
+    print("3. Computing between-slice covariance M...")
+    M = np.zeros((p, p))
+    for h in range(actual_slices):
+        lo, hi = boundaries[h], boundaries[h + 1]
+        mask = (Y_np >= lo) & (Y_np <= hi if h == actual_slices - 1 else Y_np < hi)
+        n_h = mask.sum()
+        if n_h == 0:
+            continue
+        z_bar = Z[mask].mean(0)          # (p,)
+        M += (n_h / n) * np.outer(z_bar, z_bar)
+
+    print("4. Eigendecomposing M...")
+    evals_M, evecs_M = np.linalg.eigh(M)
+    # Descending order
+    idx = np.argsort(evals_M)[::-1]
+    V = evecs_M[:, idx[:n_components]]          # (p, n_components) in whitened space
+    top_evals = evals_M[idx[:n_components]]
+
+    # Back-transform to original space
+    eta = Sigma_inv_sqrt @ V                    # (p, n_components)
+
+    print("5. Projecting data...")
+    scale = p ** 0.5
+    proj_real = (X_c @ eta) / scale
+    proj_gen  = ((G_np - x_mean) @ eta) / scale
+
+    return proj_real, proj_gen, eta, top_evals
 
 
 def decode_binary_energy(x_encoded, lin_bits=23):

@@ -5,10 +5,11 @@ defaults:
 base_model_config: "config" # The name of your existing model config file
 
 experiment:
-  name: "CaloQVAE_Hyperopt_Photons"
-  total_trials: 32
+  name: "CaloQVAE_Hyperopt_Compact"
+  total_trials: 36
   save_dir_root: "/home/leozhu/CaloQuVAE/wandb-outputs"
   resume: true
+  n_sobol: 8
 
 resources:
   gpus: [0, 1, 2]
@@ -17,10 +18,13 @@ resources:
 
 fixed_data_settings:
   data_config_name: "AtlasCustom2"
+  # data_config_name: "TestData"
+
 
   
   # This overwrites the validation loop list
   validation_datasets:
+    # - TestData
     - AtlasCustom1GeV
     - AtlasCustom10GeV
     - AtlasCustom50GeV
@@ -30,8 +34,8 @@ fixed_data_settings:
 
 # Training overrides specific to optimization (faster/shorter runs)
 training:
-  n_epochs: 25
-  eval_window: 3
+  n_epochs: 200
+  eval_window: 5
   epoch_start: 0
 
 # The Search Space (Parsed dynamically in main.py)
@@ -41,30 +45,21 @@ search_space:
     bounds: [0.1, 1.0]
     log_scale: true
 
-  - name: "model.loss_coeff.mmd_loss"
-    type: "range"
-    bounds: [0.0, 3.0]
-
-  - name: "model.loss_coeff.r_loss"
+  - name: "model.loss_coeff.r_loss_coeff"
     type: "range"
     bounds: [0.0, 10.0]
 
-  - name: "model.loss_coeff.focal_gamma"
+  - name: "engine.learning_rate"
     type: "range"
-    bounds: [0.0, 4.0]
-  
-  - name: "model.loss_coeff.hit_loss"
-    type: "range"
-    bounds: [0.2, 5.0]
+    bounds: [1e-5, 1e-3]
     log_scale: true
-    
-  - name: "engine.beta_latent_end"
-    type: "choice"
-    values: [2.0, 100.0]
 
-  - name: "engine.beta_hits_end"
-    type: "choice"
-    values: [2.0, 100.0]
+  - name: "engine.weight_decay"
+    type: "range"
+    bounds: [0.0, 1e-2]
+
+  
+
 
   
 # Metrics
@@ -75,9 +70,6 @@ objectives:
 # Manual Seeds
 manual_seeds:
   - model.mse_weight: 0.5
-    model.loss_coeff.hit_loss: 1.0
-    model.loss_coeff.mmd_loss: 0.0
-    model.loss_coeff.r_loss: 0.0
-    model.loss_coeff.focal_gamma: 0.0
-    engine.beta_latent_end: 2.0
-    engine.beta_hits_end: 100.0
+    model.loss_coeff.r_loss_coeff: 0.0
+    engine.learning_rate: 0.00005
+    engine.weight_decay: 0.0

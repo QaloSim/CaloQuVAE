@@ -1,15 +1,24 @@
 save_state: 1
 load_state: 0
+seed: 42
 save_hists: 0
 save_partition: 1
 freeze_vae: 0
 
 run_path: ""
-config_path: ""
+# config_path: "/fast_scratch_1/caloqvae/lzhu/wandb/run-20260314_000819-rooxcwhm/files/ae_layers_bce_best_epoch233_config.yaml"
+# config_path: "/fast_scratch_1/caloqvae/lzhu/wandb/run-20260326_234631-ka0k9tla/files/ae_layers_no_hits_best_epoch105_config.yaml"
+# config_path: "/fast_scratch_1/caloqvae/lzhu/wandb/run-20260327_205604-p2y7cijj/files/ae_layers_no_hits_best_epoch35_config.yaml"
+# config_path: "/fast_scratch_1/caloqvae/lzhu/wandb/run-20260327_234237-p09ra399/files/ae_layers_no_hits_best_epoch222_config.yaml"
+# config_path: "/fast_scratch_1/caloqvae/lzhu/wandb/run-20260401_175025-fmdqgtay/files/ae_layers_no_hits_best_epoch104_config.yaml"
+# config_path: "/fast_scratch_1/caloqvae/lzhu/wandb/run-20260401_173823-ez476wne/files/ae_layers_no_hits_best_epoch136_config.yaml"
+# config_path: "/fast_scratch_1/caloqvae/lzhu/wandb/run-20260417_192956-gmzesqgo/files/ae_layers_no_hits_best_epoch299_config.yaml"
+# config_path: "/fast_scratch_1/caloqvae/lzhu/wandb/run-20260419_045919-abx6xx17/files/ae_layers_no_hits_best_epoch56_config.yaml"
+config_path: "/fast_scratch_1/caloqvae/lzhu/wandb/run-20260421_001607-k6wwwxh4/files/ae_layers_no_hits_best_ema_epoch33_config.yaml"
 
 device: gpu
 gpu_list:
-  - 2
+  - 0
   # - 0
   # - 1
   # - 2
@@ -17,13 +26,14 @@ gpu_list:
 
 defaults:
   - data: AtlasCustom2
+  # - data: TestData
   - wandb: ML2
-  - model: model_ATLASLayers
+  - model: model_ATLASLayersSparsity
   - engine: engine_layers
   - rbm: zephyr
   - _self_
 
-n_epochs: 2000
+n_epochs: 4000
 epoch_freeze: 160
 epoch_start: 0
 

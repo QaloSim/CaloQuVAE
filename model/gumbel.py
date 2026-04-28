@@ -44,6 +44,24 @@ class GumbelNoNoise(torch.nn.Module):
             out = torch.heaviside(logits, torch.tensor([0.], device=logits.device))
         return out
 
+class GumbelTemperature(torch.nn.Module):
+    def __init__(self, T=1.0):
+        super(GumbelTemperature, self).__init__()
+        self.activation_fct = torch.nn.Sigmoid()
+        self.T = T
+        
+    def forward(self, logits, beta=100.0):
+        """
+        Gumbel reparameterization trick with temperature scaling
+        """
+        rho = torch.rand(logits.size(), device=logits.device)
+        logits_gumbel = (logits / self.T) + torch.log(rho) - torch.log(1 - rho)
+            
+        if self.training:
+            out = self.activation_fct(logits_gumbel * beta)
+        else:
+            out = torch.heaviside(logits_gumbel, torch.tensor([0.], device=logits.device))
+        return out
 
 class STEActivation(torch.nn.Module):
     def __init__(self):

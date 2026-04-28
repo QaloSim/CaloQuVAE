@@ -10,8 +10,8 @@ z: 5
 r: 24
 phi: 14
 
-frac_val_dataset: 0.1
-frac_train_dataset: 0.1
+frac_val_dataset: 0.01
+frac_train_dataset: 0.011
 
 batch_size_tr: 512
 batch_size_val: 1024

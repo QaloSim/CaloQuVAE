@@ -4,7 +4,7 @@ encoderblock: AtlasNew
 decoder: decoderfullgeoatlasnew
 
 output_smoothing_fct: 60
-mse_weight: 0.5
+mse_weight: 0.0
 coefficient: 0.01
 
 hidden_layer: 0
@@ -16,4 +16,8 @@ log_bits: 17
 loss_coeff:
   ae_loss: 1.0
   hit_loss: 1.0
+  mmd_loss: 0.0
+  feature_mae: 0.0
+  # focal_alpha: 0.588425
+  # focal_gamma: 2.0
   

@@ -4,20 +4,30 @@ encoderblock: AtlasNew
 decoder: decoderfullgeoatlasclean
 
 output_smoothing_fct: 60
+smoothing_dist: gumbel_no_noise
+# mse_weight: 0.5
 mse_weight: 0.5
 coefficient: 0.01
 
 hidden_layer: 0
-cond_p_size: 53
+cond_p_size: 52
 lin_bits: 19
 sqrt_bits: 17
-log_bits: 17
+log_bits: 16
 
 loss_coeff:
   ae_loss: 1.0
   hit_loss: 1.0
   mmd_loss: 0.0
-  feature_mae: 1.0
+  feature_mae: 0.0
+  focal_alpha: 0.588425
+  focal_gamma: 0.0
+  # ae_loss: 1
+  # feature_mae: 0
   # focal_alpha: 0.588425
-  # focal_gamma: 2.0
+  # focal_gamma: 0.5093181729316711
+  # hit_loss: 3.06753180080103
+  # mmd_loss: 2.07813423871994
+  r_loss_coeff: 0.0
+
   

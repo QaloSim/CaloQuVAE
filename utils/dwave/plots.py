@@ -1628,6 +1628,8 @@ def plot_permutation_sweep_analysis(sweep_results):
     default_run = sweep_results["default_orbit"]
     best_run = sweep_results["best_orbit"]
     agg_run = sweep_results.get("aggregated_orbit")  # None for legacy results
+    default_srt_run = sweep_results.get("default_srt_aggregated")  # None for legacy results
+    anneal_time = sweep_results.get("anneal_time")  # None for legacy results
 
     all_errors = [m['error_norm'] for m in metrics]
     all_breaks = [m['chain_break_frac'] for m in metrics]
@@ -1638,6 +1640,9 @@ def plot_permutation_sweep_analysis(sweep_results):
 
     fig = plt.figure(figsize=(fig_width, 15))
     gs = fig.add_gridspec(3, n_cols, height_ratios=[0.25, 0.4, 0.4])
+
+    anneal_str = f"t_a={anneal_time} µs" if anneal_time is not None else "t_a=default"
+    fig.suptitle(f"MC Permutation Sweep  |  {anneal_str}", fontsize=14, fontweight='bold', y=1.01)
 
     # --- TOP ROW: STATS ---
 
@@ -1683,6 +1688,10 @@ def plot_permutation_sweep_analysis(sweep_results):
         labels = ['Default', 'Best', 'Aggregated']
         values = [default_run['error_norm'], best_run['error_norm'], agg_run['error_norm']]
         colors = ['firebrick', 'forestgreen', 'mediumpurple']
+        if default_srt_run is not None:
+            labels.append('Default\n(SRT-Agg)')
+            values.append(default_srt_run['error_norm'])
+            colors.append('steelblue')
         bars = ax_bar.bar(labels, values, color=colors, alpha=0.8, width=0.5)
         ax_bar.set_title("Strategy Comparison", fontweight='bold')
         ax_bar.set_ylabel("Error Norm vs Classical")
@@ -1707,7 +1716,13 @@ def plot_permutation_sweep_analysis(sweep_results):
     plot_mat(ax_cl, mat_classical, "Target (Classical RBM)")
 
     ax_def = fig.add_subplot(gs[1, 1])
-    plot_mat(ax_def, default_run['matrix'], f"Default Embedding\nErr: {default_run['error_norm']:.3f}")
+    if default_srt_run is not None:
+        n_srt = default_srt_run.get('num_srt_batches', '?')
+        srt_label = default_srt_run.get('label', 'Default')
+        plot_mat(ax_def, default_srt_run['matrix'],
+                 f"{srt_label} (SRT-Aggregated, {n_srt} batches)\nErr: {default_srt_run['error_norm']:.3f}")
+    else:
+        plot_mat(ax_def, default_run['matrix'], f"Default Embedding\nErr: {default_run['error_norm']:.3f}")
 
     ax_best = fig.add_subplot(gs[1, 2])
     im_main = plot_mat(ax_best, best_run['matrix'], f"Best Permutation\nErr: {best_run['error_norm']:.3f}")
@@ -1720,9 +1735,15 @@ def plot_permutation_sweep_analysis(sweep_results):
     ax_empty = fig.add_subplot(gs[2, 0])
     ax_empty.axis('off')
 
-    diff_default = default_run['matrix'] - mat_classical
+    if default_srt_run is not None:
+        diff_default = default_srt_run['matrix'] - mat_classical
+        srt_label = default_srt_run.get('label', 'Default')
+        diff_default_title = f"Error: {srt_label} (SRT-Agg) - Classical"
+    else:
+        diff_default = default_run['matrix'] - mat_classical
+        diff_default_title = "Error: Default - Classical"
     ax_diff_def = fig.add_subplot(gs[2, 1])
-    plot_mat(ax_diff_def, diff_default, "Error: Default - Classical", diff=True)
+    plot_mat(ax_diff_def, diff_default, diff_default_title, diff=True)
 
     diff_best = best_run['matrix'] - mat_classical
     ax_diff_best = fig.add_subplot(gs[2, 2])
@@ -3097,4 +3118,1078 @@ def plot_srt_aggregation_comparison(comparison_results):
         fontsize=14, fontweight='bold', y=0.98
     )
     plt.tight_layout(rect=[0, 0, 0.9, 0.97])
+
+
+def plot_annealing_time_sweep(sweep_results):
+    """
+    Visualises the output of run_annealing_time_sweep.
+
+    Top section (4 stat panels, spanning full width):
+      β vs annealing time | QPU energy convergence | Error norm vs annealing time | Chain break fraction
+
+    Matrix section (1 + n_times columns):
+      Row A: Classical | t_1 matrix | t_2 matrix | ...
+      Row B: (empty)   | t_1 diff   | t_2 diff   | ...
+
+    Magnetization section (1 + n_times columns):
+      Classical mag | ΔMag t_1 | ΔMag t_2 | ...
+    """
+    annealing_times = sweep_results["annealing_times"]
+    per = sweep_results["per_time_results"]
+    mat_classical = sweep_results["classical_matrix"]
+    mag_classical = sweep_results.get("classical_magnetization")
+
+    n_times = len(annealing_times)
+    n_mat_cols = 1 + n_times
+
+    effective_betas = [per[at]["effective_beta"] for at in annealing_times]
+    error_norms     = [per[at]["error_norm"]      for at in annealing_times]
+    break_fracs     = [per[at].get("break_frac", 0.0) for at in annealing_times]
+    mean_rbm_e      = per[annealing_times[0]]["rbm_energy_hist"][-1]
+
+    tc = plt.cm.viridis
+    colors = [tc(i / max(n_times - 1, 1)) for i in range(n_times)]
+
+    fig = plt.figure(figsize=(max(14, 4 * n_mat_cols), 20))
+    fig.suptitle("Annealing Time Sweep: Sample Quality vs Annealing Time",
+                 fontsize=14, fontweight='bold', y=0.99)
+
+    # Three separate gridspecs: top (stats), middle (matrices), bottom (magnetization)
+    gs_top = fig.add_gridspec(1, 4, top=0.95, bottom=0.80, wspace=0.35)
+    gs_mat = fig.add_gridspec(2, n_mat_cols, top=0.74, bottom=0.40,
+                              hspace=0.08, wspace=0.05)
+    gs_mag = fig.add_gridspec(1, n_mat_cols, top=0.32, bottom=0.03, wspace=0.05)
+
+    # ── Stat panel 1: β vs annealing time ──
+    ax_beta = fig.add_subplot(gs_top[0, 0])
+    ax_beta.plot(annealing_times, effective_betas, color='purple', linewidth=2, zorder=3)
+    for at, eb, c in zip(annealing_times, effective_betas, colors):
+        ax_beta.scatter(at, eb, color=c, s=80, zorder=5)
+    ax_beta.set_xlabel("Annealing Time (µs)")
+    ax_beta.set_ylabel(r"Effective $\beta$")
+    ax_beta.set_title(r"Effective $\beta$ vs Annealing Time", fontweight='bold')
+    ax_beta.grid(True, linestyle='--', alpha=0.5)
+
+    # ── Stat panel 2: QPU energy convergence ──
+    ax_energy = fig.add_subplot(gs_top[0, 1])
+    ax_energy.axhline(mean_rbm_e, color='black', linestyle='--', linewidth=1.5, label='RBM Baseline')
+    for at, c in zip(annealing_times, colors):
+        eh = per[at]["qpu_energy_hist"]
+        ax_energy.plot(range(len(eh)), eh, marker='x', color=c, label=f"{at} µs", linewidth=1.5)
+    ax_energy.set_xlabel("Epoch")
+    ax_energy.set_ylabel("Mean Joint Energy")
+    ax_energy.set_title("QPU Energy Convergence", fontweight='bold')
+    ax_energy.legend(fontsize=7, title="Ann. Time", title_fontsize=7)
+    ax_energy.grid(True, linestyle='--', alpha=0.5)
+
+    # ── Stat panel 3: Error norm vs annealing time ──
+    n_srt = sweep_results.get("num_srt_batches", "?")
+    ax_err = fig.add_subplot(gs_top[0, 2])
+    ax_err.plot(annealing_times, error_norms, color='steelblue', linewidth=2, zorder=3)
+    for at, en, c in zip(annealing_times, error_norms, colors):
+        ax_err.scatter(at, en, color=c, s=80, zorder=5)
+        ax_err.annotate(f"{en:.3f}", (at, en), textcoords='offset points',
+                        xytext=(0, 6), ha='center', fontsize=7)
+    ax_err.set_xlabel("Annealing Time (µs)")
+    ax_err.set_ylabel("Error Norm vs Classical")
+    ax_err.set_title(f"Sample Quality vs Annealing Time\n({n_srt} SRT batches aggregated)",
+                     fontweight='bold')
+    ax_err.grid(True, linestyle='--', alpha=0.5)
+
+    # ── Stat panel 4: Chain break fraction vs annealing time ──
+    ax_break = fig.add_subplot(gs_top[0, 3])
+    ax_break.plot(annealing_times, break_fracs, color='firebrick', linewidth=2, zorder=3)
+    for at, bf, c in zip(annealing_times, break_fracs, colors):
+        ax_break.scatter(at, bf, color=c, s=80, zorder=5)
+        ax_break.annotate(f"{bf:.1%}", (at, bf), textcoords='offset points',
+                          xytext=(0, 6), ha='center', fontsize=7)
+    ax_break.set_xlabel("Annealing Time (µs)")
+    ax_break.set_ylabel("Chain Break Fraction")
+    ax_break.set_title("Chain Break Fraction vs Annealing Time", fontweight='bold')
+    ax_break.yaxis.set_major_formatter(plt.FuncFormatter(lambda x, _: f"{x:.0%}"))
+    ax_break.grid(True, linestyle='--', alpha=0.5)
+
+    # ── Matrix helper ──
+    def plot_mat(ax, data, title, diff=False):
+        cmap_m = 'bwr' if diff else 'seismic'
+        vmin, vmax = (-0.5, 0.5) if diff else (-1, 1)
+        im = ax.imshow(data, cmap=cmap_m, vmin=vmin, vmax=vmax, origin='lower')
+        ax.set_title(title, fontsize=9, fontweight='bold')
+        ax.axis('off')
+        return im
+
+    # ── Row A: absolute correlation matrices ──
+    ax_cl = fig.add_subplot(gs_mat[0, 0])
+    plot_mat(ax_cl, mat_classical, "Target\n(Classical RBM)")
+
+    for col, (at, c) in enumerate(zip(annealing_times, colors), start=1):
+        ax = fig.add_subplot(gs_mat[0, col])
+        err = per[at]["error_norm"]
+        beta = per[at]["effective_beta"]
+        im_main = plot_mat(ax, per[at]["matrix"],
+                           f"{at} µs\nβ={beta:.2f}  err={err:.3f}")
+
+    # ── Row B: difference matrices ──
+    ax_empty = fig.add_subplot(gs_mat[1, 0])
+    ax_empty.axis('off')
+
+    for col, at in enumerate(annealing_times, start=1):
+        ax = fig.add_subplot(gs_mat[1, col])
+        diff = per[at]["matrix"] - mat_classical
+        im_diff = plot_mat(ax, diff, f"Δ ({at} µs − Classical)", diff=True)
+
+    # Colorbars
+    cbar_main = fig.add_axes([0.92, 0.52, 0.012, 0.19])
+    fig.colorbar(im_main, cax=cbar_main, label="Pearson Correlation")
+
+    cbar_diff = fig.add_axes([0.92, 0.40, 0.012, 0.10])
+    fig.colorbar(im_diff, cax=cbar_diff, label="Correlation Delta")
+
+    # ── Magnetization row ──
+    def _style_mag_ax(ax, n_nodes, ylabel):
+        ax.set_xlabel("Latent Node Index", fontsize=9)
+        ax.set_ylabel(ylabel, fontsize=9)
+        ax.set_xlim(-1, n_nodes)
+        ax.tick_params(axis='x', which='both', bottom=False, labelbottom=False)
+        ax.grid(axis='y', linestyle='--', alpha=0.5, zorder=0)
+        ax.spines['top'].set_visible(False)
+        ax.spines['right'].set_visible(False)
+
+    if mag_classical is not None:
+        n_nodes = len(mag_classical)
+        x = np.arange(n_nodes)
+
+        deltas = [
+            per[at].get("magnetization", np.zeros(n_nodes)) - mag_classical
+            for at in annealing_times
+        ]
+        lim = max((float(np.abs(d).max()) for d in deltas), default=0.05) * 1.15
+        lim = max(lim, 0.05)
+
+        ax_mag_cl = fig.add_subplot(gs_mag[0, 0])
+        ax_mag_cl.bar(x, mag_classical, color='dimgray', alpha=0.75, linewidth=0)
+        ax_mag_cl.set_title("Classical\nMagnetization", fontsize=9, fontweight='bold')
+        ax_mag_cl.set_ylim(0, 1)
+        _style_mag_ax(ax_mag_cl, n_nodes, r"$\langle\sigma\rangle$")
+
+        for col, (at, delta, c) in enumerate(zip(annealing_times, deltas, colors), start=1):
+            ax_d = fig.add_subplot(gs_mag[0, col])
+            bar_colors = ['steelblue' if d >= 0 else 'firebrick' for d in delta]
+            ax_d.bar(x, delta, color=bar_colors, alpha=0.85, linewidth=0)
+            ax_d.axhline(0, color='black', linewidth=1.0, linestyle='--', zorder=3)
+            rms = float(np.sqrt(np.mean(delta ** 2)))
+            ax_d.set_title(f"ΔMag: {at}µs\nRMS Δ = {rms:.3f}",
+                           fontsize=9, fontweight='bold', color=c)
+            ax_d.set_ylim(-lim, lim)
+            _style_mag_ax(ax_d, n_nodes, r"$\Delta\langle\sigma\rangle$")
+    else:
+        for col in range(n_mat_cols):
+            ax = fig.add_subplot(gs_mag[0, col])
+            ax.text(0.5, 0.5, "Magnetization data\nnot available",
+                    ha='center', va='center', transform=ax.transAxes,
+                    fontsize=9, color='gray')
+            ax.axis('off')
+
+    plt.show()
+
+
+def plot_chain_break_histogram(result: dict, bins: int = 50):
+    """
+    Visualises the output of run_chain_break_histogram.
+
+    Layout
+    ------
+    Top row  (2 panels):
+      Left  – histogram of per-read chain break fractions; cutoff thresholds
+              are marked as vertical dashed lines coloured by cutoff level.
+      Right – error norm vs. cutoff fraction bar chart.
+    Middle row (n_cutoffs + 1 panels):
+      Classical correlation matrix followed by one panel per cutoff.
+    Bottom row (n_cutoffs + 1 panels):
+      Empty placeholder followed by diff matrices (QPU cutoff – Classical).
+    """
+    fracs = result["per_read_break_fracs"]
+    overall_mean = result["overall_mean"]
+    pct_clean = result["pct_clean"]
+    num_reads = result["num_reads"]
+    srt_batches = result["srt_batches"]
+    cutoffs = result["cutoffs"]
+    cutoff_results = result["cutoff_results"]
+    mat_classical = result["classical_matrix"]
+    median_val = float(np.median(fracs))
+
+    n_cuts = len(cutoffs)
+    n_mat_cols = 1 + n_cuts  # classical + one per cutoff
+
+    cmap_cuts = plt.cm.plasma
+    cut_colors = [cmap_cuts(i / max(n_cuts - 1, 1)) for i in range(n_cuts)]
+
+    fig = plt.figure(figsize=(max(14, 4 * n_mat_cols), 15))
+    fig.suptitle("Chain Break Fraction: Distribution & Filtering Fidelity",
+                 fontsize=14, fontweight='bold', y=0.99)
+
+    gs_top = fig.add_gridspec(1, 2, top=0.93, bottom=0.68, wspace=0.3)
+    gs_mat = fig.add_gridspec(2, n_mat_cols, top=0.62, bottom=0.03,
+                              hspace=0.08, wspace=0.05)
+
+    # ── Top-left: histogram ──
+    ax_hist = fig.add_subplot(gs_top[0, 0])
+    ax_hist.hist(fracs, bins=bins, color='#4C72B0', edgecolor='white', alpha=0.8)
+    ax_hist.axvline(overall_mean, color='crimson', linestyle='--', linewidth=1.5,
+                    label=f"Mean: {overall_mean:.2%}")
+    ax_hist.axvline(median_val, color='orange', linestyle=':', linewidth=1.5,
+                    label=f"Median: {median_val:.2%}")
+
+    # Mark each cutoff threshold on the histogram
+    for c, col in zip(cutoffs, cut_colors):
+        thresh = cutoff_results[c]["max_break_frac"]
+        ax_hist.axvline(thresh, color=col, linestyle='-', linewidth=1.2, alpha=0.8,
+                        label=f"{c:.0%} cutoff (≤{thresh:.2%})")
+
+    # Light grey batch-mean ticks
+    for bm in result.get("batch_mean_fracs", []):
+        ax_hist.axvline(bm, color='gray', linestyle='-', linewidth=0.6, alpha=0.4)
+
+    ax_hist.set_title("Per-Read Chain Break Fraction Distribution", fontsize=12)
+    ax_hist.set_xlabel("Chain Break Fraction per Read", fontsize=11)
+    ax_hist.set_ylabel("Count", fontsize=11)
+    ax_hist.grid(axis='y', linestyle='--', alpha=0.5)
+    ax_hist.legend(fontsize=8, loc='upper right')
+
+    stats_text = (
+        f"Reads: {num_reads}  ({srt_batches} SRT batches)\n"
+        f"Clean (0 breaks): {pct_clean:.1f}%\n"
+        f"Mean: {overall_mean:.2%}"
+    )
+    ax_hist.text(0.02, 0.97, stats_text, transform=ax_hist.transAxes,
+                 verticalalignment='top', horizontalalignment='left',
+                 fontsize=8, bbox=dict(boxstyle='round', facecolor='white', alpha=0.9))
+
+    # ── Top-right: error norm bar chart ──
+    ax_err = fig.add_subplot(gs_top[0, 1])
+    cut_labels = [f"{c:.0%}\n(n={cutoff_results[c]['n_samples']})" for c in cutoffs]
+    error_norms = [cutoff_results[c]["error_norm"] for c in cutoffs]
+    bars = ax_err.bar(cut_labels, error_norms, color=cut_colors, edgecolor='white', alpha=0.85)
+    for bar, err in zip(bars, error_norms):
+        ax_err.text(bar.get_x() + bar.get_width() / 2, bar.get_height() + 0.002,
+                    f"{err:.3f}", ha='center', va='bottom', fontsize=9)
+    ax_err.set_title("Correlation Error Norm vs. Cutoff", fontsize=12)
+    ax_err.set_xlabel("Cutoff (fraction of lowest-break reads kept)", fontsize=10)
+    ax_err.set_ylabel("||QPU − Classical||₂", fontsize=11)
+    ax_err.grid(axis='y', linestyle='--', alpha=0.5)
+
+    # ── Matrix helper ──
+    def plot_mat(ax, data, title, diff=False):
+        cmap_m = 'bwr' if diff else 'seismic'
+        vmin, vmax = (-0.3, 0.3) if diff else (-1, 1)
+        im = ax.imshow(data, cmap=cmap_m, vmin=vmin, vmax=vmax, origin='lower',
+                       aspect='auto')
+        ax.set_title(title, fontsize=8, fontweight='bold')
+        ax.axis('off')
+        return im
+
+    # ── Middle row: correlation matrices ──
+    ax_cl = fig.add_subplot(gs_mat[0, 0])
+    im_main = plot_mat(ax_cl, mat_classical, "Classical RBM\n(Gibbs baseline)")
+
+    for col_idx, (c, col) in enumerate(zip(cutoffs, cut_colors), start=1):
+        cr = cutoff_results[c]
+        ax = fig.add_subplot(gs_mat[0, col_idx])
+        err = cr["error_norm"]
+        n = cr["n_samples"]
+        im_main = plot_mat(ax, cr["matrix"],
+                           f"QPU {c:.0%} cutoff\nn={n}  err={err:.3f}")
+        ax.spines['bottom'].set_visible(True)
+        ax.spines['bottom'].set_color(col)
+        ax.spines['bottom'].set_linewidth(3)
+
+    # ── Bottom row: diff matrices ──
+    ax_empty = fig.add_subplot(gs_mat[1, 0])
+    ax_empty.axis('off')
+
+    for col_idx, (c, col) in enumerate(zip(cutoffs, cut_colors), start=1):
+        cr = cutoff_results[c]
+        ax = fig.add_subplot(gs_mat[1, col_idx])
+        im_diff = plot_mat(ax, cr["diff_matrix"],
+                           f"Δ ({c:.0%} − Classical)", diff=True)
+
+    # ── Colorbars ──
+    cbar_main = fig.add_axes([0.92, 0.35, 0.012, 0.22])
+    fig.colorbar(im_main, cax=cbar_main, label="Pearson r")
+
+    cbar_diff = fig.add_axes([0.92, 0.06, 0.012, 0.22])
+    fig.colorbar(im_diff, cax=cbar_diff, label="Δ Pearson r")
+
+    plt.show()
+
+
+def plot_chain_break_structure(result: dict):
+    """
+    Visualises the output of run_chain_break_structure_analysis.
+
+    Layout
+    ------
+    Row 0 – CV bar chart: logical vs physical heterogeneity with interpretation label.
+    Row 1 – Heatmaps (visible):
+        Left  – logical visible break rates (rows = batches, cols = vars sorted by mean)
+        Right – physical visible slot break rates (rows = batches, cols = slots sorted by mean)
+    Row 2 – Heatmaps (hidden): same as row 1 for hidden variables.
+    Row 3 – Sorted bar charts overlaying logical (bar) and physical (line+shade) break
+            rate distributions for visible (left) and hidden (right).
+
+    Interpretation guide
+    --------------------
+    Physical CV >> Logical CV  → same hardware qubits break each run
+    Logical  CV >> Physical CV → same model variables break, wherever they land
+    Both low                   → random / no consistent structure
+    """
+    n_standard_vis = result["n_standard_vis"]
+    n_hid          = result["n_hid"]
+    n_vis_orbit    = result["n_vis_orbit"]
+    n_hid_orbit    = result["n_hid_orbit"]
+    srt_batches    = result["srt_batches"]
+
+    batch_vis_logical  = result["batch_vis_logical"]
+    batch_hid_logical  = result["batch_hid_logical"]
+    batch_vis_physical = result["batch_vis_physical"]
+    batch_hid_physical = result["batch_hid_physical"]
+
+    vis_logical_mean  = result["vis_logical_mean"]
+    hid_logical_mean  = result["hid_logical_mean"]
+    vis_logical_std   = result["vis_logical_std"]
+    hid_logical_std   = result["hid_logical_std"]
+    vis_physical_mean = result["vis_physical_mean"]
+    hid_physical_mean = result["hid_physical_mean"]
+    vis_physical_std  = result["vis_physical_std"]
+    hid_physical_std  = result["hid_physical_std"]
+
+    logical_cv    = result["logical_cv"]
+    physical_cv   = result["physical_cv"]
+    interpretation = result["interpretation"]
+
+    interp_color = {"physical": "#C44E52", "logical": "#4C72B0", "mixed/random": "#555555"}
+    ic = interp_color.get(interpretation, "#555555")
+
+    fig = plt.figure(figsize=(18, 18))
+    fig.suptitle(
+        f"Chain Break Structure Analysis\n"
+        f"Interpretation: {interpretation.upper()}  |  "
+        f"Logical CV: {logical_cv:.3f}   Physical CV: {physical_cv:.3f}   "
+        f"({srt_batches} SRT batches, {result['num_reads']} reads,  "
+        f"overall mean break: {result['overall_mean']:.2%})",
+        fontsize=13, fontweight="bold", y=0.995, color=ic,
+    )
+
+    gs = GridSpec(4, 2, figure=fig, top=0.945, bottom=0.05, hspace=0.48, wspace=0.28,
+                  height_ratios=[1.1, 1.2, 1.2, 1.2])
+
+    # ── Row 0: CV bar chart ──
+    ax_cv = fig.add_subplot(gs[0, :])
+    cv_labels = ["Vis\nLogical", "Hid\nLogical", "Vis\nPhysical", "Hid\nPhysical"]
+    cv_vals   = [result["vis_log_cv"], result["hid_log_cv"],
+                 result["vis_phys_cv"], result["hid_phys_cv"]]
+    cv_colors = ["#4C72B0", "#4C72B0", "#C44E52", "#C44E52"]
+    bars = ax_cv.bar(cv_labels, cv_vals, color=cv_colors, alpha=0.82, edgecolor="white", width=0.5)
+    for bar, val in zip(bars, cv_vals):
+        ax_cv.text(bar.get_x() + bar.get_width() / 2, bar.get_height() + 0.003,
+                   f"{val:.3f}", ha="center", va="bottom", fontsize=10, fontweight="bold")
+
+    # CV definition: for each chain we compute its mean break rate across all reads & batches,
+    # giving one scalar per chain.  CV = std of those scalars / mean of those scalars.
+    # High CV means some chains break far more than others (concentrated structure).
+    # Low CV means all chains break at roughly the same rate (uniform / no structure).
+    ax_cv.set_ylabel("CV  =  σ(r̄ᵢ) / μ(r̄ᵢ)", fontsize=10)
+    ax_cv.set_title(
+        "Break Rate Heterogeneity  –  Logical (blue) vs Physical (red)\n"
+        r"$\bar{r}_i$ = mean break rate of chain $i$ across all reads & batches"
+        "   |   High CV → concentrated breaks; Low CV → uniform / random",
+        fontsize=10,
+    )
+    ax_cv.grid(axis="y", linestyle="--", alpha=0.5)
+    ax_cv.set_facecolor(ic + "18")
+
+    # ── Shared colour scale for heatmaps ──
+    shared_max = max(
+        batch_vis_logical.max(),  batch_hid_logical.max(),
+        batch_vis_physical.max(), batch_hid_physical.max(), 0.01,
+    )
+
+    def make_heatmap(ax, data, title, col_order):
+        ordered = data[:, col_order]
+        im = ax.imshow(ordered, cmap="hot_r", vmin=0, vmax=shared_max,
+                       aspect="auto", interpolation="nearest")
+        ax.set_title(title, fontsize=9, fontweight="bold")
+        ax.set_xlabel("Chain index (sorted by mean break rate ↓)", fontsize=8)
+        ax.set_ylabel("SRT batch", fontsize=8)
+        ax.set_yticks(range(srt_batches))
+        ax.set_yticklabels([f"B{i}" for i in range(srt_batches)], fontsize=7)
+        ax.tick_params(axis="x", labelsize=7)
+        return im
+
+    vis_log_order  = np.argsort(vis_logical_mean)[::-1]
+    hid_log_order  = np.argsort(hid_logical_mean)[::-1]
+    vis_phys_order = np.argsort(vis_physical_mean)[::-1]
+    hid_phys_order = np.argsort(hid_physical_mean)[::-1]
+
+    # ── Row 1: Visible heatmaps ──
+    ax_vl = fig.add_subplot(gs[1, 0])
+    im_heatmap = make_heatmap(ax_vl, batch_vis_logical,
+                              f"Logical Visible  (n={n_standard_vis} vars)",
+                              vis_log_order)
+
+    ax_vp = fig.add_subplot(gs[1, 1])
+    make_heatmap(ax_vp, batch_vis_physical,
+                 f"Physical Visible Slots  (n={n_vis_orbit} slots)",
+                 vis_phys_order)
+
+    # ── Row 2: Hidden heatmaps ──
+    ax_hl = fig.add_subplot(gs[2, 0])
+    make_heatmap(ax_hl, batch_hid_logical,
+                 f"Logical Hidden  (n={n_hid} vars)",
+                 hid_log_order)
+
+    ax_hp = fig.add_subplot(gs[2, 1])
+    make_heatmap(ax_hp, batch_hid_physical,
+                 f"Physical Hidden Slots  (n={n_hid_orbit} slots)",
+                 hid_phys_order)
+
+    cbar_ax = fig.add_axes([0.92, 0.38, 0.012, 0.35])
+    fig.colorbar(im_heatmap, cax=cbar_ax, label="Break rate (per-chain mean over reads)")
+
+    # ── Row 3: Sorted distribution comparison ──
+    def make_sorted_bar(ax, log_mean, log_std, phys_mean, phys_std, title):
+        log_order  = np.argsort(log_mean)[::-1]
+        phys_order = np.argsort(phys_mean)[::-1]
+        log_sorted  = log_mean[log_order]
+        phys_sorted = phys_mean[phys_order]
+        log_std_s   = log_std[log_order]
+        phys_std_s  = phys_std[phys_order]
+
+        x_log       = np.arange(len(log_sorted))
+        x_phys_norm = np.linspace(0, len(log_sorted) - 1, len(phys_sorted))
+
+        ax.bar(x_log, log_sorted, color="#4C72B0", alpha=0.65,
+               label=f"Logical (n={len(log_mean)})")
+        ax.errorbar(x_log, log_sorted, yerr=log_std_s, fmt="none",
+                    color="#4C72B0", alpha=0.45, capsize=2, linewidth=0.8)
+
+        ax.plot(x_phys_norm, phys_sorted, color="#C44E52", linewidth=2.0, zorder=3,
+                label=f"Physical slots (n={len(phys_mean)})")
+        ax.fill_between(x_phys_norm,
+                        np.maximum(phys_sorted - phys_std_s, 0),
+                        phys_sorted + phys_std_s,
+                        color="#C44E52", alpha=0.2)
+
+        ax.set_title(title, fontsize=10)
+        ax.set_xlabel("Rank (highest break rate first)", fontsize=9)
+        ax.set_ylabel("Mean break rate ± std across batches", fontsize=9)
+        ax.grid(axis="y", linestyle="--", alpha=0.5)
+        ax.legend(fontsize=9, loc="upper right")
+
+    ax_vbar = fig.add_subplot(gs[3, 0])
+    make_sorted_bar(ax_vbar,
+                    vis_logical_mean, vis_logical_std,
+                    vis_physical_mean, vis_physical_std,
+                    "Visible: Logical vs Physical break rate distribution")
+
+    ax_hbar = fig.add_subplot(gs[3, 1])
+    make_sorted_bar(ax_hbar,
+                    hid_logical_mean, hid_logical_std,
+                    hid_physical_mean, hid_physical_std,
+                    "Hidden: Logical vs Physical break rate distribution")
+
+    plt.show()
+
+
+def plot_energy_histogram(result: dict, bins: int = 60):
+    """
+    Visualises the output of run_energy_histogram.
+
+    Layout
+    ------
+    Top row  (2 panels):
+      Left  – overlaid histograms of QPU and classical joint energies; vertical
+              dashed lines mark each cutoff's energy threshold.
+      Right – error norm vs. cutoff fraction bar chart.
+    Middle row (n_cutoffs + 1 panels):
+      Classical correlation matrix followed by one panel per cutoff.
+    Bottom row (n_cutoffs + 1 panels):
+      Empty placeholder followed by diff matrices (QPU cutoff – Classical).
+    """
+    qpu_energies = result["qpu_energies"]
+    classical_energies = result["classical_energies"]
+    cutoffs = result["cutoffs"]
+    cutoff_results = result["cutoff_results"]
+    mat_classical = result["classical_matrix"]
+    num_reads = result["num_reads"]
+    srt_batches = result["srt_batches"]
+
+    n_cuts = len(cutoffs)
+    n_mat_cols = 1 + n_cuts
+
+    cmap_cuts = plt.cm.plasma
+    cut_colors = [cmap_cuts(i / max(n_cuts - 1, 1)) for i in range(n_cuts)]
+
+    fig = plt.figure(figsize=(max(14, 4 * n_mat_cols), 15))
+    fig.suptitle("Joint Energy: Distribution & Low-Energy Filtering Fidelity",
+                 fontsize=14, fontweight='bold', y=0.99)
+
+    gs_top = fig.add_gridspec(1, 2, top=0.93, bottom=0.68, wspace=0.3)
+    gs_mat = fig.add_gridspec(2, n_mat_cols, top=0.62, bottom=0.03,
+                              hspace=0.08, wspace=0.05)
+
+    # ── Top-left: energy histogram ──
+    ax_hist = fig.add_subplot(gs_top[0, 0])
+
+    all_e = np.concatenate([qpu_energies, classical_energies])
+    e_min, e_max = all_e.min(), all_e.max()
+    shared_bins = np.linspace(e_min, e_max, bins + 1)
+
+    ax_hist.hist(classical_energies, bins=shared_bins, color='steelblue',
+                 edgecolor='none', alpha=0.55, label='Classical (Gibbs)', density=True)
+    ax_hist.hist(qpu_energies, bins=shared_bins, color='#C44E52',
+                 edgecolor='none', alpha=0.55, label='QPU (all reads)', density=True)
+
+    # Mark energy threshold for each cutoff
+    for c, col in zip(cutoffs, cut_colors):
+        thresh = cutoff_results[c]["max_energy"]
+        ax_hist.axvline(thresh, color=col, linestyle='--', linewidth=1.3, alpha=0.9,
+                        label=f"{c:.0%} cutoff (E≤{thresh:.2f})")
+
+    ax_hist.set_title("Joint Energy Distribution (QPU vs Classical)", fontsize=12)
+    ax_hist.set_xlabel("Joint Energy", fontsize=11)
+    ax_hist.set_ylabel("Density", fontsize=11)
+    ax_hist.grid(axis='y', linestyle='--', alpha=0.5)
+    ax_hist.legend(fontsize=8, loc='upper left')
+
+    stats_text = (
+        f"QPU:       μ={qpu_energies.mean():.2f}  σ={qpu_energies.std():.2f}\n"
+        f"Classical: μ={classical_energies.mean():.2f}  σ={classical_energies.std():.2f}\n"
+        f"Reads: {num_reads}  ({srt_batches} SRT batches)"
+    )
+    ax_hist.text(0.97, 0.97, stats_text, transform=ax_hist.transAxes,
+                 verticalalignment='top', horizontalalignment='right',
+                 fontsize=8, bbox=dict(boxstyle='round', facecolor='white', alpha=0.9))
+
+    # ── Top-right: error norm bar chart ──
+    ax_err = fig.add_subplot(gs_top[0, 1])
+    cut_labels = [f"{c:.0%}\n(n={cutoff_results[c]['n_samples']})" for c in cutoffs]
+    error_norms = [cutoff_results[c]["error_norm"] for c in cutoffs]
+    bars = ax_err.bar(cut_labels, error_norms, color=cut_colors, edgecolor='white', alpha=0.85)
+    for bar, err in zip(bars, error_norms):
+        ax_err.text(bar.get_x() + bar.get_width() / 2, bar.get_height() + 0.001,
+                    f"{err:.3f}", ha='center', va='bottom', fontsize=9)
+    ax_err.set_title("Correlation Error Norm vs. Energy Cutoff", fontsize=12)
+    ax_err.set_xlabel("Cutoff (fraction of lowest-energy reads kept)", fontsize=10)
+    ax_err.set_ylabel("||QPU − Classical||₂", fontsize=11)
+    ax_err.grid(axis='y', linestyle='--', alpha=0.5)
+
+    # ── Matrix helper ──
+    def plot_mat(ax, data, title, diff=False):
+        cmap_m = 'bwr' if diff else 'seismic'
+        vmin, vmax = (-0.3, 0.3) if diff else (-1, 1)
+        im = ax.imshow(data, cmap=cmap_m, vmin=vmin, vmax=vmax, origin='lower',
+                       aspect='auto')
+        ax.set_title(title, fontsize=8, fontweight='bold')
+        ax.axis('off')
+        return im
+
+    # ── Middle row: correlation matrices ──
+    ax_cl = fig.add_subplot(gs_mat[0, 0])
+    im_main = plot_mat(ax_cl, mat_classical, "Classical RBM\n(Gibbs baseline)")
+
+    for col_idx, (c, col) in enumerate(zip(cutoffs, cut_colors), start=1):
+        cr = cutoff_results[c]
+        ax = fig.add_subplot(gs_mat[0, col_idx])
+        im_main = plot_mat(ax, cr["matrix"],
+                           f"QPU {c:.0%} cutoff\nn={cr['n_samples']}  err={cr['error_norm']:.3f}")
+        ax.spines['bottom'].set_visible(True)
+        ax.spines['bottom'].set_color(col)
+        ax.spines['bottom'].set_linewidth(3)
+
+    # ── Bottom row: diff matrices ──
+    ax_empty = fig.add_subplot(gs_mat[1, 0])
+    ax_empty.axis('off')
+
+    for col_idx, (c, col) in enumerate(zip(cutoffs, cut_colors), start=1):
+        cr = cutoff_results[c]
+        ax = fig.add_subplot(gs_mat[1, col_idx])
+        im_diff = plot_mat(ax, cr["diff_matrix"],
+                           f"Δ ({c:.0%} − Classical)", diff=True)
+
+    # ── Colorbars ──
+    cbar_main = fig.add_axes([0.92, 0.35, 0.012, 0.22])
+    fig.colorbar(im_main, cax=cbar_main, label="Pearson r")
+
+    cbar_diff = fig.add_axes([0.92, 0.06, 0.012, 0.22])
+    fig.colorbar(im_diff, cax=cbar_diff, label="Δ Pearson r")
+
+    plt.show()
+    plt.show()
+
+
+def plot_pause_sweep(sweep_results):
+    """
+    Visualises run_pause_sweep as a paused-vs-unpaused quality comparison.
+
+    Layout
+    ------
+    Row 0: Mean energy vs s_p | Error norm vs s_p | β convergence (paused & unpaused)
+    Row 1: Energy histograms (Classical / paused / unpaused)
+    Row 2: Correlation matrices: Classical | Paused | Unpaused
+    Row 3: (empty)              | Δ Paused − Cl | Δ Unpaused − Cl
+    Row 4: Classical magnetization | ΔMag Paused | ΔMag Unpaused
+    """
+    per = sweep_results["per_pause_results"]
+    pause_points = sweep_results["pause_points"]
+    include_baseline = sweep_results["includes_baseline"]
+    optimal_sp = sweep_results["optimal_pause_point"]
+    anneal_time = sweep_results["anneal_time"]
+    pause_length = sweep_results["pause_length"]
+
+    paused = sweep_results["paused"]
+    unpaused = sweep_results["unpaused"]
+
+    mat_classical = sweep_results["classical_matrix"]
+    mag_classical = sweep_results.get("classical_magnetization")
+    classical_energies = sweep_results["classical_energies"]
+
+    sorted_sps = sorted(pause_points)
+    tc = plt.cm.viridis
+    sp_colors = {sp: tc(i / max(len(sorted_sps) - 1, 1))
+                 for i, sp in enumerate(sorted_sps)}
+
+    PAUSED_COLOR = 'darkorange'
+    UNPAUSED_COLOR = 'steelblue'
+
+    fig = plt.figure(figsize=(15, 22))
+    fig.suptitle(
+        f"Pause-Anneal Quality Check  (scale={sweep_results['rbm_scale']}, "
+        f"t_a={anneal_time}µs, t_p={pause_length}µs, "
+        f"s_p*={optimal_sp:.3f})",
+        fontsize=14, fontweight='bold', y=0.99)
+
+    gs = fig.add_gridspec(
+        5, 3,
+        height_ratios=[0.7, 0.55, 0.85, 0.85, 0.4],
+        hspace=0.5, wspace=0.3, top=0.95, bottom=0.03,
+        left=0.07, right=0.9,
+    )
+
+    # ───── Row 0, col 0: Mean energy vs s_p ─────
+    ax_e = fig.add_subplot(gs[0, 0])
+    means = [per[sp]["mean_energy"] for sp in sorted_sps]
+    stds = [per[sp]["std_energy"] for sp in sorted_sps]
+    ax_e.errorbar(sorted_sps, means, yerr=stds, fmt='-', color='dimgray',
+                  linewidth=1.5, capsize=3, zorder=2)
+    for sp, m in zip(sorted_sps, means):
+        ax_e.scatter(sp, m, color=sp_colors[sp], s=70, zorder=5,
+                     edgecolor='black', linewidth=0.5)
+    ax_e.axvline(optimal_sp, color=PAUSED_COLOR, linestyle='--', linewidth=1.5,
+                 label=f"optimal s_p={optimal_sp:.3f}", zorder=1)
+    if include_baseline and None in per:
+        bm = per[None]["mean_energy"]
+        ax_e.axhline(bm, color=UNPAUSED_COLOR, linestyle=':', linewidth=1.5,
+                     label=f"no-pause sweep ({bm:.2f})")
+    ax_e.set_xlabel(r"Pause point $s_p$")
+    ax_e.set_ylabel("Mean Joint Energy")
+    ax_e.set_title("Sweep: Mean Energy vs Pause Point", fontweight='bold')
+    ax_e.grid(True, linestyle='--', alpha=0.5)
+    ax_e.legend(fontsize=8)
+
+    # ───── Row 0, col 1: Error norm vs s_p ─────
+    ax_err = fig.add_subplot(gs[0, 1])
+    errs = [per[sp]["error_norm"] for sp in sorted_sps]
+    ax_err.plot(sorted_sps, errs, color='dimgray', linewidth=1.5, zorder=2)
+    for sp, e in zip(sorted_sps, errs):
+        ax_err.scatter(sp, e, color=sp_colors[sp], s=70, zorder=5,
+                       edgecolor='black', linewidth=0.5)
+    ax_err.axvline(optimal_sp, color=PAUSED_COLOR, linestyle='--', linewidth=1.5,
+                   zorder=1)
+    ax_err.axhline(paused["error_norm"], color=PAUSED_COLOR, linestyle='-',
+                   linewidth=1.5,
+                   label=f"paused final (β={paused['beta']:.2f}, err={paused['error_norm']:.3f})")
+    ax_err.axhline(unpaused["error_norm"], color=UNPAUSED_COLOR, linestyle='-',
+                   linewidth=1.5,
+                   label=f"unpaused final (β={unpaused['beta']:.2f}, err={unpaused['error_norm']:.3f})")
+    ax_err.set_xlabel(r"Pause point $s_p$")
+    ax_err.set_ylabel("Correlation Error Norm")
+    ax_err.set_title("Sweep: Corr. Error vs Pause Point", fontweight='bold')
+    ax_err.grid(True, linestyle='--', alpha=0.5)
+    ax_err.legend(fontsize=7)
+
+    # ───── Row 0, col 2: β convergence (paused & unpaused) ─────
+    ax_beta = fig.add_subplot(gs[0, 2])
+    ax_beta.plot(paused["beta_hist"], color=PAUSED_COLOR, linewidth=2,
+                 marker='o', label=f"paused β→{paused['beta']:.3f}")
+    ax_beta.plot(unpaused["beta_hist"], color=UNPAUSED_COLOR, linewidth=2,
+                 marker='s', label=f"unpaused β→{unpaused['beta']:.3f}")
+    ax_beta.set_xlabel("Epoch")
+    ax_beta.set_ylabel(r"$\beta$")
+    ax_beta.set_title(r"$\beta$ Convergence", fontweight='bold')
+    ax_beta.grid(True, linestyle='--', alpha=0.5)
+    ax_beta.legend(fontsize=8)
+
+    # ───── Row 1: Energy histograms (paused vs unpaused, full width) ─────
+    ax_hist = fig.add_subplot(gs[1, :])
+    ax_hist.hist(classical_energies, bins=60, alpha=0.35, color='black',
+                 label='Classical', density=True)
+    ax_hist.hist(paused["energies"], bins=60, histtype='step', color=PAUSED_COLOR,
+                 linewidth=2,
+                 label=rf"Paused (s_p={optimal_sp:.3f}, β={paused['beta']:.2f}, "
+                       rf"⟨E⟩={paused['energies'].mean():.2f})",
+                 density=True)
+    ax_hist.hist(unpaused["energies"], bins=60, histtype='step',
+                 color=UNPAUSED_COLOR, linewidth=2,
+                 label=rf"Unpaused (t_a={anneal_time}µs, β={unpaused['beta']:.2f}, "
+                       rf"⟨E⟩={unpaused['energies'].mean():.2f})",
+                 density=True)
+    ax_hist.set_xlabel("Joint Energy (RBM β=1)")
+    ax_hist.set_ylabel("Density")
+    ax_hist.set_title("Final-Sample Energy Distributions: Paused vs Unpaused",
+                      fontweight='bold')
+    ax_hist.grid(True, linestyle='--', alpha=0.4)
+    ax_hist.legend(fontsize=8)
+
+    # ───── Matrix helper ─────
+    def plot_mat(ax, data, title, diff=False):
+        cmap_m = 'bwr' if diff else 'seismic'
+        vmin, vmax = (-0.5, 0.5) if diff else (-1, 1)
+        im = ax.imshow(data, cmap=cmap_m, vmin=vmin, vmax=vmax, origin='lower')
+        ax.set_title(title, fontsize=10, fontweight='bold')
+        ax.axis('off')
+        return im
+
+    # ───── Row 2: Absolute correlation matrices ─────
+    ax_cl = fig.add_subplot(gs[2, 0])
+    plot_mat(ax_cl, mat_classical, "Target\n(Classical RBM)")
+
+    ax_paused_mat = fig.add_subplot(gs[2, 1])
+    im_main = plot_mat(
+        ax_paused_mat, paused["matrix"],
+        f"Paused  (s_p={optimal_sp:.3f}, β={paused['beta']:.2f})\n"
+        f"err={paused['error_norm']:.3f}  breaks={paused['break_frac']:.1%}"
+    )
+    for s in ax_paused_mat.spines.values():
+        s.set_visible(True); s.set_color(PAUSED_COLOR); s.set_linewidth(2)
+
+    ax_unpaused_mat = fig.add_subplot(gs[2, 2])
+    im_main = plot_mat(
+        ax_unpaused_mat, unpaused["matrix"],
+        f"Unpaused  (t_a={anneal_time}µs, β={unpaused['beta']:.2f})\n"
+        f"err={unpaused['error_norm']:.3f}  breaks={unpaused['break_frac']:.1%}"
+    )
+    for s in ax_unpaused_mat.spines.values():
+        s.set_visible(True); s.set_color(UNPAUSED_COLOR); s.set_linewidth(2)
+
+    # ───── Row 3: Difference matrices ─────
+    ax_empty = fig.add_subplot(gs[3, 0])
+    ax_empty.axis('off')
+
+    ax_diff_paused = fig.add_subplot(gs[3, 1])
+    im_diff = plot_mat(ax_diff_paused, paused["matrix"] - mat_classical,
+                       "Δ Paused − Classical", diff=True)
+
+    ax_diff_unpaused = fig.add_subplot(gs[3, 2])
+    im_diff = plot_mat(ax_diff_unpaused, unpaused["matrix"] - mat_classical,
+                       "Δ Unpaused − Classical", diff=True)
+
+    # ───── Row 4: Magnetization ─────
+    def _style_mag_ax(ax, n_nodes, ylabel):
+        ax.set_xlabel("Latent Node Index", fontsize=9)
+        ax.set_ylabel(ylabel, fontsize=9)
+        ax.set_xlim(-1, n_nodes)
+        ax.tick_params(axis='x', which='both', bottom=False, labelbottom=False)
+        ax.grid(axis='y', linestyle='--', alpha=0.5, zorder=0)
+        ax.spines['top'].set_visible(False)
+        ax.spines['right'].set_visible(False)
+
+    if (mag_classical is not None
+            and paused.get("magnetization") is not None
+            and unpaused.get("magnetization") is not None):
+        n_nodes = len(mag_classical)
+        x = np.arange(n_nodes)
+
+        ax_mag_cl = fig.add_subplot(gs[4, 0])
+        ax_mag_cl.bar(x, mag_classical, color='dimgray', alpha=0.75, linewidth=0)
+        ax_mag_cl.set_title("Classical Magnetization\n(Target)",
+                            fontsize=10, fontweight='bold')
+        ax_mag_cl.set_ylim(0, 1)
+        _style_mag_ax(ax_mag_cl, n_nodes, r"$\langle\sigma\rangle$")
+
+        paused_delta = paused["magnetization"] - mag_classical
+        unpaused_delta = unpaused["magnetization"] - mag_classical
+        lim = max(abs(paused_delta).max(), abs(unpaused_delta).max()) * 1.15
+        lim = max(lim, 0.05)
+
+        def plot_mag_delta(ax, delta, title, accent):
+            colors_b = ['steelblue' if d >= 0 else 'firebrick' for d in delta]
+            ax.bar(x, delta, color=colors_b, alpha=0.85, linewidth=0)
+            ax.axhline(0, color='black', linewidth=1.0, linestyle='--', zorder=3)
+            rms = float(np.sqrt(np.mean(delta ** 2)))
+            ax.set_title(f"{title}\nRMS Δ = {rms:.3f}",
+                         fontsize=10, fontweight='bold', color=accent)
+            ax.set_ylim(-lim, lim)
+            _style_mag_ax(ax, n_nodes,
+                          r"$\Delta\langle\sigma\rangle$ (QPU − Classical)")
+
+        ax_mag_p = fig.add_subplot(gs[4, 1])
+        plot_mag_delta(ax_mag_p, paused_delta, "ΔMag: Paused − Classical",
+                       PAUSED_COLOR)
+
+        ax_mag_u = fig.add_subplot(gs[4, 2])
+        plot_mag_delta(ax_mag_u, unpaused_delta, "ΔMag: Unpaused − Classical",
+                       UNPAUSED_COLOR)
+    else:
+        for col in (0, 1, 2):
+            ax = fig.add_subplot(gs[4, col])
+            ax.text(0.5, 0.5, "Magnetization data\nnot available",
+                    ha='center', va='center', transform=ax.transAxes,
+                    fontsize=10, color='gray')
+            ax.axis('off')
+
+    # Colorbars
+    cbar_main = fig.add_axes([0.92, 0.38, 0.012, 0.15])
+    fig.colorbar(im_main, cax=cbar_main, label="Pearson r")
+
+    cbar_diff = fig.add_axes([0.92, 0.18, 0.012, 0.15])
+    fig.colorbar(im_diff, cax=cbar_diff, label="Δ Pearson r")
+
+    plt.show()
+
+
+def plot_anneal_offset_experiment(results):
+    """
+    Visualises run_anneal_offset_experiment as a before/after quality comparison.
+
+    Layout
+    ------
+    Row 0: Break-rate profile (vis+hid bars, threshold line, offset mask highlighted)
+           | Error norm & break frac comparison (grouped bar)
+    Row 1: Correlation matrices: Classical | No Offset | With Offset
+    Row 2: (empty)              | Δ No Offset − Cl  | Δ With Offset − Cl
+    Row 3: Classical magnetization | ΔMag No Offset  | ΔMag With Offset
+    """
+    NO_OFFSET_COLOR = 'steelblue'
+    OFFSET_COLOR = 'darkorange'
+
+    mat_classical = results["classical_matrix"]
+    mag_classical = results["classical_magnetization"]
+    no_off = results["no_offset"]
+    with_off = results["with_offset"]
+
+    vis_rates = no_off["break_rates_vis"]
+    hid_rates = no_off["break_rates_hid"]
+    vis_mask = results["offset_mask_vis"]
+    hid_mask = results["offset_mask_hid"]
+    threshold = results["threshold_val"]
+    offset_val = results["offset_value"]
+    n_offset_vis = results["n_offset_vis"]
+    n_offset_hid = results["n_offset_hid"]
+    _qpb = results.get("n_offset_qubits_per_batch", [])
+    n_offset_q_mean = int(np.mean(_qpb)) if _qpb else results.get("n_offset_qubits", 0)
+
+    n_vis = len(vis_rates)
+    n_hid = len(hid_rates)
+    n_cond = results["n_cond"]
+
+    fig = plt.figure(figsize=(15, 18))
+    fig.suptitle(
+        f"Anneal Offset Experiment  "
+        f"(offset={offset_val:+.2f}, fraction={results['offset_fraction']:.0%}, "
+        f"{n_offset_vis}vis+{n_offset_hid}hid → ~{n_offset_q_mean} qubits/batch, shuffled orbits)",
+        fontsize=13, fontweight='bold', y=0.99,
+    )
+
+    gs = fig.add_gridspec(
+        4, 3,
+        height_ratios=[0.75, 0.85, 0.85, 0.45],
+        hspace=0.5, wspace=0.3,
+        top=0.95, bottom=0.03, left=0.07, right=0.90,
+    )
+
+    # ───── Row 0, col 0-1: Break-rate profile ─────
+    # Colors: gray = non-offset chains; royal blue = before; lime green = after; red = diff
+    BEFORE_COLOR = '#2166ac'   # royal blue
+    AFTER_COLOR  = '#33a02c'   # forest green
+    DIFF_COLOR   = '#e31a1c'   # bright red
+
+    ax_br = fig.add_subplot(gs[0, :2])
+    offset_vis_rates = with_off.get("break_rates_vis")
+    offset_hid_rates = with_off.get("break_rates_hid")
+    all_rates = np.concatenate([vis_rates, hid_rates])
+    all_mask = np.concatenate([vis_mask, hid_mask])
+
+    # Three sub-bars per offset chain (before | after | diff), single bar for others
+    w_single = 0.75
+    w_triple = 0.24   # each of the three sub-bars
+
+    for i, (before, mask) in enumerate(zip(all_rates, all_mask)):
+        if mask and offset_vis_rates is not None and offset_hid_rates is not None:
+            after = float(offset_vis_rates[i] if i < n_vis else offset_hid_rates[i - n_vis])
+            diff  = before - after   # positive = break rate fell
+            ax_br.bar(i - w_triple, before, width=w_triple, color=BEFORE_COLOR,
+                      alpha=0.9, linewidth=0)
+            ax_br.bar(i,            after,  width=w_triple, color=AFTER_COLOR,
+                      alpha=0.9, linewidth=0)
+            ax_br.bar(i + w_triple, diff,   width=w_triple, color=DIFF_COLOR,
+                      alpha=0.9, linewidth=0)
+        else:
+            ax_br.bar(i, before, width=w_single, color='#888888', alpha=0.55, linewidth=0)
+
+    ax_br.axvline(n_vis - 0.5, color='black', linewidth=1.2, linestyle=':')
+    ax_br.axhline(threshold, color=BEFORE_COLOR, linewidth=1.5, linestyle='--',
+                  label=f'threshold ({threshold:.3f})')
+    ax_br.axhline(0, color='black', linewidth=0.8)
+    ax_br.set_xlabel("Logical variable index  [vis | hid]", fontsize=9)
+    ax_br.set_ylabel("Mean break rate", fontsize=9)
+    ax_br.set_title(
+        "Break Rate Profile  –  blue: before  |  green: after offset  |  red: Δ reduction",
+        fontweight='bold',
+    )
+    ax_br.set_xlim(-1, n_vis + n_hid)
+    all_after = (
+        np.concatenate([offset_vis_rates, offset_hid_rates])
+        if offset_vis_rates is not None else all_rates
+    )
+    ax_br.set_ylim(
+        min(0, (all_rates - all_after)[all_mask].min() * 1.1) if all_mask.any() else 0,
+        max(all_rates.max() * 1.2, 0.05),
+    )
+    ax_br.grid(axis='y', linestyle='--', alpha=0.5, zorder=0)
+    ax_br.spines['top'].set_visible(False)
+    ax_br.spines['right'].set_visible(False)
+    import matplotlib.patches as _mp
+    ax_br.legend(handles=[
+        _mp.Patch(color='#888888', alpha=0.55, label='Non-offset chains'),
+        _mp.Patch(color=BEFORE_COLOR,  alpha=0.9,  label='Before offset'),
+        _mp.Patch(color=AFTER_COLOR,   alpha=0.9,  label='After offset'),
+        _mp.Patch(color=DIFF_COLOR,    alpha=0.9,  label='Δ reduction (before − after)'),
+    ], fontsize=8)
+
+    # ───── Row 0, col 2: Error norm & break frac comparison ─────
+    ax_cmp = fig.add_subplot(gs[0, 2])
+    labels = ['No Offset', 'With Offset']
+    error_vals = [no_off["error_norm"], with_off["error_norm"]]
+    break_vals = [no_off["break_frac"] * 100, with_off["break_frac"] * 100]
+    xb = np.array([0, 1])
+    w = 0.3
+    bars_e = ax_cmp.bar(xb - w / 2, error_vals, width=w,
+                         color=[NO_OFFSET_COLOR, OFFSET_COLOR], alpha=0.85,
+                         label='Error norm')
+    ax2 = ax_cmp.twinx()
+    bars_b = ax2.bar(xb + w / 2, break_vals, width=w,
+                     color=[NO_OFFSET_COLOR, OFFSET_COLOR], alpha=0.45, hatch='//',
+                     label='Break % (right axis)')
+    ax_cmp.set_xticks(xb)
+    ax_cmp.set_xticklabels(labels, fontsize=9)
+    ax_cmp.set_ylabel("Correlation Error Norm", fontsize=9)
+    ax2.set_ylabel("Mean Break Frac (%)", fontsize=9)
+    ax_cmp.set_title("Quality Comparison", fontweight='bold')
+    ax_cmp.grid(axis='y', linestyle='--', alpha=0.4, zorder=0)
+    # Annotate bars
+    for bar, val in zip(bars_e, error_vals):
+        ax_cmp.text(bar.get_x() + bar.get_width() / 2, bar.get_height() + 0.002,
+                    f"{val:.3f}", ha='center', va='bottom', fontsize=8)
+    for bar, val in zip(bars_b, break_vals):
+        ax2.text(bar.get_x() + bar.get_width() / 2, bar.get_height() + 0.2,
+                 f"{val:.1f}%", ha='center', va='bottom', fontsize=8)
+
+    # ───── Matrix helper ─────
+    def plot_mat(ax, data, title, diff=False):
+        cmap_m = 'bwr' if diff else 'seismic'
+        vmin, vmax = (-0.5, 0.5) if diff else (-1, 1)
+        im = ax.imshow(data, cmap=cmap_m, vmin=vmin, vmax=vmax, origin='lower')
+        ax.set_title(title, fontsize=9, fontweight='bold')
+        ax.axis('off')
+        return im
+
+    # ───── Row 1: Absolute correlation matrices ─────
+    ax_cl = fig.add_subplot(gs[1, 0])
+    plot_mat(ax_cl, mat_classical, "Classical RBM\n(Target)")
+
+    ax_no = fig.add_subplot(gs[1, 1])
+    im_main = plot_mat(
+        ax_no, no_off["matrix"],
+        f"No Offset\nerr={no_off['error_norm']:.3f}  breaks={no_off['break_frac']:.1%}",
+    )
+    for s in ax_no.spines.values():
+        s.set_visible(True); s.set_color(NO_OFFSET_COLOR); s.set_linewidth(2)
+
+    ax_off = fig.add_subplot(gs[1, 2])
+    im_main = plot_mat(
+        ax_off, with_off["matrix"],
+        f"With Offset ({offset_val:+.2f})\nerr={with_off['error_norm']:.3f}  breaks={with_off['break_frac']:.1%}",
+    )
+    for s in ax_off.spines.values():
+        s.set_visible(True); s.set_color(OFFSET_COLOR); s.set_linewidth(2)
+
+    # ───── Row 2: Difference matrices ─────
+    ax_empty = fig.add_subplot(gs[2, 0])
+    ax_empty.axis('off')
+
+    ax_diff_no = fig.add_subplot(gs[2, 1])
+    im_diff = plot_mat(ax_diff_no, no_off["matrix"] - mat_classical,
+                       "Δ No Offset − Classical", diff=True)
+
+    ax_diff_off = fig.add_subplot(gs[2, 2])
+    im_diff = plot_mat(ax_diff_off, with_off["matrix"] - mat_classical,
+                       "Δ With Offset − Classical", diff=True)
+
+    # ───── Row 3: Magnetization ─────
+    def _style_mag_ax(ax, n_nodes, ylabel):
+        ax.set_xlabel("Latent Node Index", fontsize=9)
+        ax.set_ylabel(ylabel, fontsize=9)
+        ax.set_xlim(-1, n_nodes)
+        ax.tick_params(axis='x', which='both', bottom=False, labelbottom=False)
+        ax.grid(axis='y', linestyle='--', alpha=0.5, zorder=0)
+        ax.spines['top'].set_visible(False)
+        ax.spines['right'].set_visible(False)
+
+    if (mag_classical is not None
+            and no_off.get("magnetization") is not None
+            and with_off.get("magnetization") is not None):
+        n_nodes = len(mag_classical)
+        x = np.arange(n_nodes)
+        delta_no = no_off["magnetization"] - mag_classical
+        delta_off = with_off["magnetization"] - mag_classical
+        lim = max(abs(delta_no).max(), abs(delta_off).max()) * 1.15
+        lim = max(lim, 0.05)
+
+        ax_mag_cl = fig.add_subplot(gs[3, 0])
+        ax_mag_cl.bar(x, mag_classical, color='dimgray', alpha=0.75, linewidth=0)
+        ax_mag_cl.set_title("Classical Magnetization\n(Target)", fontsize=9, fontweight='bold')
+        ax_mag_cl.set_ylim(0, 1)
+        _style_mag_ax(ax_mag_cl, n_nodes, r"$\langle\sigma\rangle$")
+
+        def plot_mag_delta(ax, delta, title, accent):
+            colors_b = ['steelblue' if d >= 0 else 'firebrick' for d in delta]
+            ax.bar(x, delta, color=colors_b, alpha=0.85, linewidth=0)
+            ax.axhline(0, color='black', linewidth=1.0, linestyle='--', zorder=3)
+            rms = float(np.sqrt(np.mean(delta ** 2)))
+            ax.set_title(f"{title}\nRMS Δ = {rms:.3f}", fontsize=9,
+                         fontweight='bold', color=accent)
+            ax.set_ylim(-lim, lim)
+            _style_mag_ax(ax, n_nodes, r"$\Delta\langle\sigma\rangle$ (QPU − Classical)")
+
+        ax_mag_no = fig.add_subplot(gs[3, 1])
+        plot_mag_delta(ax_mag_no, delta_no, "ΔMag: No Offset − Classical", NO_OFFSET_COLOR)
+
+        ax_mag_off = fig.add_subplot(gs[3, 2])
+        plot_mag_delta(ax_mag_off, delta_off, "ΔMag: With Offset − Classical", OFFSET_COLOR)
+    else:
+        for col in range(3):
+            ax = fig.add_subplot(gs[3, col])
+            ax.text(0.5, 0.5, "Magnetization data\nnot available",
+                    ha='center', va='center', transform=ax.transAxes,
+                    fontsize=10, color='gray')
+            ax.axis('off')
+
+    # Colorbars
+    cbar_main = fig.add_axes([0.92, 0.38, 0.012, 0.15])
+    fig.colorbar(im_main, cax=cbar_main, label="Pearson r")
+
+    cbar_diff = fig.add_axes([0.92, 0.18, 0.012, 0.15])
+    fig.colorbar(im_diff, cax=cbar_diff, label="Δ Pearson r")
+
     plt.show()

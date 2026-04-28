@@ -1,7 +1,7 @@
 from utils.dwave.sampling_backend import ChainAnalysisResult
 import torch
 import numpy as np
-from typing import Tuple, List, Any
+from typing import Tuple, List, Any, Union
 import re
 from pathlib import Path
 
@@ -134,8 +134,8 @@ def process_analysis_result(analysis_result, rbm, conditioning_sets):
     # If samples are already 0/1, this logic still works if checks are robust, 
     # but usually D-Wave returns -1/+1.
     binary_samples = torch.where(
-        raw_samples == -1.0, 
-        torch.tensor(0.0, device="cpu"), 
+        raw_samples == -1.0,
+        torch.zeros(1, device=raw_samples.device),
         raw_samples
     )
     
@@ -310,33 +310,16 @@ def reprocess_qpu_samples(
     print(f"Saved to {out_path}")
 
 
-def load_qpu_samples(
+def _load_qpu_samples_single(
     save_dir: str,
-    clean_only: bool = False,
-) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
-    """
-    Loads processed QPU samples aligned with their incidence energies and u values.
-
-    Expects save_dir to contain (created by mass_sample_dwave_single or
-    reprocess_qpu_samples):
-      - processed_samples.pt  (dict with v, h, clean_mask, pattern_indices)
-      - incidence_energy.pt   (num_patterns, 1)
-      - u_samples.pt          (num_patterns, n_features)
-
-    Args:
-        save_dir: Directory containing the saved files.
-        clean_only: If True, keep only chain-break-free samples.
-
-    Returns:
-        v_samples:  (total_samples, n_vis) visible unit samples in binary {0,1}
-        energies:   (total_samples, 1) corresponding incidence energies
-        u:          (total_samples, n_features) corresponding u values
-    """
+    clean_only: bool,
+) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
     save_path = Path(save_dir)
 
     data = torch.load(save_path / "processed_samples.pt", map_location="cpu")
     incidence_energy = torch.load(save_path / "incidence_energy.pt", map_location="cpu")
     u_samples = torch.load(save_path / "u_samples.pt", map_location="cpu")
+    E_samples = torch.load(save_path / "E_samples.pt", map_location="cpu")
 
     v = data['v']
     clean_mask = data['clean_mask']
@@ -347,11 +330,56 @@ def load_qpu_samples(
         v = v[keep]
         pattern_idx = pattern_idx[keep]
 
-    energies = incidence_energy[pattern_idx]  # (total_samples, 1)
-    u = u_samples[pattern_idx]                # (total_samples, n_features)
+    energies = incidence_energy[pattern_idx]
+    u = u_samples[pattern_idx]
+    E = E_samples[pattern_idx]
 
-    print(f"Loaded {v.shape[0]} samples"
-          f"{' (clean only)' if clean_only else ''}")
-    print(f"  v: {v.shape}  energies: {energies.shape}  u: {u.shape}")
+    return v, energies, u, E
 
-    return v, energies, u
+
+def load_qpu_samples(
+    save_dir: Union[str, List[str]],
+    clean_only: bool = False,
+) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
+    """
+    Loads processed QPU samples aligned with their incidence energies, u values,
+    and raw transfusion energy samples.
+
+    Expects each directory to contain (created by dwave_samples.py):
+      - processed_samples.pt  (dict with v, h, clean_mask, pattern_indices)
+      - incidence_energy.pt   (num_patterns, 1)  — x0 in MeV
+      - u_samples.pt          (num_patterns, n_features) — normalised u
+      - E_samples.pt          (num_patterns, n_features) — raw transfusion output
+
+    Args:
+        save_dir: Directory or list of directories containing saved files.
+                  When a list is given, samples from all directories are concatenated.
+        clean_only: If True, keep only chain-break-free samples.
+
+    Returns:
+        v_samples:  (N, n_vis)       visible unit samples in binary {0,1}
+        energies:   (N, 1)           incidence energies (x0, MeV)
+        u:          (N, n_features)  normalised u values
+        E:          (N, n_features)  raw transfusion layer-energy samples
+    """
+    dirs = [save_dir] if isinstance(save_dir, str) else list(save_dir)
+
+    all_v, all_energies, all_u, all_E = [], [], [], []
+    for d in dirs:
+        v, energies, u, E = _load_qpu_samples_single(d, clean_only)
+        all_v.append(v)
+        all_energies.append(energies)
+        all_u.append(u)
+        all_E.append(E)
+        print(f"  [{d}] {v.shape[0]} samples")
+
+    v_out = torch.cat(all_v, dim=0)
+    energies_out = torch.cat(all_energies, dim=0)
+    u_out = torch.cat(all_u, dim=0)
+    E_out = torch.cat(all_E, dim=0)
+
+    label = f"{len(dirs)} dirs" if len(dirs) > 1 else dirs[0]
+    print(f"Loaded {v_out.shape[0]} samples total from {label}{' (clean only)' if clean_only else ''}")
+    print(f"  v: {v_out.shape}  energies: {energies_out.shape}  u: {u_out.shape}  E: {E_out.shape}")
+
+    return v_out, energies_out, u_out, E_out
