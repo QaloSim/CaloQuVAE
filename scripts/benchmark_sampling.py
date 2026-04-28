@@ -438,6 +438,29 @@ def _default_serial(obj):
 
 # ── Synthetic setup (no checkpoint files required for AE weights) ──────────────
 
+def _make_synthetic_binning(path, relevant_layers=(0, 1, 2, 3, 12), n_phi=14, n_r=24):
+    """Write a minimal HDF5 binning file with uniform synthetic geometry.
+
+    AtlasGeometry reads binstart/binsize arrays for radius and alpha for each layer.
+    The values don't affect decoder timing — they're only used by the feature extractor
+    during training.  We write uniform grids so the arrays have the right length and
+    the model constructor doesn't crash.
+    """
+    import h5py
+    n_voxels = n_r * n_phi  # 336 for standard ATLAS config
+    with h5py.File(path, 'w') as f:
+        for layer in relevant_layers:
+            prefix = f"layer_{layer}"
+            f[f"{prefix}_binsize_alpha"]  = np.full(n_voxels, 2 * np.pi / n_phi)
+            f[f"{prefix}_binstart_alpha"] = np.tile(
+                np.linspace(0, 2 * np.pi, n_phi, endpoint=False), n_r
+            )
+            f[f"{prefix}_binsize_radius"] = np.full(n_voxels, 0.1)
+            f[f"{prefix}_binstart_radius"] = np.repeat(
+                np.linspace(0.1, 0.1 * (n_r + 1), n_r, endpoint=False), n_phi
+            )
+
+
 def _setup_synthetic(args):
     """
     Build AE engine + RBM with correct architecture but random (untrained) weights.
@@ -457,6 +480,15 @@ def _setup_synthetic(args):
     ae_config.gpu_list = [0]
     ae_config.load_state = True        # skip feature-stats init from dataset
     ae_config.skip_data_loading = True # skip DataManager construction entirely
+
+    # AtlasGeometry is instantiated in the model __init__ and opens the binning HDF5
+    # unconditionally.  Generate a tiny synthetic one so the constructor succeeds.
+    synthetic_binning = os.path.join(script_dir, "_synthetic_binning.h5")
+    if not os.path.isfile(synthetic_binning):
+        _make_synthetic_binning(synthetic_binning)
+        print(f"  Created synthetic binning file: {synthetic_binning}")
+    ae_config.data.binning_path = synthetic_binning
+
     ae_engine = setup_model_ae(ae_config)
     print("  AE model instantiated with random weights (no .pt loaded).")
 
