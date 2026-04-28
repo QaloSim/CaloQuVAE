@@ -89,7 +89,9 @@ def setup_model(config=None):
     else:
         local_rank = 0
 
-    if getattr(config, "use_u", False):
+    if getattr(config, "skip_data_loading", False):
+        dataMgr = None
+    elif getattr(config, "use_u", False):
         dataMgr = DataManagerLayersShowers(config)
     else:
         dataMgr = DataManager(config)
@@ -103,34 +105,34 @@ def setup_model(config=None):
     dev = set_device(config)
     model.to(dev)
 
-    if not config.load_state and getattr(config, "use_u", False):
+    if dataMgr is not None and not config.load_state and getattr(config, "use_u", False):
         logger.info("Handling initial stats from raw dataset...")
-        
+
         #  isolate data init to rank 0
         if local_rank == 0:
-            raw_min, raw_max = dataMgr.get_raw_feature_ranges() 
+            raw_min, raw_max = dataMgr.get_raw_feature_ranges()
             # Move to device immediately so they can be copied to model buffers
             model.feature_min.copy_(raw_min.to(dev))
             model.feature_max.copy_(raw_max.to(dev))
 
             u_edges = dataMgr.get_u_bin_edges(config.model.u_bits, model.feature_min, model.feature_max)
             model.encoder.u_bin_edges.copy_(u_edges.to(dev))
-        
+
         if is_distributed():
             # NCCL requires tensors to be on the GPU to broadcast
             dist.broadcast(model.feature_min, src=0)
             dist.broadcast(model.feature_max, src=0)
             dist.broadcast(model.encoder.u_bin_edges, src=0)
-        
+
         dataMgr.apply_stats_and_build_loaders(model.feature_min, model.feature_max)
 
         if config.model.loss_coeff.get("geom_loss", 0.0) > 0.0:
             geom_dict = dataMgr.get_geom_features()
             for key, value in geom_dict.items():
                 model.register_buffer(f"geom_{key}", value.to(dev))
-        
 
-    if hasattr(model, "prior") and model.prior is not None:
+
+    if dataMgr is not None and hasattr(model, "prior") and model.prior is not None:
         model.prior._n_batches = len(dataMgr.train_loader) - 1
 
     if is_distributed():

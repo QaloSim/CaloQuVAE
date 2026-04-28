@@ -34,12 +34,10 @@ if project_root not in sys.path:
 
 import torch.nn as nn
 
-from scripts.dwave_samples import setup_engines, setup_rbm, setup_embedding
-from utils.dwave.physics import get_cond_vec
-from utils.dwave.workflows import sample_expanded_flux_arbitrary
-from utils.dwave.graphs import get_orbit_mappings
 from data.layers import reduce as energy_reduce
 from model.rbm.rbm_two_partite import RBM_TwoPartite
+# dwave / networkx imports are deferred to the code paths that need them
+# so --synthetic --skip-qpu runs with no dwave packages installed.
 
 
 # ── ConvTranspose3d → Linear patch ─────────────────────────────────────────────
@@ -211,6 +209,9 @@ def bench_qpu(rbm, raw_sampler, cond_sets, left_chains, right_chains, hidden_sid
     """
     Single num_reads=1 QPU call. Extracts response.info['timing'] (values in µs).
     """
+    from utils.dwave.workflows import sample_expanded_flux_arbitrary
+    from utils.dwave.graphs import get_orbit_mappings
+
     print("\n=== Bench B: QPU single anneal/readout ===")
 
     if hidden_side == 'right':
@@ -454,7 +455,8 @@ def _setup_synthetic(args):
     print(f"\nSynthetic mode: loading AE architecture from {args.ae_config_path}")
     ae_config = OmegaConf.load(args.ae_config_path)
     ae_config.gpu_list = [0]
-    ae_config.load_state = False
+    ae_config.load_state = True        # skip feature-stats init from dataset
+    ae_config.skip_data_loading = True # skip DataManager construction entirely
     ae_engine = setup_model_ae(ae_config)
     print("  AE model instantiated with random weights (no .pt loaded).")
 
@@ -499,9 +501,14 @@ def main(args):
                 _setup_synthetic(args)
             x0_1 = x0_1.cpu()
         else:
+            from scripts.dwave_samples import setup_engines
+            from utils.dwave.physics import get_cond_vec
             ae_engine, tf_engine, ae_config = setup_engines()
             dwave_cfg_tmp = OmegaConf.load(os.path.join(project_root, "config/dwave/dwave.yaml"))
-            rbm = setup_rbm(ae_config, dwave_cfg_tmp.rbm_checkpoint)
+            dummy_data = torch.zeros(1, ae_config.rbm.latent_nodes_per_p)
+            rbm = RBM_TwoPartite(ae_config, data=dummy_data)
+            loaded = rbm.load_checkpoint(dwave_cfg_tmp.rbm_checkpoint, epoch=None)
+            print(f"Loaded RBM checkpoint epoch {loaded}.")
 
             energy_mev = 50_000.0
             print(f"\nGenerating 1 conditioning vector at {energy_mev:.0f} MeV "
@@ -529,6 +536,7 @@ def main(args):
     # Embedding — only needed for QPU bench
     sampler = left_chains = right_chains = cond_sets = None
     if not args.skip_qpu:
+        from scripts.dwave_samples import setup_embedding
         sampler, left_chains, right_chains, cond_sets, hidden_side = setup_embedding(ae_engine, dwave_cfg)
 
     output = {
