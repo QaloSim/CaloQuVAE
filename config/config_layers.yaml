@@ -18,7 +18,7 @@ config_path: "/fast_scratch_1/caloqvae/lzhu/wandb/run-20260421_001607-k6wwwxh4/f
 
 device: gpu
 gpu_list:
-  - 0
+  - 1
   # - 0
   # - 1
   # - 2
@@ -43,9 +43,12 @@ save_dir: "/home/leozhu/CaloQuVAE/wandb-outputs"
 
 validation_datasets:
   # - TestData
-  - AtlasCustom2
-  - AtlasCustom1GeV
-  - AtlasCustom10GeV
-  - AtlasCustom50GeV
-  - AtlasCustom100GeV
-  - AtlasCustom250GeV
+  # - AtlasCustom2
+  # - AtlasCustom2GeV
+  # - AtlasCustom5GeV
+  # - AtlasCustom10GeV
+  - AtlasCustom20GeV
+  # - AtlasCustom50GeV
+  # - AtlasCustom100GeV
+  - AtlasCustom150GeV
+  # - AtlasCustom250GeV
