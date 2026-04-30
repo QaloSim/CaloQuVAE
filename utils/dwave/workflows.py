@@ -46,7 +46,7 @@ from .postprocessing import (
     process_analysis_result
 )
 
-from .plots import plot_energy_comparison
+from .plots import plot_energy_comparison, plot_beta_optimization
 
 # --- A. Basic RBM Sampling ---
 
@@ -868,6 +868,7 @@ def find_beta_rigorous(
         print(f"Target (RBM) Mean Energy: {mean_rbm_energy:.4f}")
 
     energies_qpu_final = None
+    energies_qpu_initial = None
     raw_sampler_obj = qpu_sampler.child if hasattr(qpu_sampler, 'child') else qpu_sampler
 
     # --- 3. Optimization Loop ---
@@ -900,6 +901,8 @@ def find_beta_rigorous(
             mean_dwave = e_dwave.mean().item()
             var_dwave = torch.var(e_dwave).item()
             energies_qpu_final = e_dwave
+            if epoch == 0:
+                energies_qpu_initial = e_dwave.clone()
 
         # D. Update Step
         if adaptive:
@@ -907,22 +910,28 @@ def find_beta_rigorous(
             current_lr = min(0.5, max(lr, (beta**2)/safe_var))
         else:
             current_lr = lr
-            
+
         diff = mean_dwave - mean_rbm_energy
         beta = max(1e-2, beta - current_lr * diff)
-        
+
         beta_hist.append(beta)
         rbm_e_hist.append(mean_rbm_energy)
         qpu_e_hist.append(mean_dwave)
-        
+
         print(f"Epoch {epoch}: Beta={beta:.4f} | Diff={diff:.2f} | Clean={analysis_result.total_clean_fraction:.2%}")
-        
-        if abs(diff) < tolerance: 
+
+        if abs(diff) < tolerance:
             print("Converged within tolerance.")
             break
-            
+
     if energies_qpu_final is not None:
-        plot_energy_comparison(energies_rbm, energies_qpu_final, beta)
+        plot_beta_optimization(
+            beta_hist, rbm_e_hist, qpu_e_hist,
+            rbm_energies=energies_rbm,
+            initial_qpu_energies=energies_qpu_initial,
+            final_qpu_energies=energies_qpu_final,
+            beta=beta,
+        )
 
     # --- 4. Conditional Validation ---
     if use_fast_sampling and validate_beta_heterogeneous:
@@ -1024,6 +1033,7 @@ def find_beta_experimental(
         print(f"Target (RBM) Mean: {mean_rbm_energy:.4f} | Variance: {var_rbm_energy:.4f}")
 
     energies_qpu_final = None
+    energies_qpu_initial = None
     raw_sampler_obj = qpu_sampler.child if hasattr(qpu_sampler, 'child') else qpu_sampler
 
     # --- 3. Optimization Loop ---
@@ -1070,34 +1080,38 @@ def find_beta_experimental(
             e_dwave = joint_energy(rbm, dwave_v, dwave_h)
             var_dwave = torch.var(e_dwave).item()
             energies_qpu_final = e_dwave
+            if epoch == 0:
+                energies_qpu_initial = e_dwave.clone()
 
         # E. Update Step (Variance Matching)
         diff_var = var_dwave - var_rbm_energy
-        
+
         if adaptive:
-            # Prevent exploding updates if variance difference is massive
             safe_denom = max(1e-6, abs(diff_var))
             current_lr = min(0.5, max(lr, 0.1 / safe_denom))
         else:
             current_lr = lr
-            
-        # UPDATE LOGIC:
-        # If Var_QPU > Var_RBM (Diff is +), QPU is too hot.
-        # We need to Decrease Beta to increase params (cool down).
+
         beta = max(1e-2, beta - current_lr * diff_var)
-        
+
         beta_hist.append(beta)
         rbm_var_hist.append(var_rbm_energy)
         qpu_var_hist.append(var_dwave)
-        
+
         print(f"Epoch {epoch}: Beta={beta:.4f} | Var_QPU={var_dwave:.4f} | Diff={diff_var:.4f} | Clean={clean_frac:.2%}")
-        
-        if abs(diff_var) < tolerance: 
+
+        if abs(diff_var) < tolerance:
             print("Converged within tolerance.")
             break
-            
+
     if energies_qpu_final is not None:
-        plot_energy_comparison(energies_rbm, energies_qpu_final, beta)
+        plot_beta_optimization(
+            beta_hist, rbm_var_hist, qpu_var_hist,
+            rbm_energies=energies_rbm,
+            initial_qpu_energies=energies_qpu_initial,
+            final_qpu_energies=energies_qpu_final,
+            beta=beta,
+        )
 
     # --- 4. Conditional Validation ---
     if use_fast_sampling and validate_beta_heterogeneous:
@@ -1251,6 +1265,7 @@ def find_beta_flux_bias_expanded(
         mean_rbm_energy = energies_rbm.mean().item()
 
     energies_qpu_final = None
+    energies_qpu_initial = None
 
     # 2. Optimization Loop
     for epoch in range(num_epochs):
@@ -1272,26 +1287,34 @@ def find_beta_flux_bias_expanded(
             mean_dwave = e_dwave.mean().item()
             var_dwave = torch.var(e_dwave).item()
             energies_qpu_final = e_dwave
+            if epoch == 0:
+                energies_qpu_initial = e_dwave.clone()
 
         if adaptive:
             safe_var = max(1e-6, var_dwave)
             current_lr = min(0.5, max(lr, (beta**2)/safe_var))
         else:
             current_lr = lr
-            
+
         diff = mean_dwave - mean_rbm_energy
         beta = max(1e-2, beta - current_lr * diff)
-        
+
         beta_hist.append(beta)
         rbm_e_hist.append(mean_rbm_energy)
         qpu_e_hist.append(mean_dwave)
-        
+
         print(f"Epoch {epoch}: Beta={beta:.4f} | Diff={diff:.2f}")
-        if abs(diff) < tolerance: 
+        if abs(diff) < tolerance:
             break
-            
+
     if energies_qpu_final is not None:
-        plot_energy_comparison(energies_rbm, energies_qpu_final, beta)
+        plot_beta_optimization(
+            beta_hist, rbm_e_hist, qpu_e_hist,
+            rbm_energies=energies_rbm,
+            initial_qpu_energies=energies_qpu_initial,
+            final_qpu_energies=energies_qpu_final,
+            beta=beta,
+        )
 
     # 3. Conditional Validation
     if use_fast_sampling and validate_beta_heterogeneous:
@@ -1339,6 +1362,7 @@ def find_beta_arbitrary(
     tolerance=0.1,
     use_srt=True,
     save_dir=None,
+    save_plot_dir=None,
     logical_srt=True,
     rbm_factor=1,
     flux_drift_compensation=True,
@@ -1374,6 +1398,8 @@ def find_beta_arbitrary(
     else:
         chain_strength = 1.0
 
+    energies_qpu_final = None
+    energies_qpu_initial = None
     for epoch in range(num_epochs):
 
         # A. Sample using Arbitrary Mapping
@@ -1408,9 +1434,11 @@ def find_beta_arbitrary(
         
         # C. Calculate Metrics
         with torch.no_grad():
-            # Calculate energy of QPU samples using RBM weights
             e_dwave = joint_energy(rbm, dwave_v, dwave_h)
             mean_dwave = e_dwave.mean().item()
+            energies_qpu_final = e_dwave
+            if epoch == 0:
+                energies_qpu_initial = e_dwave.clone()
 
         # D. Update Step
         diff = mean_dwave - mean_rbm_energy
@@ -1424,10 +1452,20 @@ def find_beta_arbitrary(
         rbm_e_hist.append(mean_rbm_energy)
         qpu_e_hist.append(mean_dwave)
 
-        if abs(diff) < tolerance: 
+        if abs(diff) < tolerance:
             print("Converged within tolerance.")
             break
-    
+
+    if energies_qpu_final is not None:
+        plot_beta_optimization(
+            beta_hist, rbm_e_hist, qpu_e_hist,
+            rbm_energies=energies_rbm,
+            initial_qpu_energies=energies_qpu_initial,
+            final_qpu_energies=energies_qpu_final,
+            beta=beta,
+            save_plot_dir=save_plot_dir,
+        )
+
     return beta, beta_hist, rbm_e_hist, qpu_e_hist
 
 
@@ -1456,6 +1494,7 @@ def find_beta_single(
     rbm_factor=1,
     use_identity_orbit: bool = False,
     flux_drift_compensation: bool = True,
+    save_plot_dir: str = None,
 ):
     """
     Orbit-aware beta optimization with per-pattern single-read support.
@@ -1519,6 +1558,7 @@ def find_beta_single(
 
     # --- 4. Optimization Loop ---
     energies_qpu_final = None
+    energies_qpu_initial = None
     for epoch in range(num_epochs):
 
         if single_batch:
@@ -1600,6 +1640,8 @@ def find_beta_single(
             e_dwave = joint_energy(rbm, dwave_v, dwave_h)
             mean_dwave = e_dwave.mean().item()
             energies_qpu_final = e_dwave
+            if epoch == 0:
+                energies_qpu_initial = e_dwave.clone()
 
         # D. Update Step
         diff = mean_dwave - mean_rbm_energy
@@ -1617,7 +1659,14 @@ def find_beta_single(
             break
 
     if energies_qpu_final is not None:
-        plot_energy_comparison(energies_rbm, energies_qpu_final, beta)
+        plot_beta_optimization(
+            beta_hist, rbm_e_hist, qpu_e_hist,
+            rbm_energies=energies_rbm,
+            initial_qpu_energies=energies_qpu_initial,
+            final_qpu_energies=energies_qpu_final,
+            beta=beta,
+            save_plot_dir=save_plot_dir,
+        )
 
     return beta, beta_hist, rbm_e_hist, qpu_e_hist
 

@@ -1,7 +1,9 @@
 from __future__ import annotations  # 1. Must be the very first line!
 
+import os
+from datetime import datetime
 import matplotlib.pyplot as plt
-from matplotlib.gridspec import GridSpec
+from matplotlib.gridspec import GridSpec, GridSpecFromSubplotSpec
 import dwave_networkx as dnx
 import numpy as np
 import torch
@@ -11,12 +13,38 @@ import matplotlib.patches as mpatches
 import matplotlib.lines as mlines
 import seaborn as sns
 import dwave.embedding
+import mplhep as hep
 from typing import TYPE_CHECKING
 from utils.dwave.physics import rbm_to_expanded_ising
 from utils.dwave.graphs import build_expanded_embedding, EmbeddingPoint
 
 if TYPE_CHECKING:
     from utils.dwave.sampling_backend import ChainAnalysisResult
+
+
+def _add_atlas_label(fig, text: str = "Preliminary", loc: int = 0, y: float = 0.965) -> None:
+    """Stamp the ATLAS label onto *fig* using mplhep.
+
+    Attaches a thin invisible axis aligned with the first subplot's left edge
+    near the top of the figure, then calls ``hep.atlas.label`` on it.  Safe to
+    call even when no axes exist yet (falls back to fig.axes[0]).
+    """
+    axes = fig.axes
+    if not axes:
+        return
+    x0 = axes[0].get_position().x0
+    ax_dummy = fig.add_axes([x0, y, 0.45, 0.01])
+    ax_dummy.axis('off')
+    hep.atlas.label(text, data=False, rlabel="", ax=ax_dummy, loc=loc)
+
+
+def _save_fig(fig, save_path: str | None) -> None:
+    """Save *fig* to *save_path* (PNG/PDF/SVG inferred from extension)."""
+    if save_path is None:
+        return
+    os.makedirs(os.path.dirname(os.path.abspath(save_path)), exist_ok=True)
+    fig.savefig(save_path, dpi=200, bbox_inches='tight')
+    print(f"[plots] Saved → {save_path}")
 
 
 def visualize_embedding(sampler, graph, left_chains_dict, right_chains_dict, conditioning_sets, colors):
@@ -211,95 +239,164 @@ def visualize_embedding_poster(sampler, graph, left_chains_dict, right_chains_di
     
     
 def plot_beta_optimization(
-    beta_hist: list | np.ndarray, 
-    rbm_e_hist: list | np.ndarray, 
-    qpu_e_hist: list | np.ndarray, 
-    figsize: tuple = (10, 10)
-):
+    beta_hist: list | np.ndarray,
+    rbm_e_hist: list | np.ndarray,
+    qpu_e_hist: list | np.ndarray,
+    rbm_energies=None,
+    initial_qpu_energies=None,
+    final_qpu_energies=None,
+    beta: float | None = None,
+    figsize: tuple = (10, 14),
+    save_plot_dir: str | None = None,
+    atlas_label: str = "Preliminary",
+) -> plt.Figure:
     """
-    Plots the beta schedule optimization and energy convergence comparison.
+    Combined beta optimization history + energy distribution comparison.
+
+    Top two panels show the beta trajectory and per-epoch energy convergence.
+    Bottom panel overlays RBM, initial-epoch QPU, and final-epoch QPU energy
+    histograms to make the shift from beta estimation visible at a glance.
+
+    Parameters
+    ----------
+    beta_hist, rbm_e_hist, qpu_e_hist : per-epoch scalar histories.
+    rbm_energies        : 1-D tensor/array of RBM joint energies (full distribution).
+    initial_qpu_energies: 1-D tensor/array from epoch-0 QPU samples.
+    final_qpu_energies  : 1-D tensor/array from the final epoch QPU samples.
+    beta                : final beta value for annotation; inferred from beta_hist if None.
+    save_plot_dir       : if set, the figure is saved into this directory with an
+                          auto-generated timestamped filename.
+    atlas_label         : text passed to hep.atlas.label.
     """
-    
-    # 1. Setup
+    def _to_np(x):
+        if x is None:
+            return None
+        if hasattr(x, 'detach'):
+            x = x.detach().cpu()
+        return np.asarray(x).flatten()
+
     epochs = np.arange(len(beta_hist))
-    fig, (ax1, ax2) = plt.subplots(2, 1, figsize=figsize, sharex=True)
-    
-    # --- Plot 1: Beta Progression ---
-    ax1.plot(epochs, beta_hist, marker='o', linestyle='-', color='purple', label=r'$\beta$ Value')
-    ax1.set_ylabel(r'Inverse Temperature ($\beta$)', fontsize=12)
-    ax1.set_title(r'Optimization of $\beta$ (RBM vs QPU)', fontsize=14)
-    ax1.grid(True, which='both', linestyle='--', alpha=0.5)
-    ax1.legend()
+    final_beta = beta if beta is not None else float(beta_hist[-1])
 
-    # Annotate the final value
-    # Note: xytext is offset relative to the data point. You might need to adjust 
-    # the offset if your beta values change scale drastically.
-    final_beta = beta_hist[-1]
-    ax1.annotate(f'Final $\\beta$: {final_beta:.4f}', 
-                 xy=(epochs[-1], final_beta),           # The point to look at (data coords)
-                 xytext=(0, 40),                        # The text position (0pts x, 40pts y from point)
-                 textcoords='offset points',            # <--- CRITICAL FIX
-                 ha='center',
-                 arrowprops=dict(facecolor='black', shrink=0.05))
+    has_histograms = any(x is not None for x in [rbm_energies, initial_qpu_energies, final_qpu_energies])
 
-    # --- Plot 2: Energy Comparison ---
-    ax2.plot(epochs, rbm_e_hist, label='RBM (Target) Energy', color='blue', linestyle='--', linewidth=2)
-    ax2.plot(epochs, qpu_e_hist, label='QPU (Sampled) Energy', color='red', marker='x', linestyle='-')
+    if has_histograms:
+        fig = plt.figure(figsize=figsize)
+        gs = GridSpec(3, 1, figure=fig, height_ratios=[1, 1, 1.4], hspace=0.38)
+        ax1 = fig.add_subplot(gs[0])
+        ax2 = fig.add_subplot(gs[1], sharex=ax1)
+        ax3 = fig.add_subplot(gs[2])
+    else:
+        fig, (ax1, ax2) = plt.subplots(2, 1, figsize=(figsize[0], figsize[1] * 2 // 3), sharex=True)
+        ax3 = None
 
-    ax2.set_xlabel('Epochs', fontsize=12)
-    ax2.set_ylabel('Mean Joint Energy', fontsize=12)
-    ax2.grid(True, which='both', linestyle='--', alpha=0.5)
-    ax2.legend()
+    # --- Panel 1: Beta Progression ---
+    ax1.plot(epochs, beta_hist, marker='o', linestyle='-', color='purple', label=r'$\beta$')
+    ax1.set_ylabel(r'Inverse Temperature ($\beta$)', fontsize=11)
+    ax1.set_title(r'$\beta$ Schedule', fontsize=12)
+    ax1.grid(True, linestyle='--', alpha=0.5)
+    ax1.legend(fontsize=10)
+    ax1.annotate(
+        f'Final $\\beta$: {final_beta:.4f}',
+        xy=(epochs[-1], final_beta),
+        xytext=(0, 35),
+        textcoords='offset points',
+        ha='center',
+        arrowprops=dict(facecolor='black', shrink=0.05, width=1, headwidth=6),
+        fontsize=9,
+    )
 
-    # Highlight the convergence gap
-    final_diff = abs(qpu_e_hist[-1] - rbm_e_hist[-1])
-    ax2.set_title(f'Energy Matching (Final Diff: {final_diff:.4f})', fontsize=14)
+    # --- Panel 2: Energy Convergence ---
+    ax2.plot(epochs, rbm_e_hist, label='RBM (Target)', color='steelblue', linestyle='--', linewidth=2)
+    ax2.plot(epochs, qpu_e_hist, label='QPU (Sampled)', color='tomato', marker='x', linestyle='-')
+    ax2.set_xlabel('Epoch', fontsize=11)
+    ax2.set_ylabel('Mean Joint Energy', fontsize=11)
+    final_diff = abs(float(qpu_e_hist[-1]) - float(rbm_e_hist[-1]))
+    ax2.set_title(f'Energy Convergence  (Final $\\Delta$: {final_diff:.4f})', fontsize=12)
+    ax2.grid(True, linestyle='--', alpha=0.5)
+    ax2.legend(fontsize=10)
 
-    plt.tight_layout()
+    # --- Panel 3: Energy Distribution Shift ---
+    if has_histograms:
+        rbm_e   = _to_np(rbm_energies)
+        init_e  = _to_np(initial_qpu_energies)
+        final_e = _to_np(final_qpu_energies)
+
+        all_vals = np.concatenate([v for v in [rbm_e, init_e, final_e] if v is not None])
+        bins = np.linspace(all_vals.min(), all_vals.max(), 40)
+
+        if rbm_e is not None:
+            ax3.hist(rbm_e,   bins=bins, alpha=0.50, density=True, color='steelblue',
+                     label='RBM (Target)', histtype='stepfilled')
+        if init_e is not None:
+            ax3.hist(init_e,  bins=bins, alpha=0.75, density=True, color='salmon',
+                     label='QPU (Initial, epoch 0)', histtype='step', linewidth=2, linestyle='--')
+        if final_e is not None:
+            ax3.hist(final_e, bins=bins, alpha=0.75, density=True, color='tomato',
+                     label=f'QPU (Final, $\\beta$={final_beta:.3f})', histtype='step', linewidth=2)
+
+        ax3.set_xlabel('Joint Energy', fontsize=11)
+        ax3.set_ylabel('Density', fontsize=11)
+        ax3.set_title('Energy Distribution Shift', fontsize=12)
+        ax3.legend(fontsize=10)
+        ax3.grid(True, linestyle='--', alpha=0.4)
+
+    _add_atlas_label(fig, text=atlas_label)
+    if save_plot_dir is not None:
+        ts = datetime.now().strftime("%Y%m%d_%H%M%S")
+        _save_fig(fig, os.path.join(save_plot_dir, f"beta_optimization_{ts}.png"))
     plt.show()
+    return fig
 
 
 
-def plot_energy_comparison(rbm_energies, qpu_energies, beta):
+def plot_energy_comparison(
+    rbm_energies,
+    qpu_energies,
+    beta,
+    save_plot_dir: str | None = None,
+    atlas_label: str = "Simulation Preliminary",
+) -> plt.Figure:
     """
-    Plots aligned histograms of RBM and QPU energy distributions and 
-    calculates the Chi-Squared statistic.
+    Histogram comparison of RBM vs QPU energy distributions (no optimization history).
+    Useful for standalone validation calls such as validate_beta_heterogeneous.
+    For full beta-optimisation plots use plot_beta_optimization instead.
     """
-    # Convert tensors to numpy arrays
-    rbm_e = rbm_energies.detach().cpu().numpy().flatten()
-    qpu_e = qpu_energies.detach().cpu().numpy().flatten()
-    
-    num_samples = min(len(rbm_e), len(qpu_e))
-    
-    plt.figure(figsize=(10, 6))
-    
-    # Determine aligned bins for both distributions
-    min_val = min(rbm_e.min(), qpu_e.min())
-    max_val = max(rbm_e.max(), qpu_e.max())
-    bins = np.linspace(min_val, max_val, 30)
-    
-    # Calculate histograms manually first to get density for Chi-Squared
-    # We use density=True to account for potentially different batch sizes
+    def _to_np(x):
+        if hasattr(x, 'detach'):
+            x = x.detach().cpu()
+        return np.asarray(x).flatten()
+
+    rbm_e = _to_np(rbm_energies)
+    qpu_e = _to_np(qpu_energies)
+
+    bins = np.linspace(min(rbm_e.min(), qpu_e.min()), max(rbm_e.max(), qpu_e.max()), 40)
+
     hist_rbm, _ = np.histogram(rbm_e, bins=bins, density=True)
     hist_qpu, _ = np.histogram(qpu_e, bins=bins, density=True)
-    
-    # Calculate Chi-Squared
-    # Adding epsilon to denominator to prevent division by zero
-    epsilon = 1e-10
-    chi_sq = np.sum(((hist_rbm - hist_qpu) ** 2) / (hist_rbm + epsilon))
-    
-    # Plotting
-    plt.hist(rbm_e, bins=bins, alpha=0.6, label='RBM (Target)', color='blue', density=True)
-    plt.hist(qpu_e, bins=bins, alpha=0.6, label=f'QPU (Beta={beta:.4f})', color='orange', density=True)
-    
-    plt.title(f"Energy Distribution Comparison\nBeta: {beta:.4f} | $\chi^2$: {chi_sq:.4f} | Samples: {num_samples}", fontsize=14)
-    plt.xlabel("Energy")
-    plt.ylabel("Density")
-    plt.legend()
-    plt.grid(True, alpha=0.3)
-    
-    # Display the plot
+    chi_sq = np.sum(((hist_rbm - hist_qpu) ** 2) / (hist_rbm + 1e-10))
+
+    fig, ax = plt.subplots(figsize=(9, 5))
+    ax.hist(rbm_e, bins=bins, alpha=0.50, density=True, color='steelblue',
+            label='RBM (Target)', histtype='stepfilled')
+    ax.hist(qpu_e, bins=bins, alpha=0.75, density=True, color='tomato',
+            label=f'QPU ($\\beta$={beta:.4f})', histtype='step', linewidth=2)
+    ax.set_title(
+        f'Energy Distribution  |  $\\beta={beta:.4f}$  |  '
+        f'$\\chi^2={chi_sq:.3f}$  |  n={min(len(rbm_e), len(qpu_e))}',
+        fontsize=12,
+    )
+    ax.set_xlabel('Joint Energy', fontsize=11)
+    ax.set_ylabel('Density', fontsize=11)
+    ax.legend(fontsize=10)
+    ax.grid(True, alpha=0.3)
+
+    _add_atlas_label(fig, text=atlas_label)
+    if save_plot_dir is not None:
+        ts = datetime.now().strftime("%Y%m%d_%H%M%S")
+        _save_fig(fig, os.path.join(save_plot_dir, f"energy_comparison_{ts}.png"))
     plt.show()
+    return fig
 
 
 def plot_single_shower(
@@ -1606,7 +1703,11 @@ def plot_orbit_sweep_analysis(sweep_results):
     plt.show()
 
 
-def plot_permutation_sweep_analysis(sweep_results):
+def plot_permutation_sweep_analysis(
+    sweep_results,
+    atlas_label: str = "Simulation Preliminary",
+    save_path: str | None = None,
+):
     """
     Visualizes Monte Carlo Permutation Sweep.
 
@@ -1621,6 +1722,15 @@ def plot_permutation_sweep_analysis(sweep_results):
 
     If ``"aggregated_orbit"`` is absent (legacy results), the original 3-column
     layout is used with Default and Best only.
+
+    Parameters
+    ----------
+    sweep_results : dict
+        Output of run_monte_carlo_permutation_sweep / run_mc_permutation_sweep_single.
+    atlas_label : str
+        Text passed to ``hep.atlas.label`` (e.g. ``"Simulation Preliminary"``).
+    save_path : str or None
+        If given, the figure is saved to this path.
     """
     metrics = sweep_results["perm_metrics"]
     mat_classical = sweep_results["classical_matrix"]
@@ -1630,6 +1740,7 @@ def plot_permutation_sweep_analysis(sweep_results):
     agg_run = sweep_results.get("aggregated_orbit")  # None for legacy results
     default_srt_run = sweep_results.get("default_srt_aggregated")  # None for legacy results
     anneal_time = sweep_results.get("anneal_time")  # None for legacy results
+    mag_classical = sweep_results.get("classical_magnetization")
 
     all_errors = [m['error_norm'] for m in metrics]
     all_breaks = [m['chain_break_frac'] for m in metrics]
@@ -1638,8 +1749,11 @@ def plot_permutation_sweep_analysis(sweep_results):
     n_cols = 4 if has_agg else 3
     fig_width = 24 if has_agg else 18
 
-    fig = plt.figure(figsize=(fig_width, 15))
-    gs = fig.add_gridspec(3, n_cols, height_ratios=[0.25, 0.4, 0.4])
+    has_mag = mag_classical is not None
+    n_rows = 4 if has_mag else 3
+    height_ratios = [0.25, 0.4, 0.4, 0.3] if has_mag else [0.25, 0.4, 0.4]
+    fig = plt.figure(figsize=(fig_width, 18 if has_mag else 15))
+    gs = fig.add_gridspec(n_rows, n_cols, height_ratios=height_ratios)
 
     anneal_str = f"t_a={anneal_time} µs" if anneal_time is not None else "t_a=default"
     fig.suptitle(f"MC Permutation Sweep  |  {anneal_str}", fontsize=14, fontweight='bold', y=1.01)
@@ -1689,7 +1803,7 @@ def plot_permutation_sweep_analysis(sweep_results):
         values = [default_run['error_norm'], best_run['error_norm'], agg_run['error_norm']]
         colors = ['firebrick', 'forestgreen', 'mediumpurple']
         if default_srt_run is not None:
-            labels.append('Default\n(SRT-Agg)')
+            labels.append('Best SRT\n(Agg)')
             values.append(default_srt_run['error_norm'])
             colors.append('steelblue')
         bars = ax_bar.bar(labels, values, color=colors, alpha=0.8, width=0.5)
@@ -1754,6 +1868,61 @@ def plot_permutation_sweep_analysis(sweep_results):
         ax_diff_agg = fig.add_subplot(gs[2, 3])
         plot_mat(ax_diff_agg, diff_agg, "Error: Aggregated - Classical", diff=True)
 
+    # --- Row 3: Magnetization ---
+    if has_mag:
+        ref_run = default_srt_run if default_srt_run is not None else default_run
+        mag_def = ref_run.get("magnetization")
+        mag_best = best_run.get("magnetization")
+        mag_agg = agg_run.get("magnetization") if has_agg else None
+
+        n_nodes = len(mag_classical)
+        x = np.arange(n_nodes)
+
+        def _style_mag_ax(ax, ylabel):
+            ax.set_xlabel("Latent Node Index", fontsize=9)
+            ax.set_ylabel(ylabel, fontsize=9)
+            ax.set_xlim(-1, n_nodes)
+            ax.tick_params(axis='x', which='both', bottom=False, labelbottom=False)
+            ax.grid(axis='y', linestyle='--', alpha=0.5, zorder=0)
+            ax.spines['top'].set_visible(False)
+            ax.spines['right'].set_visible(False)
+
+        def _plot_mag_delta(ax, delta, title, color='steelblue'):
+            bar_colors = ['steelblue' if d >= 0 else 'firebrick' for d in delta]
+            ax.bar(x, delta, color=bar_colors, alpha=0.85, linewidth=0)
+            ax.axhline(0, color='black', linewidth=1.0, linestyle='--', zorder=3)
+            rms = float(np.sqrt(np.mean(delta ** 2)))
+            ax.set_title(f"{title}\nRMS Δ = {rms:.3f}", fontsize=10, fontweight='bold')
+            _style_mag_ax(ax, r"$\Delta\langle\sigma\rangle$")
+
+        ax_mag_cl = fig.add_subplot(gs[3, 0])
+        ax_mag_cl.bar(x, mag_classical, color='dimgray', alpha=0.75, linewidth=0)
+        ax_mag_cl.set_title("Classical Magnetization\n(Target)", fontsize=10, fontweight='bold')
+        ax_mag_cl.set_ylim(0, 1)
+        _style_mag_ax(ax_mag_cl, r"$\langle\sigma\rangle$")
+
+        mags = [mag_def, mag_best]
+        if default_srt_run is not None:
+            srt_lbl = default_srt_run.get('label', 'Best SRT')
+            titles = [f"ΔMag: {srt_lbl} (SRT-Agg) − Classical", "ΔMag: Best Perm − Classical"]
+        else:
+            titles = ["ΔMag: Default − Classical", "ΔMag: Best Perm − Classical"]
+        if has_agg:
+            mags.append(mag_agg)
+            titles.append("ΔMag: Aggregated − Classical")
+
+        for col_idx, (mag_qpu, title) in enumerate(zip(mags, titles), start=1):
+            ax_m = fig.add_subplot(gs[3, col_idx])
+            if mag_qpu is not None:
+                lim = max(abs(mag_qpu - mag_classical).max() * 1.15, 0.05)
+                _plot_mag_delta(ax_m, mag_qpu - mag_classical, title)
+                ax_m.set_ylim(-lim, lim)
+            else:
+                ax_m.text(0.5, 0.5, "Magnetization\nnot available",
+                          ha='center', va='center', transform=ax_m.transAxes,
+                          fontsize=10, color='gray')
+                ax_m.axis('off')
+
     # --- Colorbars ---
     cbar_ax_main = fig.add_axes([0.92, 0.45, 0.015, 0.25])
     fig.colorbar(im_main, cax=cbar_ax_main, label="Pearson Correlation")
@@ -1762,6 +1931,8 @@ def plot_permutation_sweep_analysis(sweep_results):
     fig.colorbar(im_diff, cax=cbar_ax_diff, label="Correlation Delta")
 
     plt.tight_layout(rect=[0, 0, 0.9, 1])
+    _add_atlas_label(fig, text=atlas_label)
+    _save_fig(fig, save_path)
     plt.show()
 
 
@@ -1961,7 +2132,11 @@ def plot_ga_sweep_analysis(ga_results):
     plt.show()
 
 
-def plot_srt_comparison(comparison_results):
+def plot_srt_comparison(
+    comparison_results,
+    save_path: str | None = None,
+    atlas_label: str = "Preliminary",
+):
     """
     Visualises Physical (inter-chain) vs Logical (intra-chain) SRT comparison.
 
@@ -1969,6 +2144,11 @@ def plot_srt_comparison(comparison_results):
     Row 1: Classical matrix | Physical SRT matrix | Logical SRT matrix
     Row 2: [empty]          | Diff: Phys - Cl     | Diff: Logical - Cl
     Row 3: Classical mag    | ΔMag: Phys - Cl     | ΔMag: Logical - Cl
+
+    Parameters
+    ----------
+    save_path   : if given, saves the figure to this path before displaying.
+    atlas_label : text passed to ``hep.atlas.label`` (e.g. ``"Simulation"``).
     """
     mat_cl = comparison_results["classical_matrix"]
     phys   = comparison_results["physical_srt"]
@@ -2107,7 +2287,10 @@ def plot_srt_comparison(comparison_results):
     fig.suptitle("SRT Comparison: Physical (Inter-Chain) vs Logical (Intra-Chain)",
                  fontsize=14, fontweight='bold', y=0.98)
     plt.tight_layout(rect=[0, 0, 0.9, 0.97])
+    _add_atlas_label(fig, atlas_label)
+    _save_fig(fig, save_path)
     plt.show()
+    return fig
 
 
 def plot_orbit_sensitivity_analysis(data):
@@ -2611,7 +2794,11 @@ def plot_pareto_frontier(
     plt.show()
 
 
-def plot_susceptibility_comparison(comparison_results):
+def plot_susceptibility_comparison(
+    comparison_results,
+    save_path: str | None = None,
+    atlas_label: str = "Preliminary",
+):
     """
     Visualises Uniform Spreading vs Susceptibility-Compensated logical-J sampling.
 
@@ -2620,6 +2807,11 @@ def plot_susceptibility_comparison(comparison_results):
         Row 1: Classical matrix | Uniform matrix  | Compensated matrix
         Row 2: J distribution   | Diff: Uni - Cl  | Diff: Comp - Cl
         Row 3: Classical mag    | ΔMag: Uni - Cl  | ΔMag: Comp - Cl
+
+    Parameters
+    ----------
+    save_path   : if given, saves the figure to this path before displaying.
+    atlas_label : text passed to ``hep.atlas.label`` (e.g. ``"Simulation"``).
     """
     mat_cl   = comparison_results["classical_matrix"]
     uni      = comparison_results["uniform"]
@@ -2785,7 +2977,10 @@ def plot_susceptibility_comparison(comparison_results):
         fontsize=14, fontweight='bold', y=0.98
     )
     plt.tight_layout(rect=[0, 0, 0.9, 0.97])
+    _add_atlas_label(fig, atlas_label)
+    _save_fig(fig, save_path)
     plt.show()
+    return fig
 
 
 def plot_flux_drift_comparison(comparison_results):
@@ -2944,7 +3139,11 @@ def plot_flux_drift_comparison(comparison_results):
     plt.show()
 
 
-def plot_srt_aggregation_comparison(comparison_results):
+def plot_srt_aggregation_comparison(
+    comparison_results,
+    save_path: str | None = None,
+    atlas_label: str = "Preliminary",
+):
     """
     Visualises "average all SRT batches" vs "pick the single best SRT batch".
 
@@ -2954,6 +3153,11 @@ def plot_srt_aggregation_comparison(comparison_results):
     Row 1 : Classical matrix |  Averaged matrix   |  Best-SRT matrix
     Row 2 : Per-batch errors |  Diff: Avg – Cl    |  Diff: Best – Cl
     Row 3 : Classical mag    |  ΔMag: Averaged    |  ΔMag: Best-SRT
+
+    Parameters
+    ----------
+    save_path   : if given, saves the figure to this path before displaying.
+    atlas_label : text passed to ``hep.atlas.label`` (e.g. ``"Simulation"``).
     """
     mat_cl   = comparison_results["classical_matrix"]
     avg      = comparison_results["averaged"]
@@ -3118,9 +3322,17 @@ def plot_srt_aggregation_comparison(comparison_results):
         fontsize=14, fontweight='bold', y=0.98
     )
     plt.tight_layout(rect=[0, 0, 0.9, 0.97])
+    _add_atlas_label(fig, atlas_label)
+    _save_fig(fig, save_path)
+    plt.show()
+    return fig
 
 
-def plot_annealing_time_sweep(sweep_results):
+def plot_annealing_time_sweep(
+    sweep_results,
+    save_path: str | None = None,
+    atlas_label: str = "Preliminary",
+):
     """
     Visualises the output of run_annealing_time_sweep.
 
@@ -3133,6 +3345,11 @@ def plot_annealing_time_sweep(sweep_results):
 
     Magnetization section (1 + n_times columns):
       Classical mag | ΔMag t_1 | ΔMag t_2 | ...
+
+    Parameters
+    ----------
+    save_path   : if given, saves the figure to this path before displaying.
+    atlas_label : text passed to ``hep.atlas.label``.
     """
     annealing_times = sweep_results["annealing_times"]
     per = sweep_results["per_time_results"]
@@ -3290,7 +3507,10 @@ def plot_annealing_time_sweep(sweep_results):
                     fontsize=9, color='gray')
             ax.axis('off')
 
+    _add_atlas_label(fig, atlas_label)
+    _save_fig(fig, save_path)
     plt.show()
+    return fig
 
 
 def plot_chain_break_histogram(result: dict, bins: int = 50):
@@ -3725,10 +3945,13 @@ def plot_energy_histogram(result: dict, bins: int = 60):
     fig.colorbar(im_diff, cax=cbar_diff, label="Δ Pearson r")
 
     plt.show()
-    plt.show()
 
 
-def plot_pause_sweep(sweep_results):
+def plot_pause_sweep(
+    sweep_results,
+    save_path: str | None = None,
+    atlas_label: str = "Preliminary",
+):
     """
     Visualises run_pause_sweep as a paused-vs-unpaused quality comparison.
 
@@ -3739,6 +3962,11 @@ def plot_pause_sweep(sweep_results):
     Row 2: Correlation matrices: Classical | Paused | Unpaused
     Row 3: (empty)              | Δ Paused − Cl | Δ Unpaused − Cl
     Row 4: Classical magnetization | ΔMag Paused | ΔMag Unpaused
+
+    Parameters
+    ----------
+    save_path   : if given, saves the figure to this path before displaying.
+    atlas_label : text passed to ``hep.atlas.label``.
     """
     per = sweep_results["per_pause_results"]
     pause_points = sweep_results["pause_points"]
@@ -3776,8 +4004,10 @@ def plot_pause_sweep(sweep_results):
         left=0.07, right=0.9,
     )
 
+    gs_row0 = GridSpecFromSubplotSpec(1, 2, subplot_spec=gs[0, :], wspace=0.3)
+
     # ───── Row 0, col 0: Mean energy vs s_p ─────
-    ax_e = fig.add_subplot(gs[0, 0])
+    ax_e = fig.add_subplot(gs_row0[0])
     means = [per[sp]["mean_energy"] for sp in sorted_sps]
     stds = [per[sp]["std_energy"] for sp in sorted_sps]
     ax_e.errorbar(sorted_sps, means, yerr=stds, fmt='-', color='dimgray',
@@ -3797,29 +4027,8 @@ def plot_pause_sweep(sweep_results):
     ax_e.grid(True, linestyle='--', alpha=0.5)
     ax_e.legend(fontsize=8)
 
-    # ───── Row 0, col 1: Error norm vs s_p ─────
-    ax_err = fig.add_subplot(gs[0, 1])
-    errs = [per[sp]["error_norm"] for sp in sorted_sps]
-    ax_err.plot(sorted_sps, errs, color='dimgray', linewidth=1.5, zorder=2)
-    for sp, e in zip(sorted_sps, errs):
-        ax_err.scatter(sp, e, color=sp_colors[sp], s=70, zorder=5,
-                       edgecolor='black', linewidth=0.5)
-    ax_err.axvline(optimal_sp, color=PAUSED_COLOR, linestyle='--', linewidth=1.5,
-                   zorder=1)
-    ax_err.axhline(paused["error_norm"], color=PAUSED_COLOR, linestyle='-',
-                   linewidth=1.5,
-                   label=f"paused final (β={paused['beta']:.2f}, err={paused['error_norm']:.3f})")
-    ax_err.axhline(unpaused["error_norm"], color=UNPAUSED_COLOR, linestyle='-',
-                   linewidth=1.5,
-                   label=f"unpaused final (β={unpaused['beta']:.2f}, err={unpaused['error_norm']:.3f})")
-    ax_err.set_xlabel(r"Pause point $s_p$")
-    ax_err.set_ylabel("Correlation Error Norm")
-    ax_err.set_title("Sweep: Corr. Error vs Pause Point", fontweight='bold')
-    ax_err.grid(True, linestyle='--', alpha=0.5)
-    ax_err.legend(fontsize=7)
-
-    # ───── Row 0, col 2: β convergence (paused & unpaused) ─────
-    ax_beta = fig.add_subplot(gs[0, 2])
+    # ───── Row 0, col 1: β convergence (paused & unpaused) ─────
+    ax_beta = fig.add_subplot(gs_row0[1])
     ax_beta.plot(paused["beta_hist"], color=PAUSED_COLOR, linewidth=2,
                  marker='o', label=f"paused β→{paused['beta']:.3f}")
     ax_beta.plot(unpaused["beta_hist"], color=UNPAUSED_COLOR, linewidth=2,
@@ -3955,10 +4164,17 @@ def plot_pause_sweep(sweep_results):
     cbar_diff = fig.add_axes([0.92, 0.18, 0.012, 0.15])
     fig.colorbar(im_diff, cax=cbar_diff, label="Δ Pearson r")
 
+    _add_atlas_label(fig, atlas_label, y=0.950)
+    _save_fig(fig, save_path)
     plt.show()
+    return fig
 
 
-def plot_anneal_offset_experiment(results):
+def plot_anneal_offset_experiment(
+    results,
+    save_path: str | None = None,
+    atlas_label: str = "Simulation",
+):
     """
     Visualises run_anneal_offset_experiment as a before/after quality comparison.
 
@@ -3969,6 +4185,11 @@ def plot_anneal_offset_experiment(results):
     Row 1: Correlation matrices: Classical | No Offset | With Offset
     Row 2: (empty)              | Δ No Offset − Cl  | Δ With Offset − Cl
     Row 3: Classical magnetization | ΔMag No Offset  | ΔMag With Offset
+
+    Parameters
+    ----------
+    save_path   : if given, saves the figure to this path before displaying.
+    atlas_label : text passed to ``hep.atlas.label``.
     """
     NO_OFFSET_COLOR = 'steelblue'
     OFFSET_COLOR = 'darkorange'
@@ -4192,4 +4413,7 @@ def plot_anneal_offset_experiment(results):
     cbar_diff = fig.add_axes([0.92, 0.18, 0.012, 0.15])
     fig.colorbar(im_diff, cax=cbar_diff, label="Δ Pearson r")
 
+    _add_atlas_label(fig, atlas_label)
+    _save_fig(fig, save_path)
     plt.show()
+    return fig
