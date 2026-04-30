@@ -1251,10 +1251,12 @@ def run_monte_carlo_permutation_sweep(
         return np.nan_to_num(latent, nan=0.0)
 
     mat_classical = get_corr(v_cl.cpu())
-    
+    mag_classical = v_cl.float().cpu().mean(dim=0)[n_cond:].numpy()
+
     # 2. Setup Loop
     sweep_results = {
         "classical_matrix": mat_classical,
+        "classical_magnetization": mag_classical,
         "perm_metrics": [],
         "default_orbit": None,
         "best_orbit": None,
@@ -1351,6 +1353,7 @@ def run_monte_carlo_permutation_sweep(
             "error_norm": error_norm,
             "chain_break_frac": chain_break_frac,
             "matrix": mat_perm,
+            "magnetization": full_samples.float().mean(dim=0)[n_cond:].numpy(),
             "samples": full_samples,
             "vis_mapping": p_vis,
             "hid_mapping": p_hid,
@@ -1375,6 +1378,7 @@ def run_monte_carlo_permutation_sweep(
         "matrix": mat_agg,
         "error_norm": error_agg,
         "break_frac": avg_break_frac_agg,
+        "magnetization": all_orbit_samples.float().mean(dim=0)[n_cond:].numpy(),
     }
 
     # 6. Single-orbit SRT aggregation (orthogonal aggregation axis)
@@ -1437,6 +1441,7 @@ def run_monte_carlo_permutation_sweep(
         "break_frac": break_frac_srt_agg,
         "num_srt_batches": total_srt_batches,
         "label": srt_ref_label,
+        "magnetization": srt_agg_samples.float().mean(dim=0)[n_cond:].numpy(),
     }
 
     print(f"\n--- MC Sweep Complete ---")
@@ -1526,7 +1531,8 @@ def run_srt_comparison(
                 use_srt=True,
                 additive_flux_offsets=base_shims,
                 logical_srt=logical_srt_flag,
-                chain_strength= chain_strength
+                chain_strength=chain_strength,
+                flux_drift_compensation=True,
             )
 
             v_sample_batch, _ = process_analysis_result(res, rbm, conditioning_sets)
@@ -2120,10 +2126,12 @@ def run_mc_permutation_sweep_single(
         return np.nan_to_num(latent, nan=0.0)
 
     mat_classical = get_corr(v_cl.cpu())
+    mag_classical = v_cl.float().cpu().mean(dim=0)[n_cond:].numpy()
 
     # --- 2. Setup ---
     sweep_results = {
         "classical_matrix": mat_classical,
+        "classical_magnetization": mag_classical,
         "perm_metrics": [],
         "default_orbit": None,
         "best_orbit": None,
@@ -2199,6 +2207,7 @@ def run_mc_permutation_sweep_single(
             "error_norm": error_norm,
             "chain_break_frac": chain_break_frac,
             "matrix": mat_perm,
+            "magnetization": full_samples.float().mean(dim=0)[n_cond:].numpy(),
             "samples": full_samples,
         }
         sweep_results["perm_metrics"].append(record)
@@ -2220,6 +2229,7 @@ def run_mc_permutation_sweep_single(
         "matrix": mat_agg,
         "error_norm": error_agg,
         "break_frac": avg_break_frac_agg,
+        "magnetization": all_orbit_samples.float().mean(dim=0)[n_cond:].numpy(),
     }
 
     print(f"\n--- MC Sweep Complete ---")
@@ -3604,3 +3614,110 @@ def run_anneal_offset_experiment(
         "num_reads": num_reads,
         "n_cond": n_cond,
     }
+
+
+# ---------------------------------------------------------------------------
+# Run-save-plot wrappers
+# ---------------------------------------------------------------------------
+# Each wrapper runs the corresponding experiment, persists the raw result dict
+# with save_result, then calls the matching plot function.  The result is always
+# returned so the caller can do further analysis without reloading from disk.
+# ---------------------------------------------------------------------------
+
+from .results_io import save_result
+from .plots import (
+    plot_srt_aggregation_comparison,
+    plot_annealing_time_sweep,
+    plot_pause_sweep,
+    plot_anneal_offset_experiment,
+)
+
+
+def run_and_save_srt_aggregation(
+    *args,
+    output_dir: str = "results/dwave",
+    plot_save_path: str | None = None,
+    atlas_label: str = "Simulation",
+    **kwargs,
+) -> dict:
+    """Run :func:`run_srt_aggregation_comparison`, save raw data and plot.
+
+    All positional / keyword arguments are forwarded unchanged to the underlying
+    experiment function.  Extra keyword arguments:
+
+    output_dir      : directory where the ``.pt`` result file is written.
+    plot_save_path  : if given, the figure is also saved to this path.
+    atlas_label     : label passed to the ATLAS stamp on the plot.
+
+    Returns the result dict (same object that was saved to disk).
+    """
+    result = run_srt_aggregation_comparison(*args, **kwargs)
+    save_result(result, "srt_aggregation", output_dir=output_dir)
+    plot_srt_aggregation_comparison(result, save_path=plot_save_path, atlas_label=atlas_label)
+    return result
+
+
+def run_and_save_annealing_time_sweep(
+    *args,
+    output_dir: str = "results/dwave",
+    plot_save_path: str | None = None,
+    atlas_label: str = "Simulation",
+    **kwargs,
+) -> dict:
+    """Run :func:`run_annealing_time_sweep`, save raw data and plot.
+
+    All positional / keyword arguments are forwarded unchanged to the underlying
+    experiment function.  Extra keyword arguments:
+
+    output_dir      : directory where the ``.pt`` result file is written.
+    plot_save_path  : if given, the figure is also saved to this path.
+    atlas_label     : label passed to the ATLAS stamp on the plot.
+    """
+    result = run_annealing_time_sweep(*args, **kwargs)
+    save_result(result, "annealing_time_sweep", output_dir=output_dir)
+    plot_annealing_time_sweep(result, save_path=plot_save_path, atlas_label=atlas_label)
+    return result
+
+
+def run_and_save_pause_sweep(
+    *args,
+    output_dir: str = "results/dwave",
+    plot_save_path: str | None = None,
+    atlas_label: str = "Simulation",
+    **kwargs,
+) -> dict:
+    """Run :func:`run_pause_sweep`, save raw data and plot.
+
+    All positional / keyword arguments are forwarded unchanged to the underlying
+    experiment function.  Extra keyword arguments:
+
+    output_dir      : directory where the ``.pt`` result file is written.
+    plot_save_path  : if given, the figure is also saved to this path.
+    atlas_label     : label passed to the ATLAS stamp on the plot.
+    """
+    result = run_pause_sweep(*args, **kwargs)
+    save_result(result, "pause_sweep", output_dir=output_dir)
+    plot_pause_sweep(result, save_path=plot_save_path, atlas_label=atlas_label)
+    return result
+
+
+def run_and_save_anneal_offset(
+    *args,
+    output_dir: str = "results/dwave",
+    plot_save_path: str | None = None,
+    atlas_label: str = "Simulation",
+    **kwargs,
+) -> dict:
+    """Run :func:`run_anneal_offset_experiment`, save raw data and plot.
+
+    All positional / keyword arguments are forwarded unchanged to the underlying
+    experiment function.  Extra keyword arguments:
+
+    output_dir      : directory where the ``.pt`` result file is written.
+    plot_save_path  : if given, the figure is also saved to this path.
+    atlas_label     : label passed to the ATLAS stamp on the plot.
+    """
+    result = run_anneal_offset_experiment(*args, **kwargs)
+    save_result(result, "anneal_offset", output_dir=output_dir)
+    plot_anneal_offset_experiment(result, save_path=plot_save_path, atlas_label=atlas_label)
+    return result
