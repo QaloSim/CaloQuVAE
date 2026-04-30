@@ -156,51 +156,93 @@ def _is_oom(exc):
 
 # ── Bench A: RBM block Gibbs on GPU ────────────────────────────────────────────
 
-def bench_rbm_gpu(rbm, cond_vec_1, n_clamped, gibbs_steps, batch_size, repeats):
+def bench_rbm_gpu(rbm, cond_vec_1, n_clamped, gibbs_steps, start_chunk, max_chunk, repeats):
     """
-    Times RBM block Gibbs at a fixed batch_size (typically the decoder-optimal batch).
+    Sweeps batch_size for RBM block Gibbs to find throughput-optimal batch.
     cond_vec_1: shape [1, n_clamped].
-    Returns (result_dict, v_samples).
+    Returns (result_dict, optimal_chunk).
     """
     device = rbm.device
-    print(f"\n=== Bench A: RBM block Gibbs (GPU) — batch={batch_size}, steps={gibbs_steps} ===")
+    print(f"\n=== Bench A: RBM block Gibbs (GPU) — steps={gibbs_steps} ===")
+    print(f"Single-pass sweep (start={start_chunk}, max={max_chunk}, {repeats} repeats/level)...")
 
-    cond_batch = cond_vec_1.repeat(batch_size, 1).to(device)
+    chunk = start_chunk
+    best_chunk = start_chunk
+    best_tp = 0.0
+    sweep = []
 
-    print("Warm-up...")
+    print(f"Warming up at start_chunk={start_chunk}...")
+    cond_init = cond_vec_1.repeat(start_chunk, 1).to(device)
     with torch.no_grad():
-        rbm.sample_v_given_v_clamped(cond_batch, n_clamped, gibbs_steps=gibbs_steps, beta=1.0)
+        rbm.sample_v_given_v_clamped(cond_init, n_clamped, gibbs_steps=gibbs_steps, beta=1.0)
+    del cond_init
 
-    v_final = [None]
+    while chunk <= max_chunk:
+        try:
+            cond_batch = cond_vec_1.repeat(chunk, 1).to(device)
+            with torch.no_grad():
+                rbm.sample_v_given_v_clamped(cond_batch, n_clamped, gibbs_steps=gibbs_steps, beta=1.0)
 
-    def run():
+            def run(cb=cond_batch, c=chunk):
+                with torch.no_grad():
+                    rbm.sample_v_given_v_clamped(cb, n_clamped, gibbs_steps=gibbs_steps, beta=1.0)
+
+            med, mn, mx = timed_runs(run, repeats=repeats)
+            tp = chunk / med
+            per_us = med / chunk * 1e6
+            per_step_ms = med / gibbs_steps * 1e3
+            del cond_batch
+        except RuntimeError as e:
+            if not _is_oom(e):
+                raise
+            print(f"  batch {chunk}: OOM — stopping sweep")
+            break
+
+        marker = ""
+        if tp > best_tp:
+            best_tp = tp
+            best_chunk = chunk
+            marker = " ← best"
+
+        sweep.append({
+            "chunk_size": chunk,
+            "throughput_samples_per_s": round(tp, 1),
+            "wall_s_median": round(med, 4),
+            "wall_s_min": round(mn, 4),
+            "wall_s_max": round(mx, 4),
+            "per_sample_us": round(per_us, 2),
+            "per_step_ms": round(per_step_ms, 4),
+        })
+        print(f"  batch {chunk:8d}: {tp:>10.0f} samples/s  ({per_us:.1f} µs/sample)"
+              f"  [{mn:.3f}–{mx:.3f}s]{marker}")
+
+        chunk *= 2
+
+    print(f"\nFinal timing {repeats}× at optimal batch={best_chunk}...")
+    cond_best = cond_vec_1.repeat(best_chunk, 1).to(device)
+
+    def final_run(cb=cond_best, c=best_chunk):
         with torch.no_grad():
-            v_final[0] = rbm.sample_v_given_v_clamped(
-                cond_batch, n_clamped, gibbs_steps=gibbs_steps, beta=1.0
-            )
+            rbm.sample_v_given_v_clamped(cb, n_clamped, gibbs_steps=gibbs_steps, beta=1.0)
 
-    print(f"Timing {repeats}×...")
-    med, mn, mx = timed_runs(run, repeats=repeats)
+    med, mn, mx = timed_runs(final_run, repeats=repeats)
+    per_us_final = med / best_chunk * 1e6
+    per_step_ms_final = med / gibbs_steps * 1e3
+    print(f"  {med:.3f}s  ({per_us_final:.1f} µs/sample  |  {per_step_ms_final:.4f} ms/step)")
 
-    per_sample_us = (med / batch_size) * 1e6
-    per_step_ms   = (med / gibbs_steps) * 1e3
-    samples_per_sec = batch_size / med
-
-    row = {
-        "batch": batch_size,
+    result = {
         "gibbs_steps": gibbs_steps,
         "n_clamped": n_clamped,
+        "sweep": sweep,
+        "optimum_chunk": best_chunk,
         "wall_s_median": round(med, 4),
         "wall_s_min": round(mn, 4),
         "wall_s_max": round(mx, 4),
-        "per_sample_us": round(per_sample_us, 2),
-        "per_step_ms": round(per_step_ms, 4),
-        "samples_per_sec": round(samples_per_sec, 1),
+        "per_sample_us": round(per_us_final, 2),
+        "per_step_ms": round(per_step_ms_final, 4),
+        "samples_per_sec": round(best_chunk / med, 1),
     }
-    print(f"  Wall: {med:.3f}s  (min={mn:.3f}  max={mx:.3f})")
-    print(f"  Throughput: {samples_per_sec:.0f} samples/s  |  {per_sample_us:.1f} µs/sample  |  {per_step_ms:.4f} ms/step")
-
-    return row, v_final[0]
+    return result, best_chunk
 
 
 # ── Bench B: QPU single anneal/readout ────────────────────────────────────────
@@ -381,22 +423,132 @@ def bench_decoder(ae_engine, n_vis, x0_1, u_samples_1, incidence_e_1, start_chun
     return result, best_chunk
 
 
+# ── Bench D: RBM → decoder combined throughput ────────────────────────────────
+
+def bench_combined(rbm, ae_engine, cond_vec_1, n_clamped, n_vis, x0_1, u_samples_1,
+                   incidence_e_1, gibbs_steps, start_chunk, max_chunk, repeats, use_bf16=False):
+    """
+    Sweeps batch_size for the full RBM-then-decoder pipeline at a shared batch size.
+    At each level: block-Gibbs samples → AE decoder (v_samples feeds directly in).
+    Returns (result_dict, optimal_chunk).
+    """
+    device = rbm.device
+    print(f"\n=== Bench D: RBM → decoder combined throughput ===")
+    print(f"Single-pass sweep (start={start_chunk}, max={max_chunk}, {repeats} repeats/level)...")
+
+    def _make_decoder_inputs(b):
+        x0b = x0_1.repeat(b, 1)
+        ub  = u_samples_1.repeat(b, 1)
+        eb  = incidence_e_1.repeat(b, 1)
+        return x0b, ub, eb
+
+    def _run_combined(cond_batch, x0b, ub, eb, c):
+        with torch.no_grad():
+            vs = rbm.sample_v_given_v_clamped(cond_batch, n_clamped, gibbs_steps=gibbs_steps, beta=1.0)
+            if use_bf16:
+                with torch.autocast(device_type='cuda', dtype=torch.bfloat16):
+                    ae_engine.generate_showers_from_rbm(vs, x0b, ub, eb, batch_size=c)
+            else:
+                ae_engine.generate_showers_from_rbm(vs, x0b, ub, eb, batch_size=c)
+
+    print(f"Warming up at start_chunk={start_chunk}...")
+    cond_init = cond_vec_1.repeat(start_chunk, 1).to(device)
+    x0b_init, ub_init, eb_init = _make_decoder_inputs(start_chunk)
+    _run_combined(cond_init, x0b_init, ub_init, eb_init, start_chunk)
+    del cond_init, x0b_init, ub_init, eb_init
+    if torch.cuda.is_available():
+        torch.cuda.empty_cache()
+
+    chunk = start_chunk
+    best_chunk = start_chunk
+    best_tp = 0.0
+    sweep = []
+
+    while chunk <= max_chunk:
+        try:
+            cond_batch = cond_vec_1.repeat(chunk, 1).to(device)
+            x0b, ub, eb = _make_decoder_inputs(chunk)
+            # one untimed warm-up per chunk for JIT tracing at new shapes
+            _run_combined(cond_batch, x0b, ub, eb, chunk)
+
+            def run(cb=cond_batch, x=x0b, u=ub, e=eb, c=chunk):
+                _run_combined(cb, x, u, e, c)
+
+            med, mn, mx = timed_runs(run, repeats=repeats)
+            tp = chunk / med
+            per_us = med / chunk * 1e6
+            del cond_batch, x0b, ub, eb
+            if torch.cuda.is_available():
+                torch.cuda.empty_cache()
+        except RuntimeError as exc:
+            if not _is_oom(exc):
+                raise
+            if torch.cuda.is_available():
+                torch.cuda.empty_cache()
+            print(f"  batch {chunk}: OOM — stopping sweep")
+            break
+
+        marker = ""
+        if tp > best_tp:
+            best_tp = tp
+            best_chunk = chunk
+            marker = " ← best"
+
+        sweep.append({
+            "chunk_size": chunk,
+            "throughput_samples_per_s": round(tp, 1),
+            "wall_s_median": round(med, 4),
+            "wall_s_min": round(mn, 4),
+            "wall_s_max": round(mx, 4),
+            "per_sample_us": round(per_us, 2),
+        })
+        print(f"  batch {chunk:8d}: {tp:>10.0f} samples/s  ({per_us:.1f} µs/sample)"
+              f"  [{mn:.3f}–{mx:.3f}s]{marker}")
+
+        chunk *= 2
+
+    print(f"\nFinal timing {repeats}× at optimal batch={best_chunk}...")
+    cond_best = cond_vec_1.repeat(best_chunk, 1).to(device)
+    x0b_f, ub_f, eb_f = _make_decoder_inputs(best_chunk)
+
+    def final_run(cb=cond_best, x=x0b_f, u=ub_f, e=eb_f, c=best_chunk):
+        _run_combined(cb, x, u, e, c)
+
+    med, mn, mx = timed_runs(final_run, repeats=repeats)
+    per_us_final = med / best_chunk * 1e6
+    print(f"  {med:.3f}s  ({per_us_final:.1f} µs/sample)")
+
+    result = {
+        "gibbs_steps": gibbs_steps,
+        "sweep": sweep,
+        "optimum_chunk": best_chunk,
+        "wall_s_median": round(med, 4),
+        "wall_s_min": round(mn, 4),
+        "wall_s_max": round(mx, 4),
+        "per_sample_us": round(per_us_final, 2),
+        "samples_per_sec": round(best_chunk / med, 1),
+    }
+    return result, best_chunk
+
+
 # ── Summary ────────────────────────────────────────────────────────────────────
 
-def print_summary(result_a, result_b, result_c):
+def print_summary(result_a, result_b, result_c, result_d=None):
     print("\n" + "=" * 62)
     print("BENCHMARK SUMMARY")
     print("=" * 62)
 
     if result_a is not None:
-        a = result_a[0]
+        best_a = result_a['optimum_chunk']
         print(f"\n[A] RBM block Gibbs — GPU")
-        print(f"    Batch (decoder-optimal): {a['batch']}")
-        print(f"    BGS steps:     {a['gibbs_steps']}")
-        print(f"    Wall:          {a['wall_s_median']:.3f}s  (min {a['wall_s_min']:.3f}  max {a['wall_s_max']:.3f})")
-        print(f"    Throughput:    {a['samples_per_sec']:.0f} samples/s")
-        print(f"    Per-sample:    {a['per_sample_us']:.1f} µs")
-        print(f"    Per-step:      {a['per_step_ms']:.4f} ms/step")
+        print(f"    BGS steps:     {result_a['gibbs_steps']}")
+        print(f"    Optimal batch: {best_a}  ({result_a['per_sample_us']:.1f} µs/sample  |  {result_a['per_step_ms']:.4f} ms/step)")
+        print(f"    Wall:          {result_a['wall_s_median']:.3f}s  (min {result_a['wall_s_min']:.3f}  max {result_a['wall_s_max']:.3f})")
+        print(f"    Throughput:    {result_a['samples_per_sec']:.0f} samples/s")
+        print(f"    Sweep:")
+        for row in result_a['sweep']:
+            marker = " ← optimal" if row['chunk_size'] == best_a else ""
+            print(f"      batch={row['chunk_size']:8d}: {row['per_sample_us']:.1f} µs/sample{marker}")
 
     if result_b is not None:
         t = result_b.get('timing_us', {})
@@ -419,6 +571,18 @@ def print_summary(result_a, result_b, result_c):
         print(f"    Sweep:")
         for row in result_c['sweep']:
             marker = " ← optimal" if row['chunk_size'] == best_c else ""
+            print(f"      batch={row['chunk_size']:8d}: {row['per_sample_us']:.1f} µs/sample{marker}")
+
+    if result_d is not None:
+        best_d = result_d['optimum_chunk']
+        print(f"\n[D] RBM → decoder combined")
+        print(f"    BGS steps:     {result_d['gibbs_steps']}")
+        print(f"    Optimal batch: {best_d}  ({result_d['per_sample_us']:.1f} µs/sample)")
+        print(f"    Wall:          {result_d['wall_s_median']:.3f}s  (min {result_d['wall_s_min']:.3f}  max {result_d['wall_s_max']:.3f})")
+        print(f"    Throughput:    {result_d['samples_per_sec']:.0f} samples/s")
+        print(f"    Sweep:")
+        for row in result_d['sweep']:
+            marker = " ← optimal" if row['chunk_size'] == best_d else ""
             print(f"      batch={row['chunk_size']:8d}: {row['per_sample_us']:.1f} µs/sample{marker}")
 
     print("=" * 62)
@@ -493,7 +657,9 @@ def _setup_synthetic(args):
     ae_engine = setup_model_ae(ae_config)
     print("  AE model instantiated with random weights (no .pt loaded).")
 
-    dummy_data = torch.zeros(1, ae_config.rbm.latent_nodes_per_p)
+    # init_parameters uses data.shape[1] for num_visibles; match generate_showers_from_rbm formula
+    _ar_latent = ae_config.rbm.latent_nodes_per_p * 3 + ae_config.model.cond_p_size
+    dummy_data = torch.zeros(1, _ar_latent)
     rbm = RBM_TwoPartite(ae_config, data=dummy_data)
     rbm_ckpt = args.rbm_checkpoint or getattr(
         OmegaConf.load(os.path.join(project_root, "config/dwave/dwave.yaml")),
@@ -538,7 +704,8 @@ def main(args):
             from utils.dwave.physics import get_cond_vec
             ae_engine, tf_engine, ae_config = setup_engines()
             dwave_cfg_tmp = OmegaConf.load(os.path.join(project_root, "config/dwave/dwave.yaml"))
-            dummy_data = torch.zeros(1, ae_config.rbm.latent_nodes_per_p)
+            _ar_latent = ae_config.rbm.latent_nodes_per_p * 3 + ae_config.model.cond_p_size
+            dummy_data = torch.zeros(1, _ar_latent)
             rbm = RBM_TwoPartite(ae_config, data=dummy_data)
             loaded = rbm.load_checkpoint(dwave_cfg_tmp.rbm_checkpoint, epoch=None)
             print(f"Loaded RBM checkpoint epoch {loaded}.")
@@ -590,12 +757,31 @@ def main(args):
         "bench_a_rbm_gpu": None,
         "bench_b_qpu": None,
         "bench_c_decoder": None,
+        "bench_d_combined": None,
     }
 
     n_vis = int(rbm.params["vbias"].shape[0])
 
-    # ── Bench C first — determines shared chunk size for Bench A ──
-    r_c, optimal_chunk = bench_decoder(
+    # ── Bench A: RBM sweep (independent) ──
+    r_a, rbm_optimal_chunk = bench_rbm_gpu(
+        rbm, cond_vec_1, n_clamped,
+        gibbs_steps=args.gibbs_steps,
+        start_chunk=args.rbm_start_chunk,
+        max_chunk=args.rbm_max_chunk,
+        repeats=args.repeats,
+    )
+    output["bench_a_rbm_gpu"] = r_a
+
+    # ── Bench B ──
+    if not args.skip_qpu:
+        r_b = bench_qpu(rbm, sampler, cond_sets, left_chains, right_chains, hidden_side, cond_vec_1)
+        output["bench_b_qpu"] = r_b
+    else:
+        r_b = None
+        print("\n=== Bench B: QPU (skipped via --skip-qpu) ===")
+
+    # ── Bench C: decoder sweep (independent) ──
+    r_c, decoder_optimal_chunk = bench_decoder(
         ae_engine, n_vis, x0_1, u_samples_1, incidence_e_1,
         start_chunk=args.decoder_start_chunk,
         repeats=args.repeats,
@@ -606,27 +792,21 @@ def main(args):
 
     if args.profile:
         profile_decoder(ae_engine, n_vis, x0_1, u_samples_1, incidence_e_1,
-                        batch_size=optimal_chunk, use_bf16=args.bf16)
+                        batch_size=decoder_optimal_chunk, use_bf16=args.bf16)
 
-    # ── Bench A — uses the decoder-optimal chunk size as RBM batch ──
-    r_a = bench_rbm_gpu(
-        rbm, cond_vec_1, n_clamped,
+    # ── Bench D: combined RBM → decoder sweep ──
+    r_d, combined_optimal_chunk = bench_combined(
+        rbm, ae_engine, cond_vec_1, n_clamped, n_vis, x0_1, u_samples_1, incidence_e_1,
         gibbs_steps=args.gibbs_steps,
-        batch_size=optimal_chunk,
+        start_chunk=args.combined_start_chunk,
+        max_chunk=args.combined_max_chunk,
         repeats=args.repeats,
+        use_bf16=args.bf16,
     )
-    output["bench_a_rbm_gpu"] = r_a[0]
-
-    # ── Bench B ──
-    if not args.skip_qpu:
-        r_b = bench_qpu(rbm, sampler, cond_sets, left_chains, right_chains, hidden_side, cond_vec_1)
-        output["bench_b_qpu"] = r_b
-    else:
-        r_b = None
-        print("\n=== Bench B: QPU (skipped via --skip-qpu) ===")
+    output["bench_d_combined"] = r_d
 
     # ── Print and save ──
-    print_summary(r_a, r_b, r_c)
+    print_summary(r_a, r_b, r_c, r_d)
 
     outfile = os.path.join(
         script_dir,
@@ -642,11 +822,19 @@ if __name__ == "__main__":
         description="Wall-clock benchmark: GPU RBM Gibbs vs QPU anneal vs AE decode."
     )
     parser.add_argument("--gibbs-steps", type=int, default=10_000,
-                        help="BGS steps for Bench A (default: 10000)")
+                        help="BGS steps for Bench A and D (default: 10000)")
+    parser.add_argument("--rbm-start-chunk", type=int, default=256,
+                        help="Starting batch size for RBM sweep (default: 256)")
+    parser.add_argument("--rbm-max-chunk", type=int, default=4096,
+                        help="Maximum batch size for RBM sweep before OOM stops it (default: 4096)")
     parser.add_argument("--decoder-start-chunk", type=int, default=256,
                         help="Starting batch size for decoder sweep (default: 256)")
     parser.add_argument("--decoder-max-chunk", type=int, default=4096,
-                        help="Maximum batch size for decoder sweep before OOM stops it (default: 131072)")
+                        help="Maximum batch size for decoder sweep before OOM stops it (default: 4096)")
+    parser.add_argument("--combined-start-chunk", type=int, default=256,
+                        help="Starting batch size for combined RBM→decoder sweep (default: 256)")
+    parser.add_argument("--combined-max-chunk", type=int, default=4096,
+                        help="Maximum batch size for combined sweep before OOM stops it (default: 4096)")
     parser.add_argument("--skip-qpu", action="store_true",
                         help="Skip Bench B (no QPU calls)")
     parser.add_argument("--patch-decoder", action="store_true",
