@@ -1,0 +1,218 @@
+{
+  "timestamp": "2026-04-28T18:49:15.055681",
+  "device": "cuda:0",
+  "options": {
+    "patch_decoder": true,
+    "compile": true,
+    "compile_mode": "max-autotune",
+    "tf32": true,
+    "bf16": true
+  },
+  "rbm": {
+    "n_vis": 177,
+    "n_hid": 161,
+    "n_clamped": 36
+  },
+  "bench_a_rbm_gpu": {
+    "gibbs_steps": 10000,
+    "n_clamped": 36,
+    "sweep": [
+      {
+        "chunk_size": 256,
+        "throughput_samples_per_s": 189.5,
+        "wall_s_median": 1.3512,
+        "wall_s_min": 1.3504,
+        "wall_s_max": 1.3524,
+        "per_sample_us": 5278.23,
+        "per_step_ms": 0.1351
+      },
+      {
+        "chunk_size": 512,
+        "throughput_samples_per_s": 366.6,
+        "wall_s_median": 1.3966,
+        "wall_s_min": 1.3932,
+        "wall_s_max": 1.4258,
+        "per_sample_us": 2727.8,
+        "per_step_ms": 0.1397
+      },
+      {
+        "chunk_size": 1024,
+        "throughput_samples_per_s": 737.0,
+        "wall_s_median": 1.3893,
+        "wall_s_min": 1.3859,
+        "wall_s_max": 1.3967,
+        "per_sample_us": 1356.77,
+        "per_step_ms": 0.1389
+      },
+      {
+        "chunk_size": 2048,
+        "throughput_samples_per_s": 1480.7,
+        "wall_s_median": 1.3831,
+        "wall_s_min": 1.3792,
+        "wall_s_max": 1.387,
+        "per_sample_us": 675.35,
+        "per_step_ms": 0.1383
+      },
+      {
+        "chunk_size": 4096,
+        "throughput_samples_per_s": 2997.1,
+        "wall_s_median": 1.3666,
+        "wall_s_min": 1.3658,
+        "wall_s_max": 1.3873,
+        "per_sample_us": 333.65,
+        "per_step_ms": 0.1367
+      },
+      {
+        "chunk_size": 8192,
+        "throughput_samples_per_s": 5904.2,
+        "wall_s_median": 1.3875,
+        "wall_s_min": 1.386,
+        "wall_s_max": 1.394,
+        "per_sample_us": 169.37,
+        "per_step_ms": 0.1387
+      },
+      {
+        "chunk_size": 16384,
+        "throughput_samples_per_s": 7721.3,
+        "wall_s_median": 2.1219,
+        "wall_s_min": 2.1174,
+        "wall_s_max": 2.174,
+        "per_sample_us": 129.51,
+        "per_step_ms": 0.2122
+      },
+      {
+        "chunk_size": 32768,
+        "throughput_samples_per_s": 7341.6,
+        "wall_s_median": 4.4634,
+        "wall_s_min": 4.4414,
+        "wall_s_max": 4.4739,
+        "per_sample_us": 136.21,
+        "per_step_ms": 0.4463
+      }
+    ],
+    "optimum_chunk": 16384,
+    "wall_s_median": 2.1274,
+    "wall_s_min": 2.1236,
+    "wall_s_max": 2.1584,
+    "per_sample_us": 129.84,
+    "per_step_ms": 0.2127,
+    "samples_per_sec": 7701.6
+  },
+  "bench_b_qpu": null,
+  "bench_c_decoder": {
+    "sweep": [
+      {
+        "chunk_size": 256,
+        "throughput_samples_per_s": 6855.1,
+        "wall_s_median": 0.0373,
+        "wall_s_min": 0.037,
+        "wall_s_max": 0.0377,
+        "per_sample_us": 145.88
+      },
+      {
+        "chunk_size": 512,
+        "throughput_samples_per_s": 7483.8,
+        "wall_s_median": 0.0684,
+        "wall_s_min": 0.0682,
+        "wall_s_max": 0.0703,
+        "per_sample_us": 133.62
+      },
+      {
+        "chunk_size": 1024,
+        "throughput_samples_per_s": 7899.0,
+        "wall_s_median": 0.1296,
+        "wall_s_min": 0.1294,
+        "wall_s_max": 0.1328,
+        "per_sample_us": 126.6
+      },
+      {
+        "chunk_size": 2048,
+        "throughput_samples_per_s": 8212.0,
+        "wall_s_median": 0.2494,
+        "wall_s_min": 0.2492,
+        "wall_s_max": 0.2519,
+        "per_sample_us": 121.77
+      },
+      {
+        "chunk_size": 4096,
+        "throughput_samples_per_s": 8270.7,
+        "wall_s_median": 0.4952,
+        "wall_s_min": 0.4941,
+        "wall_s_max": 0.5049,
+        "per_sample_us": 120.91
+      },
+      {
+        "chunk_size": 8192,
+        "throughput_samples_per_s": 8238.2,
+        "wall_s_median": 0.9944,
+        "wall_s_min": 0.9938,
+        "wall_s_max": 1.0037,
+        "per_sample_us": 121.39
+      }
+    ],
+    "optimum_chunk": 4096,
+    "wall_s_median": 0.4959,
+    "wall_s_min": 0.4956,
+    "wall_s_max": 0.5019,
+    "per_sample_us": 121.07
+  },
+  "bench_d_combined": {
+    "gibbs_steps": 10000,
+    "sweep": [
+      {
+        "chunk_size": 256,
+        "throughput_samples_per_s": 183.5,
+        "wall_s_median": 1.3951,
+        "wall_s_min": 1.3815,
+        "wall_s_max": 1.4123,
+        "per_sample_us": 5449.67
+      },
+      {
+        "chunk_size": 512,
+        "throughput_samples_per_s": 342.1,
+        "wall_s_median": 1.4967,
+        "wall_s_min": 1.4935,
+        "wall_s_max": 1.5218,
+        "per_sample_us": 2923.32
+      },
+      {
+        "chunk_size": 1024,
+        "throughput_samples_per_s": 662.7,
+        "wall_s_median": 1.5451,
+        "wall_s_min": 1.5324,
+        "wall_s_max": 1.5571,
+        "per_sample_us": 1508.89
+      },
+      {
+        "chunk_size": 2048,
+        "throughput_samples_per_s": 1243.7,
+        "wall_s_median": 1.6467,
+        "wall_s_min": 1.6388,
+        "wall_s_max": 1.6585,
+        "per_sample_us": 804.06
+      },
+      {
+        "chunk_size": 4096,
+        "throughput_samples_per_s": 2175.0,
+        "wall_s_median": 1.8832,
+        "wall_s_min": 1.875,
+        "wall_s_max": 1.8863,
+        "per_sample_us": 459.77
+      },
+      {
+        "chunk_size": 8192,
+        "throughput_samples_per_s": 3430.1,
+        "wall_s_median": 2.3883,
+        "wall_s_min": 2.3735,
+        "wall_s_max": 2.4246,
+        "per_sample_us": 291.54
+      }
+    ],
+    "optimum_chunk": 8192,
+    "wall_s_median": 2.3852,
+    "wall_s_min": 2.3819,
+    "wall_s_max": 2.3865,
+    "per_sample_us": 291.16,
+    "samples_per_sec": 3434.5
+  }
+}
