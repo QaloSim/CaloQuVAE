@@ -1,3 +1,4 @@
+import json
 import wandb
 import torch
 import importlib
@@ -8,6 +9,7 @@ from utils.HighLevelFeatsAtlasReg import HighLevelFeatures_ATLAS_regular
 import numpy as np
 import matplotlib.pyplot as plt
 from matplotlib.gridspec import GridSpec, GridSpecFromSubplotSpec
+import mplhep as hep
 from scipy.stats import ks_2samp, entropy, wasserstein_distance
 import os
 from matplotlib.backends.backend_pdf import PdfPages 
@@ -336,6 +338,7 @@ def plot_atlas_style_multi(data_ref, data_list, labels, xlabel, output_path,
     ax0.set_yscale(yscale)
     ax0.set_xscale(xscale)
     ax0.set_ylabel("Normalized Counts", fontsize=14)
+    hep.atlas.label("Preliminary", data=False, rlabel="", ax=ax0, loc=0)
     ax0.legend(fontsize=8, loc='upper left', frameon=False)
     ax0.tick_params(labelbottom=False)
     
@@ -346,11 +349,19 @@ def plot_atlas_style_multi(data_ref, data_list, labels, xlabel, output_path,
     ax1.set_ylim(0.5, 1.5) 
     ax1.grid(True, which='both', linestyle=':', alpha=0.5)
 
+    # Save intermediate data for replotting
+    npz_path = os.path.splitext(output_path)[0] + '.npz'
+    npz_data = {'bins': bins, 'data_ref': data_ref}
+    for lbl, dat in zip(labels, clean_data_list):
+        npz_data[lbl] = dat
+    np.savez(npz_path, **npz_data)
+
     os.makedirs(os.path.dirname(output_path), exist_ok=True)
     plt.savefig(output_path, dpi=300, bbox_inches='tight')
     if pdf is not None:
         pdf.savefig(fig, dpi=300, bbox_inches='tight')
     plt.close(fig)
+    return {lbl: {k: float(v) for k, v in res.items()} for lbl, res in zip(labels, results)}
 # -----------------------------------------------------------------------------
 # 3. Combined Grid Plotter
 # -----------------------------------------------------------------------------
@@ -371,15 +382,15 @@ def plot_layer_grid(layer_data_dict, property_name, labels, output_dir,
     n_cols = (n_layers + 1) // 2 
     n_rows = 2
     
-    fig = plt.figure(figsize=(5 * n_cols, 10)) 
-    outer_grid = GridSpec(n_rows, n_cols, figure=fig, hspace=0.3, wspace=0.3)
-    
+    fig = plt.figure(figsize=(5 * n_cols, 10))
+    outer_grid = GridSpec(n_rows, n_cols, figure=fig, hspace=0.3, wspace=0.3, top=0.87)
+
     for idx, layer in enumerate(layers):
         row = idx // n_cols
         col = idx % n_cols
-        
-        inner_grid = GridSpecFromSubplotSpec(2, 1, 
-                        subplot_spec=outer_grid[row, col], 
+
+        inner_grid = GridSpecFromSubplotSpec(2, 1,
+                        subplot_spec=outer_grid[row, col],
                         height_ratios=[3, 1], hspace=0.05)
         
         ax_main = fig.add_subplot(inner_grid[0])
@@ -421,11 +432,11 @@ def plot_layer_grid(layer_data_dict, property_name, labels, output_dir,
         ax_main.set_xscale(xscale)
         ax_main.set_title(f"Layer {layer}", fontsize=12, fontweight='bold')
         ax_main.tick_params(labelbottom=False)
-        
+
         if col == 0:
             ax_main.set_ylabel("Norm. Counts", fontsize=10)
             ax_ratio.set_ylabel("Ratio", fontsize=9)
-        
+
         ax_ratio.set_xscale(xscale)
         ax_ratio.set_xlabel(property_name, fontsize=10)
         ax_ratio.axhline(1, color='gray', linestyle='--', alpha=0.7)
@@ -433,10 +444,20 @@ def plot_layer_grid(layer_data_dict, property_name, labels, output_dir,
         ax_ratio.grid(True, which='both', linestyle=':', alpha=0.5)
 
     handles, legends = fig.axes[0].get_legend_handles_labels()
-    fig.legend(handles, legends, loc='upper center', bbox_to_anchor=(0.5, 0.98), ncol=len(labels)+1, frameon=False)
+    fig.legend(handles, legends, loc='upper center', bbox_to_anchor=(0.5, 0.97), ncol=len(labels)+1, frameon=False)
+    plt.suptitle(f"Combined {property_name} across Layers", y=1.01, fontsize=16)
 
-    plt.suptitle(f"Combined {property_name} across Layers", y=1.00, fontsize=16)
+    # 1. Grab the exact left edge of the first subplot
+    x0 = fig.axes[0].get_position().x0
     
+    # 2. Create an invisible, flat axis near the top of the figure
+    # [left, bottom, width, height]
+    ax_dummy = fig.add_axes([x0, 0.96, 0.5, 0.01])
+    ax_dummy.axis('off')
+    
+    # 3. Attach the official mplhep label to the invisible axis
+    hep.atlas.label("Preliminary", data=False, rlabel="", ax=ax_dummy, loc=0)
+
     sanitized_name = property_name.replace(' ', '_').replace('$','').replace('\\','').replace('{','').replace('}','')
     out_name = f"Grid_{sanitized_name}.png"
     plt.savefig(f"{output_dir}/{out_name}", dpi=300, bbox_inches='tight')
@@ -463,31 +484,34 @@ def make_validation_plots(hlf_ref, list_hlf_models, labels, output_dir="plots/")
     grid_mean_phi = {}
     grid_width_phi = {}
 
+    all_stats = {}
     with PdfPages(pdf_path) as pdf:
-        
+
         # 1. Total Energy Ratio
         try:
             ratio = ref_etot / ref_einc.flatten()
             ref_etot_einc = to_np(ratio)
             models_etot_einc = [to_np(hlf.E_tot)/to_np(hlf.Einc).flatten() for hlf in list_hlf_models]
-            
-            plot_atlas_style_multi(
+
+            s = plot_atlas_style_multi(
                 ref_etot_einc, models_etot_einc, labels,
-                xlabel=r'$E_{tot} / E_{inc}$', 
+                xlabel=r'$E_{tot} / E_{inc}$',
                 output_path=f"{output_dir}/Etot_over_Einc.png",
                 yscale='log', pdf=pdf
             )
+            if s: all_stats['Etot_over_Einc'] = s
         except Exception as e: print(f"FAILED Etot/Einc: {e}")
 
         # 2. Total Energy
         try:
             models_etot = [to_np(hlf.E_tot) for hlf in list_hlf_models]
-            plot_atlas_style_multi(
+            s = plot_atlas_style_multi(
                 ref_etot, models_etot, labels,
-                xlabel=r'$E_{tot}$ [MeV]', 
+                xlabel=r'$E_{tot}$ [MeV]',
                 output_path=f"{output_dir}/Etot.png",
                 yscale='log', pdf=pdf
             )
+            if s: all_stats['Etot'] = s
         except Exception as e: print(f"FAILED Etot: {e}")
 
         # 3. Layer Loop
@@ -497,61 +521,66 @@ def make_validation_plots(hlf_ref, list_hlf_models, labels, output_dir="plots/")
                 ref_dat = to_np(hlf_ref.E_layers[layer])
                 mod_dat = [to_np(hlf.E_layers[layer]) for hlf in list_hlf_models]
                 grid_energy[layer] = {'ref': ref_dat, 'models': mod_dat}
-                
-                plot_atlas_style_multi(
+
+                s = plot_atlas_style_multi(
                     ref_dat, mod_dat, labels,
                     xlabel=f'$E_{{layer {layer}}}$ [MeV]',
                     output_path=f"{output_dir}/Layer{layer}_Energy.png",
                     yscale='log', pdf=pdf
                 )
-                
-                # Mean Eta 
+                if s: all_stats[f'Layer{layer}_Energy'] = s
+
+                # Mean Eta
                 ref_dat = to_np(hlf_ref.EC_etas[layer])
                 mod_dat = [to_np(hlf.EC_etas[layer]) for hlf in list_hlf_models]
                 grid_mean_eta[layer] = {'ref': ref_dat, 'models': mod_dat}
-                
-                plot_atlas_style_multi(
+
+                s = plot_atlas_style_multi(
                     ref_dat, mod_dat, labels,
                     xlabel=f'$\langle \eta \\rangle_{{layer {layer}}}$',
                     output_path=f"{output_dir}/Layer{layer}_MeanEta.png",
-                    yscale='log', pdf=pdf # Often linear for coordinates
+                    yscale='log', pdf=pdf
                 )
-                
+                if s: all_stats[f'Layer{layer}_MeanEta'] = s
+
                 # Width Eta
                 ref_dat = to_np(hlf_ref.width_etas[layer])
                 mod_dat = [to_np(hlf.width_etas[layer]) for hlf in list_hlf_models]
                 grid_width_eta[layer] = {'ref': ref_dat, 'models': mod_dat}
 
-                plot_atlas_style_multi(
+                s = plot_atlas_style_multi(
                     ref_dat, mod_dat, labels,
                     xlabel=f'$\sigma_{{\eta, layer {layer}}}$',
                     output_path=f"{output_dir}/Layer{layer}_WidthEta.png",
                     yscale='log', pdf=pdf
                 )
-                
+                if s: all_stats[f'Layer{layer}_WidthEta'] = s
+
                 # Mean Phi
                 ref_dat = to_np(hlf_ref.EC_phis[layer])
                 mod_dat = [to_np(hlf.EC_phis[layer]) for hlf in list_hlf_models]
                 grid_mean_phi[layer] = {'ref': ref_dat, 'models': mod_dat}
 
-                plot_atlas_style_multi(
+                s = plot_atlas_style_multi(
                     ref_dat, mod_dat, labels,
                     xlabel=f'$\langle \phi \\rangle_{{layer {layer}}}$',
                     output_path=f"{output_dir}/Layer{layer}_MeanPhi.png",
                     yscale='log', pdf=pdf
                 )
-                
+                if s: all_stats[f'Layer{layer}_MeanPhi'] = s
+
                 # Width Phi
                 ref_dat = to_np(hlf_ref.width_phis[layer])
                 mod_dat = [to_np(hlf.width_phis[layer]) for hlf in list_hlf_models]
                 grid_width_phi[layer] = {'ref': ref_dat, 'models': mod_dat}
 
-                plot_atlas_style_multi(
+                s = plot_atlas_style_multi(
                     ref_dat, mod_dat, labels,
                     xlabel=f'$\sigma_{{\phi, layer {layer}}}$',
                     output_path=f"{output_dir}/Layer{layer}_WidthPhi.png",
                     yscale='log', pdf=pdf
                 )
+                if s: all_stats[f'Layer{layer}_WidthPhi'] = s
 
             except Exception as e:
                 print(f"!! CRASH on Layer {layer}: {e}")
@@ -567,6 +596,11 @@ def make_validation_plots(hlf_ref, list_hlf_models, labels, output_dir="plots/")
         
         plot_layer_grid(grid_mean_phi, 'Mean Phi', labels, output_dir, yscale='log', pdf=pdf)
         plot_layer_grid(grid_width_phi, 'Width Phi', labels, output_dir, yscale='log', pdf=pdf)
+
+    stats_path = os.path.join(output_dir, 'stats.json')
+    with open(stats_path, 'w') as f:
+        json.dump(all_stats, f, indent=2)
+    print(f"Stats saved to {stats_path}")
     print("Done! PDF saved to", pdf_path)
 
 
@@ -589,7 +623,7 @@ def create_grid_figure(layer_data_dict, property_name, labels, yscale='log', xsc
     n_rows = 2
 
     fig = plt.figure(figsize=(5 * n_cols, 10))
-    outer_grid = GridSpec(n_rows, n_cols, figure=fig, hspace=0.3, wspace=0.3)
+    outer_grid = GridSpec(n_rows, n_cols, figure=fig, hspace=0.3, wspace=0.3, top=0.87)
 
     for idx, layer in enumerate(layers):
         row = idx // n_cols
@@ -646,7 +680,7 @@ def create_grid_figure(layer_data_dict, property_name, labels, yscale='log', xsc
         if col == 0:
             ax_main.set_ylabel("Norm. Counts", fontsize=10)
             ax_ratio.set_ylabel("Ratio", fontsize=9)
-        
+
         ax_ratio.set_xscale(xscale)
         ax_ratio.set_xlabel(property_name, fontsize=10)
         ax_ratio.axhline(1, color='gray', linestyle='--', alpha=0.7)
@@ -655,9 +689,9 @@ def create_grid_figure(layer_data_dict, property_name, labels, yscale='log', xsc
 
     # Legend and Layout
     handles, legends = fig.axes[0].get_legend_handles_labels()
-    fig.legend(handles, legends, loc='upper center', bbox_to_anchor=(0.5, 0.98), ncol=len(labels)+1, frameon=False)
-    plt.suptitle(f"Combined {property_name} across Layers", y=1.00, fontsize=16)
-    
+    fig.legend(handles, legends, loc='upper center', bbox_to_anchor=(0.5, 0.97), ncol=len(labels)+1, frameon=False)
+    plt.suptitle(f"Combined {property_name} across Layers", y=1.01, fontsize=16)
+
     return fig
 
 
@@ -686,35 +720,38 @@ def make_validation_plots_fixed(hlf_ref, list_hlf_models, labels, bin_ranges, nu
         vmin, vmax = bin_ranges[prop_name]
         return np.linspace(vmin, vmax, num_bins + 1)
 
+    all_stats = {}
     with PdfPages(pdf_path) as pdf:
-        
+
         # 1. Total Energy Ratio
         if 'Etot_over_Einc' in bin_ranges:
             try:
                 ratio = ref_etot / ref_einc.flatten()
                 ref_etot_einc = to_np(ratio)
                 models_etot_einc = [to_np(hlf.E_tot)/to_np(hlf.Einc).flatten() for hlf in list_hlf_models]
-                
-                plot_atlas_style_multi(
+
+                s = plot_atlas_style_multi(
                     ref_etot_einc, models_etot_einc, labels,
-                    xlabel=r'$E_{tot} / E_{inc}$', 
+                    xlabel=r'$E_{tot} / E_{inc}$',
                     output_path=f"{output_dir}/Etot_over_Einc.png",
                     yscale='log', pdf=pdf,
                     fixed_bins=create_bins('Etot_over_Einc')
                 )
+                if s: all_stats['Etot_over_Einc'] = s
             except Exception as e: print(f"FAILED Etot/Einc: {e}")
 
         # 2. Total Energy
         if 'Etot' in bin_ranges:
             try:
                 models_etot = [to_np(hlf.E_tot) for hlf in list_hlf_models]
-                plot_atlas_style_multi(
+                s = plot_atlas_style_multi(
                     ref_etot, models_etot, labels,
-                    xlabel=r'$E_{tot}$ [MeV]', 
+                    xlabel=r'$E_{tot}$ [MeV]',
                     output_path=f"{output_dir}/Etot.png",
                     yscale='log', pdf=pdf,
                     fixed_bins=create_bins('Etot')
                 )
+                if s: all_stats['Etot'] = s
             except Exception as e: print(f"FAILED Etot: {e}")
 
         # 3. Layer Loop
@@ -724,64 +761,318 @@ def make_validation_plots_fixed(hlf_ref, list_hlf_models, labels, bin_ranges, nu
                 if 'Energy' in bin_ranges:
                     ref_dat = to_np(hlf_ref.E_layers[layer])
                     mod_dat = [to_np(hlf.E_layers[layer]) for hlf in list_hlf_models]
-                    plot_atlas_style_multi(
+                    s = plot_atlas_style_multi(
                         ref_dat, mod_dat, labels,
                         xlabel=f'$E_{{layer {layer}}}$ [MeV]',
                         output_path=f"{output_dir}/Layer{layer}_Energy.png",
                         yscale='log', pdf=pdf,
                         fixed_bins=create_bins('Energy')
                     )
-                
-                # Mean Eta 
+                    if s: all_stats[f'Layer{layer}_Energy'] = s
+
+                # Mean Eta
                 if 'MeanEta' in bin_ranges:
                     ref_dat = to_np(hlf_ref.EC_etas[layer])
                     mod_dat = [to_np(hlf.EC_etas[layer]) for hlf in list_hlf_models]
-                    plot_atlas_style_multi(
+                    s = plot_atlas_style_multi(
                         ref_dat, mod_dat, labels,
                         xlabel=f'$\langle \eta \\rangle_{{layer {layer}}}$',
                         output_path=f"{output_dir}/Layer{layer}_MeanEta.png",
                         yscale='log', pdf=pdf,
                         fixed_bins=create_bins('MeanEta')
                     )
-                
+                    if s: all_stats[f'Layer{layer}_MeanEta'] = s
+
                 # Width Eta
                 if 'WidthEta' in bin_ranges:
                     ref_dat = to_np(hlf_ref.width_etas[layer])
                     mod_dat = [to_np(hlf.width_etas[layer]) for hlf in list_hlf_models]
-                    plot_atlas_style_multi(
+                    s = plot_atlas_style_multi(
                         ref_dat, mod_dat, labels,
                         xlabel=f'$\sigma_{{\eta, layer {layer}}}$',
                         output_path=f"{output_dir}/Layer{layer}_WidthEta.png",
                         yscale='log', pdf=pdf,
                         fixed_bins=create_bins('WidthEta')
                     )
-                
+                    if s: all_stats[f'Layer{layer}_WidthEta'] = s
+
                 # Mean Phi
                 if 'MeanPhi' in bin_ranges:
                     ref_dat = to_np(hlf_ref.EC_phis[layer])
                     mod_dat = [to_np(hlf.EC_phis[layer]) for hlf in list_hlf_models]
-                    plot_atlas_style_multi(
+                    s = plot_atlas_style_multi(
                         ref_dat, mod_dat, labels,
                         xlabel=f'$\langle \phi \\rangle_{{layer {layer}}}$',
                         output_path=f"{output_dir}/Layer{layer}_MeanPhi.png",
                         yscale='log', pdf=pdf,
                         fixed_bins=create_bins('MeanPhi')
                     )
-                
+                    if s: all_stats[f'Layer{layer}_MeanPhi'] = s
+
                 # Width Phi
                 if 'WidthPhi' in bin_ranges:
                     ref_dat = to_np(hlf_ref.width_phis[layer])
                     mod_dat = [to_np(hlf.width_phis[layer]) for hlf in list_hlf_models]
-                    plot_atlas_style_multi(
+                    s = plot_atlas_style_multi(
                         ref_dat, mod_dat, labels,
                         xlabel=f'$\sigma_{{\phi, layer {layer}}}$',
                         output_path=f"{output_dir}/Layer{layer}_WidthPhi.png",
                         yscale='log', pdf=pdf,
                         fixed_bins=create_bins('WidthPhi')
                     )
+                    if s: all_stats[f'Layer{layer}_WidthPhi'] = s
 
             except Exception as e:
                 print(f"!! CRASH on Layer {layer}: {e}")
                 continue
 
+    stats_path = os.path.join(output_dir, 'stats.json')
+    with open(stats_path, 'w') as f:
+        json.dump(all_stats, f, indent=2)
+    print(f"Stats saved to {stats_path}")
     print("Done! PDF saved to", pdf_path)
+
+
+# -----------------------------------------------------------------------------
+# Filename → axis label mapping for replot_from_npz
+# -----------------------------------------------------------------------------
+import re as _re
+
+_STEM_TO_XLABEL = {
+    'Etot_over_Einc': r'$E_{tot} / E_{inc}$',
+    'Etot':           r'$E_{tot}$ [MeV]',
+}
+
+_LAYER_SUFFIX_TO_XLABEL = {
+    'Energy':   r'$E_{{layer {layer}}}$ [MeV]',
+    'MeanEta':  r'$\langle \eta \rangle_{{layer {layer}}}$',
+    'WidthEta': r'$\sigma_{{\eta, layer {layer}}}$',
+    'MeanPhi':  r'$\langle \phi \rangle_{{layer {layer}}}$',
+    'WidthPhi': r'$\sigma_{{\phi, layer {layer}}}$',
+}
+
+_LAYER_RE = _re.compile(r'^Layer(\d+)_(\w+)$')
+
+
+def _infer_xlabel(stem):
+    if stem in _STEM_TO_XLABEL:
+        return _STEM_TO_XLABEL[stem]
+    m = _LAYER_RE.match(stem)
+    if m:
+        layer, suffix = m.group(1), m.group(2)
+        template = _LAYER_SUFFIX_TO_XLABEL.get(suffix)
+        if template:
+            return template.format(layer=layer)
+    return stem  # fallback: use filename stem as-is
+
+
+def _infer_xscale(stem):
+    return 'linear'
+
+
+def _infer_yscale(stem):
+    return 'log'
+
+
+# -----------------------------------------------------------------------------
+# Replot from saved .npz files
+# -----------------------------------------------------------------------------
+def replot_from_npz(save_dir, output_dir=None, yscale=None, xscale=None,
+                    colors=None, linestyles=None, make_pdf=True, glob_pattern='*.npz'):
+    """
+    Regenerates all validation plots (individual + grid) from .npz files saved
+    by plot_atlas_style_multi, matching the full output of evaluate_and_plot.
+
+    Each .npz file must contain:
+        bins      – bin edges used for the original histogram
+        data_ref  – reference (ground truth) raw samples
+        <label>   – one array per model, keyed by its label string
+
+    Grid plots (Layer Energy, Mean/Width Eta/Phi) are reconstructed automatically
+    from the per-layer .npz files — no shower tensors needed.
+
+    Args:
+        save_dir:      Directory that contains the .npz files.
+        output_dir:    Where to write the new PNGs and PDF.
+                       Defaults to ``save_dir/replot/``.
+        yscale:        Y-axis scale override for every plot ('log' or 'linear').
+                       When None, inferred per-file from filename.
+        xscale:        X-axis scale override. When None, inferred per-file.
+        colors:        List of colour strings for the model lines.
+        linestyles:    List of linestyle strings for the model lines.
+        make_pdf:      If True, compile all plots into a single PDF.
+        glob_pattern:  Glob pattern used to find .npz files inside save_dir.
+    """
+    import glob as _glob
+    from collections import defaultdict
+
+    if output_dir is None:
+        output_dir = os.path.join(save_dir, 'replot')
+    os.makedirs(output_dir, exist_ok=True)
+
+    if colors is None:
+        colors = ['red', 'green', 'orange', 'purple', 'cyan']
+    if linestyles is None:
+        linestyles = ['-', '--', '-.', ':', '-']
+
+    npz_files = sorted(_glob.glob(os.path.join(save_dir, glob_pattern)))
+    if not npz_files:
+        print(f"No .npz files found in {save_dir}")
+        return
+
+    pdf_path = os.path.join(output_dir, 'all_plots_replot.pdf')
+    pdf_ctx = PdfPages(pdf_path) if make_pdf else None
+
+    # Accumulators for grid reconstruction: {suffix -> {layer_int -> {'ref': arr, 'models': [arr,...]}}}
+    _GRID_SUFFIXES = {
+        'Energy':   'Layer Energy [MeV]',
+        'MeanEta':  'Mean Eta',
+        'WidthEta': 'Width Eta',
+        'MeanPhi':  'Mean Phi',
+        'WidthPhi': 'Width Phi',
+    }
+    grid_data  = {s: {} for s in _GRID_SUFFIXES}
+    grid_labels = None  # set from the first layer file processed
+
+    all_stats = {}
+    try:
+        # --- Pass 1: individual plots ---
+        for npz_path in npz_files:
+            stem = os.path.splitext(os.path.basename(npz_path))[0]
+            try:
+                npz = np.load(npz_path, allow_pickle=False)
+            except Exception as e:
+                print(f"  Skipping {npz_path}: {e}")
+                continue
+
+            keys = list(npz.files)
+            if 'bins' not in keys or 'data_ref' not in keys:
+                print(f"  Skipping {stem}: missing 'bins' or 'data_ref'")
+                continue
+
+            bins      = npz['bins']
+            data_ref  = npz['data_ref']
+            labels    = [k for k in keys if k not in ('bins', 'data_ref')]
+            data_list = [npz[lbl] for lbl in labels]
+
+            # Collect raw arrays for grid reconstruction if this is a per-layer file
+            m = _LAYER_RE.match(stem)
+            if m:
+                layer_int = int(m.group(1))
+                suffix    = m.group(2)
+                if suffix in _GRID_SUFFIXES:
+                    grid_data[suffix][layer_int] = {
+                        'ref':    data_ref.copy(),
+                        'models': [d.copy() for d in data_list],
+                    }
+                    if grid_labels is None:
+                        grid_labels = labels
+
+            xlabel  = _infer_xlabel(stem)
+            _yscale = yscale if yscale is not None else _infer_yscale(stem)
+            _xscale = xscale if xscale is not None else _infer_xscale(stem)
+
+            output_png = os.path.join(output_dir, f"{stem}.png")
+
+            # Build the figure (bins already fixed — no re-binning needed)
+            data_ref_clean = data_ref[np.isfinite(data_ref)]
+            clean_list     = [d[np.isfinite(d)] for d in data_list]
+
+            fig = plt.figure(figsize=(8, 7))
+            gs  = GridSpec(2, 1, height_ratios=[3, 1], hspace=0.05)
+            ax0 = fig.add_subplot(gs[0])
+            ax1 = fig.add_subplot(gs[1], sharex=ax0)
+
+            counts_ref, _ = np.histogram(data_ref_clean, bins=bins)
+            ns_ref, _     = np.histogram(data_ref_clean, bins=bins, density=True)
+            mask    = counts_ref > 0
+            ref_err = np.zeros_like(ns_ref)
+            ref_err[mask] = ns_ref[mask] / np.sqrt(counts_ref[mask])
+
+            ax0.step(bins, dup_last(ns_ref), color='black', alpha=0.8,
+                     linewidth=1.5, where='post', label='Data')
+            ax0.fill_between(bins, dup_last(ns_ref - ref_err), dup_last(ns_ref + ref_err),
+                             facecolor='blue', alpha=0.2, step='post')
+
+            evaluator = AtlasEvaluator()
+            results   = []
+
+            for i, (d_mod, lbl) in enumerate(zip(clean_list, labels)):
+                col = colors[i % len(colors)]
+                ls  = linestyles[i % len(linestyles)]
+
+                counts_mod, _ = np.histogram(d_mod, bins=bins)
+                ns_mod, _     = np.histogram(d_mod, bins=bins, density=True)
+
+                ax0.step(bins, dup_last(ns_mod), color=col, linestyle=ls,
+                         linewidth=1.5, where='post', label=lbl)
+
+                res = evaluator.calculate(data_ref_clean, d_mod, counts_ref, counts_mod)
+                results.append(res)
+
+                ratio = np.divide(ns_mod, ns_ref, out=np.zeros_like(ns_mod), where=ns_ref != 0)
+                ax1.step(bins, dup_last(ratio), color=col, linestyle=ls,
+                         linewidth=1.5, where='post')
+
+            all_stats[stem] = {
+                lbl: {k: float(v) for k, v in res.items()}
+                for lbl, res in zip(labels, results)
+            }
+
+            if len(results) <= 3:
+                text = evaluator.get_text(results, labels)
+                ax0.text(0.96, 0.96, text, transform=ax0.transAxes,
+                         fontsize=9, verticalalignment='top', horizontalalignment='right',
+                         bbox=dict(boxstyle='round', facecolor='white', alpha=0.9))
+
+            ax0.set_yscale(_yscale)
+            ax0.set_xscale(_xscale)
+            ax0.set_ylabel("Normalized Counts", fontsize=14)
+            hep.atlas.label("Preliminary", data=False, rlabel="", ax=ax0, loc=0)
+            ax0.legend(fontsize=8, loc='upper left', frameon=False)
+            ax0.tick_params(labelbottom=False)
+
+            ax1.set_ylabel("Ratio", fontsize=12)
+            ax1.set_xlabel(xlabel, fontsize=14)
+            ax1.set_xscale(_xscale)
+            ax1.axhline(1, color='gray', linestyle='--', alpha=0.7)
+            ax1.set_ylim(0.5, 1.5)
+            ax1.grid(True, which='both', linestyle=':', alpha=0.5)
+
+            plt.savefig(output_png, dpi=300, bbox_inches='tight')
+            if pdf_ctx is not None:
+                pdf_ctx.savefig(fig, dpi=300, bbox_inches='tight')
+            plt.close(fig)
+            print(f"  Saved {output_png}")
+
+        # Write stats JSON after all individual plots are processed
+        stats_path = os.path.join(output_dir, 'stats.json')
+        with open(stats_path, 'w') as f:
+            json.dump(all_stats, f, indent=2)
+        print(f"  Stats saved to {stats_path}")
+
+        # --- Pass 2: grid plots (reconstructed from accumulated layer data) ---
+        if grid_labels is not None:
+            print("  Generating grid plots...")
+            for suffix, prop_label in _GRID_SUFFIXES.items():
+                layer_dict = grid_data[suffix]
+                if not layer_dict:
+                    continue
+                plot_layer_grid(
+                    layer_dict, prop_label, grid_labels,
+                    output_dir=output_dir,
+                    yscale=yscale if yscale is not None else 'log',
+                    xscale=xscale if xscale is not None else 'linear',
+                    colors=colors,
+                    linestyles=linestyles,
+                    pdf=pdf_ctx,
+                )
+        else:
+            print("  No per-layer .npz files found — grid plots skipped.")
+
+    finally:
+        if pdf_ctx is not None:
+            pdf_ctx.close()
+
+    print(f"Done! Replot complete. Output in {output_dir}"
+          + (f"\nPDF: {pdf_path}" if make_pdf else ""))

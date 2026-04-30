@@ -93,11 +93,18 @@ def plot_poster_ratio(data_dict, xlabel, output_path, yscale='log', xscale='line
     
     # ATLAS Label
     hep.atlas.label(
-        text="Work in Progress", 
-        data=False,              
-        rlabel="",               
+        text="Preliminary",
+        data=False,
+        rlabel="",
         ax=ax_main
     )
+
+    # Save intermediate data for replotting
+    npz_path = os.path.splitext(output_path)[0] + '.npz'
+    npz_data = {'bin_edges': bin_edges, 'xlabel': np.array(xlabel)}
+    for lbl, dat in zip(labels, valid_datasets):
+        npz_data[lbl] = dat
+    np.savez(npz_path, **npz_data)
 
     # Clean Legend
     handles, plot_labels = ax_main.get_legend_handles_labels()
@@ -258,11 +265,11 @@ def plot_poster_layers(adapters_dict, layers_to_plot=[0, 1, 2], layer_names=None
 
     # 4. Global Legend
     hep.atlas.label(
-        text="Work in Progress", 
-        data=False,              
-        rlabel="",               
+        text="Preliminary",
+        data=False,
+        rlabel="",
         ax=axes[0],
-        loc=4 # Places the label in the bottom left corner
+        loc=4
     )
         # ------------------------------
 
@@ -277,6 +284,15 @@ def plot_poster_layers(adapters_dict, layers_to_plot=[0, 1, 2], layer_names=None
     fig.legend(by_label.values(), by_label.keys(), 
                loc='upper center', bbox_to_anchor=(0.5, 0.0), 
                ncol=len(by_label), fontsize=18, frameon=False)
+
+    # Save intermediate layer data for replotting
+    npz_path = os.path.splitext(output_path)[0] + '.npz'
+    npz_data = {}
+    for lbl, adapter in adapters_dict.items():
+        for layer_id in layers_to_plot:
+            if layer_id in adapter.E_layers:
+                npz_data[f'{lbl}_layer{layer_id}'] = np.array(adapter.E_layers[layer_id])
+    np.savez(npz_path, **npz_data)
 
     os.makedirs(os.path.dirname(output_path), exist_ok=True)
     plt.savefig(output_path, dpi=300, bbox_inches='tight')
@@ -302,23 +318,29 @@ def evaluate_and_plot_poster(data_dict, binning_path,
     # Store populated adapters here
     adapters = {}
 
-    # 2. Process Datasets
+    # 2. Process Datasets; save raw tensors for replotting
+    os.makedirs(output_dir, exist_ok=True)
+    raw_npz = {}
     with torch.no_grad():
         for label, (showers, e_inc) in data_dict.items():
             print(f"Extracting features for: {label}...")
-            
+
             if not isinstance(showers, torch.Tensor):
                 showers = torch.tensor(showers, dtype=torch.float32)
             showers = showers.to(device)
 
+            raw_npz[f'{label}_showers'] = showers.cpu().numpy()
+            raw_npz[f'{label}_e_inc'] = (e_inc.cpu().numpy() if isinstance(e_inc, torch.Tensor) else np.array(e_inc))
+
             # --- THE FAST PART ---
             features = extractor(showers)
-            
+
             # --- THE ADAPTER ---
-            # Using your FeatureAdapter class to wrap the tensors
             adapter = FeatureAdapter(features, geo.relevant_layers, e_inc)
-            
+
             adapters[label] = adapter
+
+    np.savez(os.path.join(output_dir, 'raw_showers.npz'), **raw_npz)
 
     # 3. Call the Poster Plotter
     output_filename = os.path.join(output_dir, "poster_layer_comparison.svg")
