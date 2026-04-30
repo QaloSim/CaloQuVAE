@@ -1,0 +1,40 @@
+{
+  "timestamp": "2026-04-30T22:42:59.699441",
+  "device": "cuda:1",
+  "options": {
+    "patch_decoder": false,
+    "compile": false,
+    "compile_mode": null,
+    "tf32": false,
+    "bf16": false
+  },
+  "rbm": {
+    "n_vis": 177,
+    "n_hid": 161,
+    "n_clamped": 36
+  },
+  "bench_a_rbm_gpu": null,
+  "bench_b_qpu": {
+    "timing_us": {
+      "qpu_anneal_time_per_sample": 20.0,
+      "qpu_readout_time_per_sample": 235.38,
+      "qpu_sampling_time": 275.96,
+      "qpu_programming_time": 15764.36,
+      "qpu_access_time": 16040.32,
+      "qpu_access_overhead_time": 778.68
+    },
+    "all_timing_keys": [
+      "qpu_sampling_time",
+      "qpu_anneal_time_per_sample",
+      "qpu_readout_time_per_sample",
+      "qpu_access_time",
+      "qpu_access_overhead_time",
+      "qpu_programming_time",
+      "qpu_delay_time_per_sample",
+      "total_post_processing_time",
+      "post_processing_overhead_time"
+    ]
+  },
+  "bench_c_decoder": null,
+  "bench_d_combined": null
+}

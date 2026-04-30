@@ -763,14 +763,17 @@ def main(args):
     n_vis = int(rbm.params["vbias"].shape[0])
 
     # ── Bench A: RBM sweep (independent) ──
-    r_a, rbm_optimal_chunk = bench_rbm_gpu(
-        rbm, cond_vec_1, n_clamped,
-        gibbs_steps=args.gibbs_steps,
-        start_chunk=args.rbm_start_chunk,
-        max_chunk=args.rbm_max_chunk,
-        repeats=args.repeats,
-    )
-    output["bench_a_rbm_gpu"] = r_a
+    if not args.qpu_only:
+        r_a, rbm_optimal_chunk = bench_rbm_gpu(
+            rbm, cond_vec_1, n_clamped,
+            gibbs_steps=args.gibbs_steps,
+            start_chunk=args.rbm_start_chunk,
+            max_chunk=args.rbm_max_chunk,
+            repeats=args.repeats,
+        )
+        output["bench_a_rbm_gpu"] = r_a
+    else:
+        r_a = None
 
     # ── Bench B ──
     if not args.skip_qpu:
@@ -779,6 +782,17 @@ def main(args):
     else:
         r_b = None
         print("\n=== Bench B: QPU (skipped via --skip-qpu) ===")
+
+    if args.qpu_only:
+        print_summary(r_a, r_b, None, None)
+        outfile = os.path.join(
+            script_dir,
+            f"benchmark_qpu_{datetime.now().strftime('%Y%m%d_%H%M%S')}.json",
+        )
+        with open(outfile, "w") as f:
+            json.dump(output, f, indent=2, default=_default_serial)
+        print(f"\nResults saved → {outfile}")
+        return
 
     # ── Bench C: decoder sweep (independent) ──
     r_c, decoder_optimal_chunk = bench_decoder(
@@ -837,6 +851,8 @@ if __name__ == "__main__":
                         help="Maximum batch size for combined sweep before OOM stops it (default: 4096)")
     parser.add_argument("--skip-qpu", action="store_true",
                         help="Skip Bench B (no QPU calls)")
+    parser.add_argument("--qpu-only", action="store_true",
+                        help="Run only Bench B (QPU anneal/readout timing) and save a focused JSON")
     parser.add_argument("--patch-decoder", action="store_true",
                         help="Replace the 1×1×1-input ConvTranspose3d with a Linear GEMM (no retraining needed; apply before --compile)")
     parser.add_argument("--compile", action="store_true",
@@ -868,4 +884,6 @@ if __name__ == "__main__":
     args = parser.parse_args()
     if args.synthetic and not args.ae_config_path:
         parser.error("--synthetic requires --ae-config-path")
+    if args.qpu_only and args.skip_qpu:
+        parser.error("--qpu-only and --skip-qpu are mutually exclusive")
     main(args)
