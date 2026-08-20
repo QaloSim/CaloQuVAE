@@ -17,7 +17,14 @@ import mplhep as hep
 
 
 
-def plot_poster_comparison(shower_atlas, shower_qpu, layer_names, layer_ids, cfg):
+def plot_poster_comparison(
+    shower_atlas,
+    shower_qpu,
+    layer_names,
+    layer_ids,
+    cfg,
+    atlas_label="Work in Progress",
+):
     """
     Plots a direct comparison between a specific ATLAS shower and a QPU shower 
     for a poster, including ATLAS labelling and a shared colorbar.
@@ -25,7 +32,7 @@ def plot_poster_comparison(shower_atlas, shower_qpu, layer_names, layer_ids, cfg
     Args:
         shower_atlas: Tensor (1D) of the ATLAS shower event.
         shower_qpu: Tensor (1D) of the QPU shower event.
-        layer_names: List of strings or ints naming the layers (e.g. ["EMB0", "TileBar 0"]).
+        layer_names: List of strings or ints naming the layers (e.g. ["EMB1", "TileBar0"]).
         layer_ids: List of corresponding layer IDs for geometry retrieval (e.g. [1, 2, 3, 4, 13]).
         cfg: Configuration object for HLF initialization.
     
@@ -107,8 +114,8 @@ def plot_poster_comparison(shower_atlas, shower_qpu, layer_names, layer_ids, cfg
                 
         # Add row label to the first column
         if i == 0:
-            ax.text(-0.2, 0.5, "ATLAS\nSimulation", transform=ax.transAxes, 
-                    fontsize=24, va='center', ha='right', fontweight='bold', rotation=90)
+            ax.text(-0.2, 0.5, "ATLAS\nFullSim", transform=ax.transAxes,
+                    fontsize=20, va='center', ha='right', fontweight='bold', rotation=90)
 
     # --- Row 1: QPU ---
     for i, layer_id in enumerate(layer_ids):
@@ -124,8 +131,8 @@ def plot_poster_comparison(shower_atlas, shower_qpu, layer_names, layer_ids, cfg
 
         # Add row label to the first column
         if i == 0:
-            ax.text(-0.2, 0.5, "QPU\nGeneration", transform=ax.transAxes, 
-                    fontsize=24, va='center', ha='right', fontweight='bold', rotation=90)
+                ax.text(-0.2, 0.5, "QPU\nsurrogate", transform=ax.transAxes,
+                    fontsize=20, va='center', ha='right', fontweight='bold', rotation=90)
 
     # 4. Add Colorbar
     # We add one colorbar at the bottom for the whole figure
@@ -133,13 +140,19 @@ def plot_poster_comparison(shower_atlas, shower_qpu, layer_names, layer_ids, cfg
     sm.set_array([])
     cbar = fig.colorbar(sm, ax=axes.ravel().tolist(), orientation='vertical', 
                         fraction=0.05, pad=0.05, aspect=15, location="right")
-    cbar.set_label('Energy (MeV)', fontsize=18)
+    cbar.set_label('Voxel energy [MeV]', fontsize=18)
 
     # 5. Add ATLAS Label (mplhep)
     # Usually placed on the top left axis or the figure super-title area
     # We'll attach it to the first axis of the ATLAS row
-    hep.atlas.label(ax=axes[0,0], text="Work in Progress", loc=0, data=False, rlabel="") 
-    fig.suptitle(r"Displays of ATLAS Simulation and QPU Generated Showers, $E_{inc} = 50$ GeV", fontsize=28, fontweight='bold')
+    hep.atlas.label(
+        ax=axes[0,0],
+        text=atlas_label,
+        loc=0,
+        data=False,
+        rlabel="",
+        fontsize=26,
+    )
     return fig
 
 

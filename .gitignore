@@ -191,4 +191,10 @@ cython_debug/
 # Claude
 .claude
 
+# Generated paper plots are ignored by default. Keep the recovered Hamming Cliff
+# data visible so it can be versioned and reused by the plotting helper.
 paper_plots/
+!paper_plots/
+paper_plots/*
+!paper_plots/hamming_cliff/
+!paper_plots/hamming_cliff/**

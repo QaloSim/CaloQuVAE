@@ -1,0 +1,111 @@
+{
+  "timestamp": "2026-08-08T22:49:12.106935",
+  "device": "cuda:0",
+  "options": {
+    "patch_decoder": true,
+    "compile": true,
+    "compile_mode": "max-autotune",
+    "tf32": true,
+    "bf16": true
+  },
+  "rbm": {
+    "n_vis": 177,
+    "n_hid": 161,
+    "n_clamped": 36
+  },
+  "bench_a_rbm_gpu": {
+    "gibbs_steps": 10000,
+    "n_clamped": 36,
+    "sweep": [
+      {
+        "chunk_size": 1,
+        "throughput_samples_per_s": 0.7,
+        "wall_s_median": 1.3495,
+        "wall_s_min": 1.3492,
+        "wall_s_max": 1.351,
+        "per_sample_us": 1349475.53,
+        "per_step_ms": 0.1349
+      },
+      {
+        "chunk_size": 2,
+        "throughput_samples_per_s": 1.5,
+        "wall_s_median": 1.293,
+        "wall_s_min": 1.2917,
+        "wall_s_max": 1.3041,
+        "per_sample_us": 646493.1,
+        "per_step_ms": 0.1293
+      },
+      {
+        "chunk_size": 4,
+        "throughput_samples_per_s": 3.1,
+        "wall_s_median": 1.2972,
+        "wall_s_min": 1.2967,
+        "wall_s_max": 1.3033,
+        "per_sample_us": 324302.49,
+        "per_step_ms": 0.1297
+      },
+      {
+        "chunk_size": 8,
+        "throughput_samples_per_s": 6.2,
+        "wall_s_median": 1.2927,
+        "wall_s_min": 1.2918,
+        "wall_s_max": 1.2937,
+        "per_sample_us": 161583.43,
+        "per_step_ms": 0.1293
+      },
+      {
+        "chunk_size": 16,
+        "throughput_samples_per_s": 12.4,
+        "wall_s_median": 1.2916,
+        "wall_s_min": 1.2887,
+        "wall_s_max": 1.2969,
+        "per_sample_us": 80724.62,
+        "per_step_ms": 0.1292
+      }
+    ],
+    "optimum_chunk": 16,
+    "wall_s_median": 1.2932,
+    "wall_s_min": 1.2909,
+    "wall_s_max": 1.2965,
+    "per_sample_us": 80822.89,
+    "per_step_ms": 0.1293,
+    "samples_per_sec": 12.4
+  },
+  "bench_b_qpu": null,
+  "bench_c_decoder": {
+    "sweep": [
+      {
+        "chunk_size": 1,
+        "throughput_samples_per_s": 75.0,
+        "wall_s_median": 0.0133,
+        "wall_s_min": 0.0133,
+        "wall_s_max": 0.0134,
+        "per_sample_us": 13327.77
+      }
+    ],
+    "optimum_chunk": 1,
+    "wall_s_median": 0.0133,
+    "wall_s_min": 0.0133,
+    "wall_s_max": 0.0178,
+    "per_sample_us": 13335.69
+  },
+  "bench_d_combined": {
+    "gibbs_steps": 10000,
+    "sweep": [
+      {
+        "chunk_size": 1,
+        "throughput_samples_per_s": 0.7,
+        "wall_s_median": 1.395,
+        "wall_s_min": 1.3917,
+        "wall_s_max": 1.3956,
+        "per_sample_us": 1394965.87
+      }
+    ],
+    "optimum_chunk": 1,
+    "wall_s_median": 1.3882,
+    "wall_s_min": 1.3842,
+    "wall_s_max": 1.3916,
+    "per_sample_us": 1388161.1,
+    "samples_per_sec": 0.7
+  }
+}

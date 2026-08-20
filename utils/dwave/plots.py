@@ -4,6 +4,7 @@ import os
 from datetime import datetime
 import matplotlib.pyplot as plt
 from matplotlib.gridspec import GridSpec, GridSpecFromSubplotSpec
+from matplotlib.ticker import PercentFormatter
 import dwave_networkx as dnx
 import numpy as np
 import torch
@@ -45,6 +46,164 @@ def _save_fig(fig, save_path: str | None) -> None:
     os.makedirs(os.path.dirname(os.path.abspath(save_path)), exist_ok=True)
     fig.savefig(save_path, dpi=200, bbox_inches='tight')
     print(f"[plots] Saved → {save_path}")
+
+
+# ---------------------------------------------------------------------------
+# Compact aggregation diagnostics
+# ---------------------------------------------------------------------------
+
+def _record_break_fraction(record: dict | None) -> float | None:
+    """Read the chain-break field used by either aggregation result schema."""
+    if record is None:
+        return None
+    for key in ("break_frac", "chain_break_frac"):
+        value = record.get(key)
+        if value is not None:
+            return float(value)
+    return None
+
+
+def _plot_error_break_tradeoff(
+    individual_records,
+    *,
+    best_record: dict | None = None,
+    aggregate_record: dict | None = None,
+    baseline_record: dict | None = None,
+    secondary_record: dict | None = None,
+    individual_label: str = "Individual runs",
+    best_label: str = "Best single",
+    aggregate_label: str = "Aggregate",
+    baseline_label: str = "Default",
+    secondary_label: str = "Secondary aggregate",
+    legend_ncol: int = 1,
+    title: str,
+    atlas_label: str,
+    save_path: str | None = None,
+):
+    """Render the shared error-versus-stability scatter plot.
+
+    The existing diagnostic functions above intentionally remain unchanged.
+    These new helpers provide the paper-facing, space-efficient alternative:
+    gray points represent all individual runs, while colored markers identify
+    the selected strategies.
+    """
+    # Match the Gray-code figure: mplhep's ATLAS typography, bold labels,
+    # heavier axes, and the same red/green emphasis.  Orange, purple, and
+    # cyan are the additional colors used by the shower histograms.
+    hep.style.use(hep.style.ATLAS)
+    plt.rcParams.update({
+        "font.size": 16,
+        "axes.linewidth": 2.5,
+        "xtick.major.width": 2,
+        "ytick.major.width": 2,
+        "font.weight": "bold",
+        "axes.labelweight": "bold",
+        "figure.facecolor": "white",
+    })
+
+    point_specs = [
+        (baseline_record, "red", "o", baseline_label, 160),
+        (best_record, "green", "*", best_label, 190),
+        (aggregate_record, "orange", "D", aggregate_label, 150),
+        (secondary_record, "purple", "s", secondary_label, 140),
+    ]
+
+    individual_records = list(individual_records or [])
+    individual_points = []
+    for record in individual_records:
+        if record.get("error_norm") is None:
+            continue
+        break_frac = _record_break_fraction(record)
+        if break_frac is not None:
+            individual_points.append((float(record["error_norm"]), break_frac))
+
+    highlighted_points = []
+    for record, _, _, _, _ in point_specs:
+        if record is None or record.get("error_norm") is None:
+            continue
+        break_frac = _record_break_fraction(record)
+        if break_frac is not None:
+            highlighted_points.append((float(record["error_norm"]), break_frac))
+
+    all_points = individual_points + highlighted_points
+    if not all_points:
+        raise ValueError("No error/chain-break records were available for plotting")
+
+    fig, ax = plt.subplots(figsize=(8.5, 6.5))
+
+    if individual_points:
+        individual_x, individual_y = zip(*individual_points)
+        ax.scatter(
+            individual_x,
+            individual_y,
+            s=34,
+            color="gray",
+            alpha=0.68,
+            linewidths=0,
+            label=individual_label,
+            zorder=2,
+        )
+
+    for record, color, marker, label, size in point_specs:
+        if record is None or record.get("error_norm") is None:
+            continue
+        break_frac = _record_break_fraction(record)
+        if break_frac is None:
+            continue
+        error_norm = float(record["error_norm"])
+        ax.scatter(
+            [error_norm],
+            [break_frac],
+            s=size,
+            color=color,
+            marker=marker,
+            edgecolors="black",
+            linewidths=0.65,
+            label=label,
+            zorder=4,
+        )
+
+    ax.set_title(title, fontsize=20, fontweight="bold", pad=12)
+    ax.set_xlabel(r"Error norm vs classical RBM ($\leftarrow$ lower is better)")
+    ax.set_ylabel("Chain-break fraction")
+    ax.yaxis.set_major_formatter(PercentFormatter(xmax=1.0, decimals=1))
+    ax.grid(True, linestyle="--", linewidth=0.7, alpha=0.4, zorder=0)
+    ax.spines["top"].set_visible(False)
+    ax.spines["right"].set_visible(False)
+
+    x_values, y_values = zip(*all_points)
+    x_min, x_max = min(x_values), max(x_values)
+    y_min, y_max = min(y_values), max(y_values)
+    x_pad = max((x_max - x_min) * 0.12, 0.05)
+    y_pad = max((y_max - y_min) * 0.22, 0.00025)
+    ax.set_xlim(x_min - x_pad, x_max + x_pad)
+    ax.set_ylim(max(0.0, y_min - y_pad), y_max + y_pad)
+
+    ax.legend(
+        loc="best",
+        fontsize=14,
+        frameon=True,
+        framealpha=0.92,
+        borderpad=1.0,
+        handlelength=1.6,
+        handleheight=1.4,
+        handletextpad=0.9,
+        labelspacing=0.8,
+        columnspacing=1.0,
+        markerscale=1.0,
+        ncol=legend_ncol,
+    )
+
+    # Reserve the same header band used by the Gray-code plot so the ATLAS
+    # mark never collides with a long panel title.
+    fig.subplots_adjust(left=0.22, right=0.985, bottom=0.20, top=0.80)
+    _add_atlas_label(fig, text=atlas_label, y=0.945)
+    if save_path is not None:
+        os.makedirs(os.path.dirname(os.path.abspath(save_path)), exist_ok=True)
+        fig.savefig(save_path, dpi=200)
+        print(f"[plots] Saved → {save_path}")
+    plt.show()
+    return fig
 
 
 def visualize_embedding(sampler, graph, left_chains_dict, right_chains_dict, conditioning_sets, colors):
@@ -215,13 +374,13 @@ def visualize_embedding_poster(sampler, graph, left_chains_dict, right_chains_di
     # --- 4. LEGEND ---
     legend_elements = [
         plt.Line2D([0], [0], marker='o', color='w', 
-                   label=f'Left Chains ({len(l_qubits)} q)',
+                   label=f'Left Chains ({len(l_qubits)} qubits)',
                    markerfacecolor=c_palette['left'], markersize=18),
         plt.Line2D([0], [0], marker='o', color='w', 
-                   label=f'Right Chains ({len(r_qubits)} q)',
+                   label=f'Right Chains ({len(r_qubits)} qubits)',
                    markerfacecolor=c_palette['right'], markersize=18),
         plt.Line2D([0], [0], marker='o', color='w', 
-                   label=f'Conditioning ({len(c_qubits)} q)',
+                   label=f'Conditioning ({len(c_qubits)} qubits)',
                    markerfacecolor=c_palette['cond'], markersize=18),
     ]
     
@@ -1936,6 +2095,47 @@ def plot_permutation_sweep_analysis(
     plt.show()
 
 
+def plot_orbit_aggregation_tradeoff(
+    sweep_results,
+    atlas_label: str = "Preliminary",
+    save_path: str | None = None,
+    include_srt_aggregate: bool = True,
+):
+    """Plot individual orbit outcomes and the all-orbit aggregate.
+
+    This is the compact paper-facing companion to
+    :func:`plot_permutation_sweep_analysis`; that original full diagnostic is
+    retained for detailed analysis and debugging.
+    """
+    metrics = sweep_results.get("perm_metrics", [])
+    best_run = sweep_results.get("best_orbit")
+    aggregate_run = sweep_results.get("aggregated_orbit")
+    srt_run = sweep_results.get("default_srt_aggregated")
+
+    secondary_label = "SRT aggregate"
+
+    anneal_time = sweep_results.get("anneal_time")
+    if anneal_time is None:
+        title = "Embedding-orbit aggregation"
+    else:
+        title = f"Embedding-orbit aggregation (anneal time {anneal_time:g} μs)"
+
+    return _plot_error_break_tradeoff(
+        metrics,
+        best_record=best_run,
+        aggregate_record=aggregate_run,
+        secondary_record=srt_run if include_srt_aggregate else None,
+        individual_label="Individual orbits",
+        best_label="Best orbit",
+        aggregate_label="All-orbit aggregate",
+        secondary_label=secondary_label,
+        legend_ncol=2,
+        title=title,
+        atlas_label=atlas_label,
+        save_path=save_path,
+    )
+
+
 def plot_ga_sweep_analysis(ga_results):
     """
     Summarises the output of run_ga_permutation_sweep_multi_energy.
@@ -3326,6 +3526,37 @@ def plot_srt_aggregation_comparison(
     _save_fig(fig, save_path)
     plt.show()
     return fig
+
+
+def plot_srt_aggregation_tradeoff(
+    comparison_results,
+    save_path: str | None = None,
+    atlas_label: str = "Preliminary",
+):
+    """Plot the SRT point cloud and the pooled-SRT result.
+
+    The existing :func:`plot_srt_aggregation_comparison` is left intact as a
+    detailed diagnostic.  This new plot is intended for the paper: gray dots
+    are individual SRT batches, green is the best single batch, and orange is
+    the aggregate over all SRT batches.
+    """
+    averaged = comparison_results["averaged"]
+    best = comparison_results["best_srt"]
+    per_batch = comparison_results.get("per_batch", [])
+    n_batches = comparison_results.get("srt_batches", len(per_batch))
+
+    title = f"SRT aggregation ({n_batches} gauges)"
+    return _plot_error_break_tradeoff(
+        per_batch,
+        best_record=best,
+        aggregate_record=averaged,
+        individual_label="Individual SRTs",
+        best_label="Best SRT",
+        aggregate_label="All-SRT aggregate",
+        title=title,
+        atlas_label=atlas_label,
+        save_path=save_path,
+    )
 
 
 def plot_annealing_time_sweep(

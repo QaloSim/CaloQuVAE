@@ -1,10 +1,21 @@
 import json
-import wandb
-import torch
+try:
+    import wandb
+except ImportError:  # Optional for NPZ-only replots.
+    wandb = None
+
+try:
+    import torch
+except ImportError:  # Optional for NPZ-only replots.
+    torch = None
+
 import importlib
-import utils.HighLevelFeatsAtlasReg
-importlib.reload(utils.HighLevelFeatsAtlasReg)
-from utils.HighLevelFeatsAtlasReg import HighLevelFeatures_ATLAS_regular
+try:
+    import utils.HighLevelFeatsAtlasReg
+    importlib.reload(utils.HighLevelFeatsAtlasReg)
+    from utils.HighLevelFeatsAtlasReg import HighLevelFeatures_ATLAS_regular
+except ImportError:  # The lightweight replot path does not need torch/HLF.
+    HighLevelFeatures_ATLAS_regular = None
 
 import numpy as np
 import matplotlib.pyplot as plt
@@ -13,9 +24,104 @@ import mplhep as hep
 from scipy.stats import ks_2samp, entropy, wasserstein_distance
 import os
 from matplotlib.backends.backend_pdf import PdfPages 
+from utils.shower_wd import calculate_wasserstein_distances
 
 
-from utils.HighLevelFeatures import HighLevelFeatures
+try:
+    from utils.HighLevelFeatures import HighLevelFeatures
+except ImportError:  # The lightweight replot path does not need HLF.
+    HighLevelFeatures = None
+
+
+# Display names used in the paper-facing plots.  The numerical IDs remain the
+# keys used by the geometry and NPZ files, but should not leak into figures.
+LAYER_DISPLAY_NAMES = {
+    0: "PreSamplerB",
+    1: "EMB1",
+    2: "EMB2",
+    3: "EMB3",
+    12: "TileBar0",
+}
+
+MODEL_LABEL_ALIASES = {
+    "Data": "Ground Truth (Geant4)",
+    "GEANT4": "Ground Truth (Geant4)",
+    "Recon": "AE reconstruction",
+    "GPU": "Classical RBM",
+    "QPU": "QPU RBM",
+}
+
+DEFAULT_RATIO_MIN_REFERENCE_COUNT = 5
+
+
+def _style_histogram_ticks(ax, *, labelsize=None, pad=None):
+    """Use inward ticks on all four sides of a histogram axis."""
+
+    kwargs = {
+        "axis": "both",
+        "which": "both",
+        "direction": "in",
+        "top": True,
+        "right": True,
+    }
+    if labelsize is not None:
+        kwargs["labelsize"] = labelsize
+    if pad is not None:
+        kwargs["pad"] = pad
+    ax.tick_params(**kwargs)
+
+
+def layer_display_name(layer):
+    """Return the detector-layer name used in paper-facing labels."""
+
+    return LAYER_DISPLAY_NAMES.get(int(layer), f"Layer {layer}")
+
+
+def layer_moment_xlabel(moment, layer):
+    """Return a layer-qualified x-axis label for a spatial shower moment."""
+
+    layer_name = layer_display_name(layer)
+    labels = {
+        "MeanEta": rf"$\langle u_\eta \rangle_{{\mathrm{{{layer_name}}}}}$ [mm]",
+        "WidthEta": rf"$\sigma_{{u_\eta,\mathrm{{{layer_name}}}}}$ [mm]",
+        "MeanPhi": rf"$\langle u_\phi \rangle_{{\mathrm{{{layer_name}}}}}$ [mm]",
+        "WidthPhi": rf"$\sigma_{{u_\phi,\mathrm{{{layer_name}}}}}$ [mm]",
+    }
+    try:
+        return labels[moment]
+    except KeyError as exc:
+        raise ValueError(f"Unknown spatial moment: {moment}") from exc
+
+
+def _moment_key_from_label(label):
+    """Infer a spatial-moment key from a grid/property label."""
+
+    label = str(label)
+    compact = label.lower().replace(" ", "")
+    if ("mean" in compact and "eta" in compact) or (
+        r"u_\eta" in label and r"\langle" in label
+    ):
+        return "MeanEta"
+    if ("width" in compact and "eta" in compact) or (
+        r"u_\eta" in label and r"\sigma" in label
+    ):
+        return "WidthEta"
+    if ("mean" in compact and "phi" in compact) or (
+        r"u_\phi" in label and r"\langle" in label
+    ):
+        return "MeanPhi"
+    if ("width" in compact and "phi" in compact) or (
+        r"u_\phi" in label and r"\sigma" in label
+    ):
+        return "WidthPhi"
+    return None
+
+
+def display_model_label(label, aliases=None):
+    """Translate legacy series labels while preserving already-new labels."""
+
+    mapping = MODEL_LABEL_ALIASES if aliases is None else aliases
+    return mapping.get(label, label)
 
 def plot_calorimeter_shower(cfg, showers, showers_recon, showers_sampled, epoch, save_dir=None, incidence_energy_choice=None, incidence_energy_gt=None, incidence_energy_generated=None):
     """
@@ -232,8 +338,8 @@ class AtlasEvaluator:
         for label, res in zip(labels, results):
             lines.append(f"{label}")
             lines.append(f"KS: {res['ks']:.2f} | WD: {res['wd']:.2f}")
-            lines.append(f"$\chi^2$: {res['chi2']:.1f}")
-            lines.append(f"$\mu$: {res['mu_ratio']:.2f} | $\sigma$: {res['std_ratio']:.2f}")
+            lines.append(fr"$\chi^2$: {res['chi2']:.1f}")
+            lines.append(fr"$\mu$: {res['mu_ratio']:.2f} | $\sigma$: {res['std_ratio']:.2f}")
             lines.append("") 
         return "\n".join(lines[:-1])
 
@@ -244,7 +350,7 @@ def dup_last(a):
     return np.append(a, a[-1])
 
 def to_np(data):
-    if isinstance(data, torch.Tensor):
+    if torch is not None and isinstance(data, torch.Tensor):
         return data.detach().cpu().numpy()
     return np.array(data)
 
@@ -265,15 +371,70 @@ def get_bins(all_data, xscale='linear'):
         bins = np.linspace(vmin, vmax, 100)
     return bins
 
+
+def _add_atlas_label_to_panel(ax, text='Preliminary', fontsize=5.0,
+                              inset=None, layer_label=None,
+                              layer_fontsize=None):
+    """Place an ATLAS stamp and optional layer name inside one panel."""
+
+    if inset is None:
+        # Reproduce the historical upper-right placement inside today's
+        # smaller standalone axes.  A dedicated inset is necessary because
+        # current mplhep loc=0 places the stamp above the axes and title.
+        inset = [0.48, 0.70, 0.43, 0.27]
+
+    # A small set of historically tuned panels instead use the upper-left
+    # whitespace; their per-layer inset is supplied by the paper builder.
+    label_axis = ax.inset_axes(
+        inset,
+        zorder=10,
+    )
+    label_axis.set_facecolor("none")
+    label_axis.patch.set_alpha(0.0)
+    label_axis.axis("off")
+    hep.atlas.label(
+        text=text,
+        data=False,
+        rlabel="",
+        ax=label_axis,
+        loc=2,
+        fontsize=fontsize,
+    )
+    if layer_label is not None:
+        # Keep the physical layer name inside the axes, aligned below the
+        # ATLAS wordmark and status line.  Using parent-axes coordinates makes
+        # the placement invariant under the figure's final LaTeX scaling.
+        ax.text(
+            inset[0] + 0.045,
+            inset[1] + 0.025,
+            layer_label,
+            transform=ax.transAxes,
+            ha="left",
+            va="baseline",
+            fontsize=(
+                layer_fontsize
+                if layer_fontsize is not None
+                else max(fontsize - 0.25, 5.0)
+            ),
+            fontweight="bold",
+            color="black",
+            zorder=11,
+            clip_on=False,
+        )
+
 # -----------------------------------------------------------------------------
 # Individual Plotting Function
 # -----------------------------------------------------------------------------
 def plot_atlas_style_multi(data_ref, data_list, labels, xlabel, output_path, 
                            yscale='log', xscale='linear', 
-                           colors=None, linestyles=None, pdf=None, fixed_bins=None):
+                           colors=None, linestyles=None, pdf=None, fixed_bins=None,
+                           reference_label='Ground Truth (Geant4)',
+                           ratio_min_reference_count=DEFAULT_RATIO_MIN_REFERENCE_COUNT,
+                           atlas_label='Preliminary'):
     
     if colors is None: colors = ['red', 'green', 'orange', 'purple', 'cyan']
     if linestyles is None: linestyles = ['-', '--', '-.', ':', '-']
+    labels = [display_model_label(label) for label in labels]
 
     data_ref = data_ref[np.isfinite(data_ref)]
     clean_data_list = [d[np.isfinite(d)] for d in data_list]
@@ -303,8 +464,8 @@ def plot_atlas_style_multi(data_ref, data_list, labels, xlabel, output_path,
     ref_err[mask] = ns_ref[mask] / np.sqrt(counts_ref[mask])
     
     ax0.step(bins, dup_last(ns_ref), color='black', alpha=0.8, 
-             linewidth=1.5, where='post', label='Data')
-    ax0.fill_between(bins, dup_last(ns_ref - ref_err), dup_last(ns_ref + ref_err),
+             linewidth=1.5, where='post', label=reference_label)
+    ax0.fill_between(bins, dup_last(np.maximum(ns_ref - ref_err, 0)), dup_last(ns_ref + ref_err),
                      facecolor='blue', alpha=0.2, step='post')
 
     # Models
@@ -325,7 +486,9 @@ def plot_atlas_style_multi(data_ref, data_list, labels, xlabel, output_path,
         results.append(res)
         
         # Ratio
-        ratio = np.divide(ns_mod, ns_ref, out=np.zeros_like(ns_mod), where=ns_ref!=0)
+        ratio = np.full_like(ns_mod, np.nan, dtype=float)
+        ratio_mask = (counts_ref >= ratio_min_reference_count) & (ns_ref != 0)
+        ratio[ratio_mask] = ns_mod[ratio_mask] / ns_ref[ratio_mask]
         ax1.step(bins, dup_last(ratio), color=col, linestyle=ls, 
                  linewidth=1.5, where='post')
 
@@ -338,8 +501,21 @@ def plot_atlas_style_multi(data_ref, data_list, labels, xlabel, output_path,
     ax0.set_yscale(yscale)
     ax0.set_xscale(xscale)
     ax0.set_ylabel("Normalized Counts", fontsize=14)
-    hep.atlas.label("Preliminary", data=False, rlabel="", ax=ax0, loc=0)
+    layer_label = _infer_layer_label(
+        os.path.splitext(os.path.basename(output_path))[0]
+    )
+    if layer_label is not None:
+        _add_atlas_label_to_panel(
+            ax0,
+            text=atlas_label,
+            fontsize=7.0,
+            layer_label=layer_label,
+            layer_fontsize=7.0,
+        )
+    else:
+        hep.atlas.label(atlas_label, data=False, rlabel="", ax=ax0, loc=0)
     ax0.legend(fontsize=8, loc='upper left', frameon=False)
+    _style_histogram_ticks(ax0, labelsize=10)
     ax0.tick_params(labelbottom=False)
     
     ax1.set_ylabel("Ratio", fontsize=12)
@@ -348,6 +524,7 @@ def plot_atlas_style_multi(data_ref, data_list, labels, xlabel, output_path,
     ax1.axhline(1, color='gray', linestyle='--', alpha=0.7)
     ax1.set_ylim(0.5, 1.5) 
     ax1.grid(True, which='both', linestyle=':', alpha=0.5)
+    _style_histogram_ticks(ax1, labelsize=10)
 
     # Save intermediate data for replotting
     npz_path = os.path.splitext(output_path)[0] + '.npz'
@@ -361,18 +538,36 @@ def plot_atlas_style_multi(data_ref, data_list, labels, xlabel, output_path,
     if pdf is not None:
         pdf.savefig(fig, dpi=300, bbox_inches='tight')
     plt.close(fig)
-    return {lbl: {k: float(v) for k, v in res.items()} for lbl, res in zip(labels, results)}
+    stats = {
+        lbl: {k: float(v) for k, v in res.items()}
+        for lbl, res in zip(labels, results)
+    }
+    pairwise = calculate_wasserstein_distances(
+        {'data_ref': data_ref, **dict(zip(labels, clean_data_list))},
+        include_ae=False,
+    )
+    if 'QPU--Classical' in pairwise:
+        stats['_pairwise'] = {'QPU--Classical': pairwise['QPU--Classical']}
+    return stats
 # -----------------------------------------------------------------------------
 # 3. Combined Grid Plotter
 # -----------------------------------------------------------------------------
 def plot_layer_grid(layer_data_dict, property_name, labels, output_dir, 
                     yscale='log', xscale='linear', pdf=None,
-                    colors=None, linestyles=None):
+                    colors=None, linestyles=None,
+                    reference_label='Ground Truth (Geant4)',
+                    ratio_min_reference_count=DEFAULT_RATIO_MIN_REFERENCE_COUNT,
+                    atlas_label='Preliminary', atlas_label_inset=None,
+                    atlas_label_fontsize=5.0,
+                    atlas_label_layer_insets=None, show_legend=True,
+                    show_title=True, output_formats=('png',),
+                    figure_size=None, output_stem=None):
     """
     Creates a single figure with subplots for each layer.
     """
     if colors is None: colors = ['red', 'green', 'orange', 'purple', 'cyan']
     if linestyles is None: linestyles = ['-', '--', '-.', ':', '-']
+    labels = [display_model_label(label) for label in labels]
 
     layers = sorted(layer_data_dict.keys())
     n_layers = len(layers)
@@ -382,8 +577,20 @@ def plot_layer_grid(layer_data_dict, property_name, labels, output_dir,
     n_cols = (n_layers + 1) // 2 
     n_rows = 2
     
-    fig = plt.figure(figsize=(5 * n_cols, 10))
-    outer_grid = GridSpec(n_rows, n_cols, figure=fig, hspace=0.3, wspace=0.3, top=0.87)
+    if figure_size is None:
+        figure_size = (5 * n_cols, 10)
+    standalone = not show_legend and not show_title
+    top = 0.87 if show_legend else 0.95
+    fig = plt.figure(figsize=figure_size)
+    outer_grid = GridSpec(
+        n_rows,
+        n_cols,
+        figure=fig,
+        hspace=0.50 if standalone else 0.3,
+        wspace=0.28 if standalone else 0.3,
+        top=top,
+        bottom=0.10 if standalone else None,
+    )
 
     for idx, layer in enumerate(layers):
         row = idx // n_cols
@@ -413,54 +620,80 @@ def plot_layer_grid(layer_data_dict, property_name, labels, output_dir,
         ref_err = np.zeros_like(ns_ref)
         ref_err[mask] = ns_ref[mask] / np.sqrt(counts_ref[mask])
 
-        ax_main.step(bins, dup_last(ns_ref), color='black', alpha=0.8, lw=1.5, 
-                     where='post', label='Data' if idx==0 else "")
-        ax_main.fill_between(bins, dup_last(ns_ref - ref_err), dup_last(ns_ref + ref_err),
-                             facecolor='blue', alpha=0.2, step='post')
+        line_width = 1.0 if standalone else 1.5
+        ax_main.step(bins, dup_last(ns_ref), color='black', alpha=0.8, lw=line_width,
+                     where='post', label=reference_label if idx==0 else "")
+        ax_main.fill_between(bins, dup_last(np.maximum(ns_ref - ref_err, 0)), dup_last(ns_ref + ref_err),
+                             facecolor='#808080', alpha=0.18, step='post')
 
         # Models
         for i, (d_mod, lbl) in enumerate(zip(clean_models, labels)):
             ns_mod, _ = np.histogram(d_mod, bins=bins, density=True)
-            ax_main.step(bins, dup_last(ns_mod), color=colors[i], ls=linestyles[i], lw=1.5, 
+            ax_main.step(bins, dup_last(ns_mod), color=colors[i], ls=linestyles[i], lw=line_width,
                          where='post', label=lbl if idx==0 else "")
             
-            ratio = np.divide(ns_mod, ns_ref, out=np.zeros_like(ns_mod), where=ns_ref!=0)
-            ax_ratio.step(bins, dup_last(ratio), color=colors[i], ls=linestyles[i], lw=1.5, where='post')
+            ratio = np.full_like(ns_mod, np.nan, dtype=float)
+            ratio_mask = (counts_ref >= ratio_min_reference_count) & (ns_ref != 0)
+            ratio[ratio_mask] = ns_mod[ratio_mask] / ns_ref[ratio_mask]
+            ax_ratio.step(bins, dup_last(ratio), color=colors[i], ls=linestyles[i], lw=line_width, where='post')
 
         # Styling
         ax_main.set_yscale(yscale)
         ax_main.set_xscale(xscale)
-        ax_main.set_title(f"Layer {layer}", fontsize=12, fontweight='bold')
+        _style_histogram_ticks(
+            ax_main,
+            labelsize=6.5 if standalone else None,
+            pad=1 if standalone else None,
+        )
         ax_main.tick_params(labelbottom=False)
+        _style_histogram_ticks(
+            ax_ratio,
+            labelsize=6.5 if standalone else None,
+            pad=1 if standalone else None,
+        )
 
         if col == 0:
-            ax_main.set_ylabel("Norm. Counts", fontsize=10)
-            ax_ratio.set_ylabel("Ratio", fontsize=9)
+            ax_main.set_ylabel("Probability density", fontsize=7 if standalone else 10)
+            ax_ratio.set_ylabel("Ratio", fontsize=7 if standalone else 9)
 
         ax_ratio.set_xscale(xscale)
-        ax_ratio.set_xlabel(property_name, fontsize=10)
+        moment = _moment_key_from_label(property_name)
+        xlabel = (
+            layer_moment_xlabel(moment, layer)
+            if moment is not None
+            else property_name
+        )
+        ax_ratio.set_xlabel(xlabel, fontsize=7.5 if standalone else 10, labelpad=1)
         ax_ratio.axhline(1, color='gray', linestyle='--', alpha=0.7)
         ax_ratio.set_ylim(0.5, 1.5)
         ax_ratio.grid(True, which='both', linestyle=':', alpha=0.5)
+        panel_inset = atlas_label_inset
+        if atlas_label_layer_insets is not None:
+            panel_inset = atlas_label_layer_insets.get(layer, panel_inset)
+        _add_atlas_label_to_panel(
+            ax_main,
+            text=atlas_label,
+            fontsize=atlas_label_fontsize,
+            inset=panel_inset,
+            layer_label=layer_display_name(layer),
+            layer_fontsize=6.0 if standalone else None,
+        )
 
-    handles, legends = fig.axes[0].get_legend_handles_labels()
-    fig.legend(handles, legends, loc='upper center', bbox_to_anchor=(0.5, 0.97), ncol=len(labels)+1, frameon=False)
-    plt.suptitle(f"Combined {property_name} across Layers", y=1.01, fontsize=16)
-
-    # 1. Grab the exact left edge of the first subplot
-    x0 = fig.axes[0].get_position().x0
-    
-    # 2. Create an invisible, flat axis near the top of the figure
-    # [left, bottom, width, height]
-    ax_dummy = fig.add_axes([x0, 0.96, 0.5, 0.01])
-    ax_dummy.axis('off')
-    
-    # 3. Attach the official mplhep label to the invisible axis
-    hep.atlas.label("Preliminary", data=False, rlabel="", ax=ax_dummy, loc=0)
+    if show_legend:
+        handles, legends = fig.axes[0].get_legend_handles_labels()
+        fig.legend(handles, legends, loc='upper center', bbox_to_anchor=(0.5, 0.97), ncol=len(labels)+1, frameon=False)
+    if show_title:
+        plt.suptitle(f"Combined {property_name} across Layers", y=1.01, fontsize=16)
 
     sanitized_name = property_name.replace(' ', '_').replace('$','').replace('\\','').replace('{','').replace('}','')
-    out_name = f"Grid_{sanitized_name}.png"
-    plt.savefig(f"{output_dir}/{out_name}", dpi=300, bbox_inches='tight')
+    stem = output_stem or f"Grid_{sanitized_name}"
+    for extension in output_formats:
+        extension = extension.lstrip('.')
+        plt.savefig(
+            os.path.join(output_dir, f"{stem}.{extension}"),
+            dpi=300 if extension == 'png' else None,
+            bbox_inches='tight',
+        )
     
     if pdf:
         pdf.savefig(fig, dpi=300, bbox_inches='tight')
@@ -524,59 +757,59 @@ def make_validation_plots(hlf_ref, list_hlf_models, labels, output_dir="plots/")
 
                 s = plot_atlas_style_multi(
                     ref_dat, mod_dat, labels,
-                    xlabel=f'$E_{{layer {layer}}}$ [MeV]',
+                    xlabel=fr'$E_{{{layer_display_name(layer)}}}$ [MeV]',
                     output_path=f"{output_dir}/Layer{layer}_Energy.png",
                     yscale='log', pdf=pdf
                 )
                 if s: all_stats[f'Layer{layer}_Energy'] = s
 
-                # Mean Eta
+                # Local u_eta first moment
                 ref_dat = to_np(hlf_ref.EC_etas[layer])
                 mod_dat = [to_np(hlf.EC_etas[layer]) for hlf in list_hlf_models]
                 grid_mean_eta[layer] = {'ref': ref_dat, 'models': mod_dat}
 
                 s = plot_atlas_style_multi(
                     ref_dat, mod_dat, labels,
-                    xlabel=f'$\langle \eta \\rangle_{{layer {layer}}}$',
+                    xlabel=layer_moment_xlabel('MeanEta', layer),
                     output_path=f"{output_dir}/Layer{layer}_MeanEta.png",
                     yscale='log', pdf=pdf
                 )
                 if s: all_stats[f'Layer{layer}_MeanEta'] = s
 
-                # Width Eta
+                # Local u_eta width
                 ref_dat = to_np(hlf_ref.width_etas[layer])
                 mod_dat = [to_np(hlf.width_etas[layer]) for hlf in list_hlf_models]
                 grid_width_eta[layer] = {'ref': ref_dat, 'models': mod_dat}
 
                 s = plot_atlas_style_multi(
                     ref_dat, mod_dat, labels,
-                    xlabel=f'$\sigma_{{\eta, layer {layer}}}$',
+                    xlabel=layer_moment_xlabel('WidthEta', layer),
                     output_path=f"{output_dir}/Layer{layer}_WidthEta.png",
                     yscale='log', pdf=pdf
                 )
                 if s: all_stats[f'Layer{layer}_WidthEta'] = s
 
-                # Mean Phi
+                # Local u_phi first moment
                 ref_dat = to_np(hlf_ref.EC_phis[layer])
                 mod_dat = [to_np(hlf.EC_phis[layer]) for hlf in list_hlf_models]
                 grid_mean_phi[layer] = {'ref': ref_dat, 'models': mod_dat}
 
                 s = plot_atlas_style_multi(
                     ref_dat, mod_dat, labels,
-                    xlabel=f'$\langle \phi \\rangle_{{layer {layer}}}$',
+                    xlabel=layer_moment_xlabel('MeanPhi', layer),
                     output_path=f"{output_dir}/Layer{layer}_MeanPhi.png",
                     yscale='log', pdf=pdf
                 )
                 if s: all_stats[f'Layer{layer}_MeanPhi'] = s
 
-                # Width Phi
+                # Local u_phi width
                 ref_dat = to_np(hlf_ref.width_phis[layer])
                 mod_dat = [to_np(hlf.width_phis[layer]) for hlf in list_hlf_models]
                 grid_width_phi[layer] = {'ref': ref_dat, 'models': mod_dat}
 
                 s = plot_atlas_style_multi(
                     ref_dat, mod_dat, labels,
-                    xlabel=f'$\sigma_{{\phi, layer {layer}}}$',
+                    xlabel=layer_moment_xlabel('WidthPhi', layer),
                     output_path=f"{output_dir}/Layer{layer}_WidthPhi.png",
                     yscale='log', pdf=pdf
                 )
@@ -590,12 +823,12 @@ def make_validation_plots(hlf_ref, list_hlf_models, labels, output_dir="plots/")
         print("  Generating Grid Plots...")
         plot_layer_grid(grid_energy, 'Layer Energy [MeV]', labels, output_dir, yscale='log', pdf=pdf)
         
-        # Updated calls for Eta grids
-        plot_layer_grid(grid_mean_eta, 'Mean Eta', labels, output_dir, yscale='log', pdf=pdf)
-        plot_layer_grid(grid_width_eta, 'Width Eta', labels, output_dir, yscale='log', pdf=pdf)
+        # Local-coordinate moment grids
+        plot_layer_grid(grid_mean_eta, r'$\langle u_\eta\rangle$ [mm]', labels, output_dir, yscale='log', pdf=pdf)
+        plot_layer_grid(grid_width_eta, r'$\sigma_{u_\eta}$ [mm]', labels, output_dir, yscale='log', pdf=pdf)
         
-        plot_layer_grid(grid_mean_phi, 'Mean Phi', labels, output_dir, yscale='log', pdf=pdf)
-        plot_layer_grid(grid_width_phi, 'Width Phi', labels, output_dir, yscale='log', pdf=pdf)
+        plot_layer_grid(grid_mean_phi, r'$\langle u_\phi\rangle$ [mm]', labels, output_dir, yscale='log', pdf=pdf)
+        plot_layer_grid(grid_width_phi, r'$\sigma_{u_\phi}$ [mm]', labels, output_dir, yscale='log', pdf=pdf)
 
     stats_path = os.path.join(output_dir, 'stats.json')
     with open(stats_path, 'w') as f:
@@ -613,6 +846,7 @@ def create_grid_figure(layer_data_dict, property_name, labels, yscale='log', xsc
     # Define colors/styles for consistency
     colors = ['red', 'green', 'orange', 'purple', 'cyan']
     linestyles = ['-', '--', '-.', ':', '-']
+    labels = [display_model_label(label) for label in labels]
 
     layers = sorted(layer_data_dict.keys())
     n_layers = len(layers)
@@ -657,8 +891,8 @@ def create_grid_figure(layer_data_dict, property_name, labels, yscale='log', xsc
 
         # dup_last helper used for step plots
         ax_main.step(bins, dup_last(ns_ref), color='black', alpha=0.8, lw=1.5, 
-                     where='post', label='Data' if idx==0 else "")
-        ax_main.fill_between(bins, dup_last(ns_ref - ref_err), dup_last(ns_ref + ref_err),
+                     where='post', label='Ground Truth (Geant4)' if idx==0 else "")
+        ax_main.fill_between(bins, dup_last(np.maximum(ns_ref - ref_err, 0)), dup_last(ns_ref + ref_err),
                              facecolor='blue', alpha=0.2, step='post')
 
         # Model Plotting
@@ -668,13 +902,15 @@ def create_grid_figure(layer_data_dict, property_name, labels, yscale='log', xsc
                          where='post', label=lbl if idx==0 else "")
             
             # Ratio Plotting
-            ratio = np.divide(ns_mod, ns_ref, out=np.zeros_like(ns_mod), where=ns_ref!=0)
+            ratio = np.full_like(ns_mod, np.nan, dtype=float)
+            ratio_mask = counts_ref >= DEFAULT_RATIO_MIN_REFERENCE_COUNT
+            ratio[ratio_mask & (ns_ref != 0)] = ns_mod[ratio_mask & (ns_ref != 0)] / ns_ref[ratio_mask & (ns_ref != 0)]
             ax_ratio.step(bins, dup_last(ratio), color=colors[i], ls=linestyles[i], lw=1.5, where='post')
 
         # Styling
         ax_main.set_yscale(yscale)
         ax_main.set_xscale(xscale)
-        ax_main.set_title(f"Layer {layer}", fontsize=12, fontweight='bold')
+        _style_histogram_ticks(ax_main)
         ax_main.tick_params(labelbottom=False)
         
         if col == 0:
@@ -682,10 +918,22 @@ def create_grid_figure(layer_data_dict, property_name, labels, yscale='log', xsc
             ax_ratio.set_ylabel("Ratio", fontsize=9)
 
         ax_ratio.set_xscale(xscale)
-        ax_ratio.set_xlabel(property_name, fontsize=10)
+        moment = _moment_key_from_label(property_name)
+        ax_ratio.set_xlabel(
+            layer_moment_xlabel(moment, layer) if moment is not None else property_name,
+            fontsize=10,
+        )
         ax_ratio.axhline(1, color='gray', linestyle='--', alpha=0.7)
         ax_ratio.set_ylim(0.5, 1.5)
         ax_ratio.grid(True, which='both', linestyle=':', alpha=0.5)
+        _add_atlas_label_to_panel(
+            ax_main,
+            text='Preliminary',
+            fontsize=7.0,
+            layer_label=layer_display_name(layer),
+            layer_fontsize=8.0,
+        )
+        _style_histogram_ticks(ax_ratio)
 
     # Legend and Layout
     handles, legends = fig.axes[0].get_legend_handles_labels()
@@ -763,59 +1011,59 @@ def make_validation_plots_fixed(hlf_ref, list_hlf_models, labels, bin_ranges, nu
                     mod_dat = [to_np(hlf.E_layers[layer]) for hlf in list_hlf_models]
                     s = plot_atlas_style_multi(
                         ref_dat, mod_dat, labels,
-                        xlabel=f'$E_{{layer {layer}}}$ [MeV]',
+                        xlabel=fr'$E_{{{layer_display_name(layer)}}}$ [MeV]',
                         output_path=f"{output_dir}/Layer{layer}_Energy.png",
                         yscale='log', pdf=pdf,
                         fixed_bins=create_bins('Energy')
                     )
                     if s: all_stats[f'Layer{layer}_Energy'] = s
 
-                # Mean Eta
+                # Local u_eta first moment
                 if 'MeanEta' in bin_ranges:
                     ref_dat = to_np(hlf_ref.EC_etas[layer])
                     mod_dat = [to_np(hlf.EC_etas[layer]) for hlf in list_hlf_models]
                     s = plot_atlas_style_multi(
                         ref_dat, mod_dat, labels,
-                        xlabel=f'$\langle \eta \\rangle_{{layer {layer}}}$',
+                        xlabel=layer_moment_xlabel('MeanEta', layer),
                         output_path=f"{output_dir}/Layer{layer}_MeanEta.png",
                         yscale='log', pdf=pdf,
                         fixed_bins=create_bins('MeanEta')
                     )
                     if s: all_stats[f'Layer{layer}_MeanEta'] = s
 
-                # Width Eta
+                # Local u_eta width
                 if 'WidthEta' in bin_ranges:
                     ref_dat = to_np(hlf_ref.width_etas[layer])
                     mod_dat = [to_np(hlf.width_etas[layer]) for hlf in list_hlf_models]
                     s = plot_atlas_style_multi(
                         ref_dat, mod_dat, labels,
-                        xlabel=f'$\sigma_{{\eta, layer {layer}}}$',
+                        xlabel=layer_moment_xlabel('WidthEta', layer),
                         output_path=f"{output_dir}/Layer{layer}_WidthEta.png",
                         yscale='log', pdf=pdf,
                         fixed_bins=create_bins('WidthEta')
                     )
                     if s: all_stats[f'Layer{layer}_WidthEta'] = s
 
-                # Mean Phi
+                # Local u_phi first moment
                 if 'MeanPhi' in bin_ranges:
                     ref_dat = to_np(hlf_ref.EC_phis[layer])
                     mod_dat = [to_np(hlf.EC_phis[layer]) for hlf in list_hlf_models]
                     s = plot_atlas_style_multi(
                         ref_dat, mod_dat, labels,
-                        xlabel=f'$\langle \phi \\rangle_{{layer {layer}}}$',
+                        xlabel=layer_moment_xlabel('MeanPhi', layer),
                         output_path=f"{output_dir}/Layer{layer}_MeanPhi.png",
                         yscale='log', pdf=pdf,
                         fixed_bins=create_bins('MeanPhi')
                     )
                     if s: all_stats[f'Layer{layer}_MeanPhi'] = s
 
-                # Width Phi
+                # Local u_phi width
                 if 'WidthPhi' in bin_ranges:
                     ref_dat = to_np(hlf_ref.width_phis[layer])
                     mod_dat = [to_np(hlf.width_phis[layer]) for hlf in list_hlf_models]
                     s = plot_atlas_style_multi(
                         ref_dat, mod_dat, labels,
-                        xlabel=f'$\sigma_{{\phi, layer {layer}}}$',
+                        xlabel=layer_moment_xlabel('WidthPhi', layer),
                         output_path=f"{output_dir}/Layer{layer}_WidthPhi.png",
                         yscale='log', pdf=pdf,
                         fixed_bins=create_bins('WidthPhi')
@@ -839,16 +1087,17 @@ def make_validation_plots_fixed(hlf_ref, list_hlf_models, labels, bin_ranges, nu
 import re as _re
 
 _STEM_TO_XLABEL = {
-    'Etot_over_Einc': r'$E_{tot} / E_{inc}$',
-    'Etot':           r'$E_{tot}$ [MeV]',
+    'Etot_over_Einc': r'$E_{\mathrm{tot}} / E_{\mathrm{inc}}$',
+    'Etot':           r'$E_{\mathrm{tot}}$ [MeV]',
 }
 
 _LAYER_SUFFIX_TO_XLABEL = {
-    'Energy':   r'$E_{{layer {layer}}}$ [MeV]',
-    'MeanEta':  r'$\langle \eta \rangle_{{layer {layer}}}$',
-    'WidthEta': r'$\sigma_{{\eta, layer {layer}}}$',
-    'MeanPhi':  r'$\langle \phi \rangle_{{layer {layer}}}$',
-    'WidthPhi': r'$\sigma_{{\phi, layer {layer}}}$',
+    'Energy':   r'$E_{{{layer_name}}}$ [MeV]',
+    # Double the LaTeX braces because these strings are formatted below.
+    'MeanEta':  r'$\langle u_\eta\rangle$ [mm]',
+    'WidthEta': r'$\sigma_{{u_\eta}}$ [mm]',
+    'MeanPhi':  r'$\langle u_\phi\rangle$ [mm]',
+    'WidthPhi': r'$\sigma_{{u_\phi}}$ [mm]',
 }
 
 _LAYER_RE = _re.compile(r'^Layer(\d+)_(\w+)$')
@@ -862,8 +1111,17 @@ def _infer_xlabel(stem):
         layer, suffix = m.group(1), m.group(2)
         template = _LAYER_SUFFIX_TO_XLABEL.get(suffix)
         if template:
-            return template.format(layer=layer)
+            if suffix in {"MeanEta", "WidthEta", "MeanPhi", "WidthPhi"}:
+                return layer_moment_xlabel(suffix, layer)
+            return template.format(layer=layer, layer_name=layer_display_name(layer))
     return stem  # fallback: use filename stem as-is
+
+
+def _infer_layer_label(stem):
+    """Return the physical layer label for a per-layer NPZ stem."""
+
+    m = _LAYER_RE.match(stem)
+    return layer_display_name(m.group(1)) if m else None
 
 
 def _infer_xscale(stem):
@@ -878,7 +1136,14 @@ def _infer_yscale(stem):
 # Replot from saved .npz files
 # -----------------------------------------------------------------------------
 def replot_from_npz(save_dir, output_dir=None, yscale=None, xscale=None,
-                    colors=None, linestyles=None, make_pdf=True, glob_pattern='*.npz'):
+                    colors=None, linestyles=None, make_pdf=True, glob_pattern='*.npz',
+                    ratio_min_reference_count=DEFAULT_RATIO_MIN_REFERENCE_COUNT,
+                    reference_label='Ground Truth (Geant4)', label_aliases=None,
+                    atlas_label='Preliminary', atlas_label_inset=None,
+                    atlas_label_fontsize=5.0,
+                    atlas_label_layer_insets=None,
+                    grid_show_legend=True, grid_show_title=True,
+                    grid_output_formats=('png',), grid_figure_size=None):
     """
     Regenerates all validation plots (individual + grid) from .npz files saved
     by plot_atlas_style_multi, matching the full output of evaluate_and_plot.
@@ -888,7 +1153,7 @@ def replot_from_npz(save_dir, output_dir=None, yscale=None, xscale=None,
         data_ref  – reference (ground truth) raw samples
         <label>   – one array per model, keyed by its label string
 
-    Grid plots (Layer Energy, Mean/Width Eta/Phi) are reconstructed automatically
+    Grid plots (layer energy and local-coordinate moments) are reconstructed automatically
     from the per-layer .npz files — no shower tensors needed.
 
     Args:
@@ -902,6 +1167,10 @@ def replot_from_npz(save_dir, output_dir=None, yscale=None, xscale=None,
         linestyles:    List of linestyle strings for the model lines.
         make_pdf:      If True, compile all plots into a single PDF.
         glob_pattern:  Glob pattern used to find .npz files inside save_dir.
+        ratio_min_reference_count: Only draw ratios in bins with at least this
+            many reference events. The upper distributions remain unchanged.
+        reference_label: Legend label for the reference distribution.
+        label_aliases: Optional mapping for legacy model labels.
     """
     import glob as _glob
     from collections import defaultdict
@@ -914,6 +1183,9 @@ def replot_from_npz(save_dir, output_dir=None, yscale=None, xscale=None,
         colors = ['red', 'green', 'orange', 'purple', 'cyan']
     if linestyles is None:
         linestyles = ['-', '--', '-.', ':', '-']
+    if ratio_min_reference_count < 1:
+        raise ValueError("ratio_min_reference_count must be at least 1")
+    aliases = MODEL_LABEL_ALIASES if label_aliases is None else label_aliases
 
     npz_files = sorted(_glob.glob(os.path.join(save_dir, glob_pattern)))
     if not npz_files:
@@ -926,10 +1198,10 @@ def replot_from_npz(save_dir, output_dir=None, yscale=None, xscale=None,
     # Accumulators for grid reconstruction: {suffix -> {layer_int -> {'ref': arr, 'models': [arr,...]}}}
     _GRID_SUFFIXES = {
         'Energy':   'Layer Energy [MeV]',
-        'MeanEta':  'Mean Eta',
-        'WidthEta': 'Width Eta',
-        'MeanPhi':  'Mean Phi',
-        'WidthPhi': 'Width Phi',
+        'MeanEta':  r'$\langle u_\eta\rangle$ [mm]',
+        'WidthEta': r'$\sigma_{u_\eta}$ [mm]',
+        'MeanPhi':  r'$\langle u_\phi\rangle$ [mm]',
+        'WidthPhi': r'$\sigma_{u_\phi}$ [mm]',
     }
     grid_data  = {s: {} for s in _GRID_SUFFIXES}
     grid_labels = None  # set from the first layer file processed
@@ -952,8 +1224,9 @@ def replot_from_npz(save_dir, output_dir=None, yscale=None, xscale=None,
 
             bins      = npz['bins']
             data_ref  = npz['data_ref']
-            labels    = [k for k in keys if k not in ('bins', 'data_ref')]
-            data_list = [npz[lbl] for lbl in labels]
+            raw_labels = [k for k in keys if k not in ('bins', 'data_ref')]
+            data_list = [npz[lbl] for lbl in raw_labels]
+            labels = [display_model_label(lbl, aliases) for lbl in raw_labels]
 
             # Collect raw arrays for grid reconstruction if this is a per-layer file
             m = _LAYER_RE.match(stem)
@@ -990,8 +1263,8 @@ def replot_from_npz(save_dir, output_dir=None, yscale=None, xscale=None,
             ref_err[mask] = ns_ref[mask] / np.sqrt(counts_ref[mask])
 
             ax0.step(bins, dup_last(ns_ref), color='black', alpha=0.8,
-                     linewidth=1.5, where='post', label='Data')
-            ax0.fill_between(bins, dup_last(ns_ref - ref_err), dup_last(ns_ref + ref_err),
+                     linewidth=1.5, where='post', label=reference_label)
+            ax0.fill_between(bins, dup_last(np.maximum(ns_ref - ref_err, 0)), dup_last(ns_ref + ref_err),
                              facecolor='blue', alpha=0.2, step='post')
 
             evaluator = AtlasEvaluator()
@@ -1010,7 +1283,9 @@ def replot_from_npz(save_dir, output_dir=None, yscale=None, xscale=None,
                 res = evaluator.calculate(data_ref_clean, d_mod, counts_ref, counts_mod)
                 results.append(res)
 
-                ratio = np.divide(ns_mod, ns_ref, out=np.zeros_like(ns_mod), where=ns_ref != 0)
+                ratio = np.full_like(ns_mod, np.nan, dtype=float)
+                ratio_mask = (counts_ref >= ratio_min_reference_count) & (ns_ref != 0)
+                ratio[ratio_mask] = ns_mod[ratio_mask] / ns_ref[ratio_mask]
                 ax1.step(bins, dup_last(ratio), color=col, linestyle=ls,
                          linewidth=1.5, where='post')
 
@@ -1018,6 +1293,14 @@ def replot_from_npz(save_dir, output_dir=None, yscale=None, xscale=None,
                 lbl: {k: float(v) for k, v in res.items()}
                 for lbl, res in zip(labels, results)
             }
+            pairwise = calculate_wasserstein_distances(
+                {'data_ref': data_ref_clean, **dict(zip(labels, clean_list))},
+                include_ae=False,
+            )
+            if 'QPU--Classical' in pairwise:
+                all_stats[stem]['_pairwise'] = {
+                    'QPU--Classical': pairwise['QPU--Classical']
+                }
 
             if len(results) <= 3:
                 text = evaluator.get_text(results, labels)
@@ -1027,9 +1310,20 @@ def replot_from_npz(save_dir, output_dir=None, yscale=None, xscale=None,
 
             ax0.set_yscale(_yscale)
             ax0.set_xscale(_xscale)
+            layer_label = _infer_layer_label(stem)
             ax0.set_ylabel("Normalized Counts", fontsize=14)
-            hep.atlas.label("Preliminary", data=False, rlabel="", ax=ax0, loc=0)
+            if layer_label is not None:
+                _add_atlas_label_to_panel(
+                    ax0,
+                    text=atlas_label,
+                    fontsize=7.0,
+                    layer_label=layer_label,
+                    layer_fontsize=7.0,
+                )
+            else:
+                hep.atlas.label(atlas_label, data=False, rlabel="", ax=ax0, loc=0)
             ax0.legend(fontsize=8, loc='upper left', frameon=False)
+            _style_histogram_ticks(ax0)
             ax0.tick_params(labelbottom=False)
 
             ax1.set_ylabel("Ratio", fontsize=12)
@@ -1038,6 +1332,7 @@ def replot_from_npz(save_dir, output_dir=None, yscale=None, xscale=None,
             ax1.axhline(1, color='gray', linestyle='--', alpha=0.7)
             ax1.set_ylim(0.5, 1.5)
             ax1.grid(True, which='both', linestyle=':', alpha=0.5)
+            _style_histogram_ticks(ax1)
 
             plt.savefig(output_png, dpi=300, bbox_inches='tight')
             if pdf_ctx is not None:
@@ -1065,6 +1360,16 @@ def replot_from_npz(save_dir, output_dir=None, yscale=None, xscale=None,
                     xscale=xscale if xscale is not None else 'linear',
                     colors=colors,
                     linestyles=linestyles,
+                    reference_label=reference_label,
+                    ratio_min_reference_count=ratio_min_reference_count,
+                    atlas_label=atlas_label,
+                    atlas_label_inset=atlas_label_inset,
+                    atlas_label_fontsize=atlas_label_fontsize,
+                    atlas_label_layer_insets=atlas_label_layer_insets,
+                    show_legend=grid_show_legend,
+                    show_title=grid_show_title,
+                    output_formats=grid_output_formats,
+                    figure_size=grid_figure_size,
                     pdf=pdf_ctx,
                 )
         else:

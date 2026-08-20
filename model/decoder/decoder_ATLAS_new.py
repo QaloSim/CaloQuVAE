@@ -326,9 +326,10 @@ class DecoderFullGeoATLASCompact(DecoderFullGeoATLASClean):
                 - Index 2: Normalized Log
         """
         # Ensure x0 is float for division/log
-        x0 = x0.float()
-        if x0.dim() > 1:
-            x0 = x0.squeeze()
+        # There is exactly one incident-energy value per event.  Flatten only
+        # the singleton feature dimension so batch size one remains a batch
+        # instead of collapsing to a scalar.
+        x0 = x0.float().reshape(-1)
         
         # 1. Linear Scaling: (x - min) / (max - min)
         lin_norm = (x0 - energy_min) / (energy_max - energy_min)
